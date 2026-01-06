@@ -9,11 +9,8 @@ TIMEOUT = 600  # seconds
 def call_llm(prompt: str, system: str = "") -> str:
     """
     Streaming LLM client for Ollama
-    - NO content printed to console
-    - Streaming-safe
-    - Enterprise / CI friendly
+    SINGLE public API used by all agents
     """
-    print("[DEBUG] Calling LLM...", flush=True)
 
     payload = {
         "model": MODEL,
@@ -25,7 +22,7 @@ def call_llm(prompt: str, system: str = "") -> str:
     resp = requests.post(
         OLLAMA_URL,
         json=payload,
-        stream=True,      # ✅ ĐÚNG streaming mode
+        stream=True,          # ✅ REQUIRED
         timeout=TIMEOUT,
     )
 
@@ -33,17 +30,16 @@ def call_llm(prompt: str, system: str = "") -> str:
 
     chunks = []
 
-    for line in resp.iter_lines():
+    for line in resp.iter_lines(decode_unicode=True):
         if not line:
             continue
 
-        data = json.loads(line.decode("utf-8"))
+        data = json.loads(line)
 
         if "response" in data:
-            chunks.append(data["response"])   # ✅ CHỈ THU, KHÔNG PRINT
+            chunks.append(data["response"])
 
         if data.get("done"):
             break
 
-    print("[DEBUG] LLM call finished", flush=True)
     return "".join(chunks)

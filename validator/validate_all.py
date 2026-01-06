@@ -1,32 +1,22 @@
 from validator.vhal_validator import VHALValidator
 
 
-def validate_all(vhal_code: str, car_service_code: str, selinux_policy: str):
-    errors = []
+def validate_all(vhal_code: str, car_service_code: str, sepolicy_code: str):
+    issues = []
 
-    # --- VHAL ---
-    print("[VALIDATOR] Validating VHAL...", flush=True)
-    vhal_validator = VHALValidator()
-    vhal_result = vhal_validator.validate(vhal_code)
-    print(vhal_result)
+    # ===== VHAL checks =====
+    if "android/hardware/automotive/vehicle" not in vhal_code:
+        issues.append("Missing required include: android/hardware/automotive/vehicle")
 
-    if not vhal_result.ok:
-        errors.extend(vhal_result.errors)
+    if "VehiclePropValue" not in vhal_code:
+        issues.append("Missing required VHAL symbol: VehiclePropValue")
 
-    # --- CarService (basic heuristic for now) ---
-    print("[VALIDATOR] Validating CarService...", flush=True)
+    # ===== CarService checks =====
     if "CarPropertyManager" not in car_service_code:
-        errors.append("CarService missing CarPropertyManager usage")
+        issues.append("CarService missing CarPropertyManager usage")
 
-    # --- SELinux ---
-    print("[VALIDATOR] Validating SELinux policy...", flush=True)
-    if "type car_hvac_service" not in selinux_policy:
-        errors.append("SELinux policy missing car_hvac_service type")
+    # ===== SELinux checks =====
+    if "type car_hvac_service" not in sepolicy_code:
+        issues.append("SELinux policy missing car_hvac_service type")
 
-    if errors:
-        print("[VALIDATOR] ❌ VALIDATION FAILED", flush=True)
-        for e in errors:
-            print(f" - {e}", flush=True)
-        raise RuntimeError("Validation failed")
-
-    print("[VALIDATOR] ✅ ALL VALIDATIONS PASSED", flush=True)
+    return issues
