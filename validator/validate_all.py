@@ -1,22 +1,21 @@
-from validator.vhal_validator import VHALValidator
+from validator.aidl_validator import validate_aidl
+from validator.vhal_service_validator import validate_vhal_service
+from validator.aidl_service_contract_validator import (
+    validate_aidl_service_contract
+)
 
 
-def validate_all(vhal_code: str, car_service_code: str, sepolicy_code: str):
+def validate_all(aidl, vhal_service, car_service, sepolicy):
     issues = []
 
-    # ===== VHAL checks =====
-    if "android/hardware/automotive/vehicle" not in vhal_code:
-        issues.append("Missing required include: android/hardware/automotive/vehicle")
+    issues += validate_aidl(aidl)
+    issues += validate_vhal_service(vhal_service)
+    issues += validate_aidl_service_contract(aidl, vhal_service)
 
-    if "VehiclePropValue" not in vhal_code:
-        issues.append("Missing required VHAL symbol: VehiclePropValue")
+    if "CarPropertyManager" not in car_service:
+        issues.append("CarService: Missing CarPropertyManager usage")
 
-    # ===== CarService checks =====
-    if "CarPropertyManager" not in car_service_code:
-        issues.append("CarService missing CarPropertyManager usage")
-
-    # ===== SELinux checks =====
-    if "type car_hvac_service" not in sepolicy_code:
-        issues.append("SELinux policy missing car_hvac_service type")
+    if "type car_hvac_service" not in sepolicy:
+        issues.append("SELinux: Missing car_hvac_service type")
 
     return issues

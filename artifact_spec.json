@@ -1,0 +1,15 @@
+{
+  "vehicle_property": {
+    "name": "VEHICLE_SPEED",
+    "id": "0x11600207",
+    "type": "FLOAT",
+    "access": "READ",
+    "permission": "android.car.permission.CAR_SPEED"
+  },
+  "hidl": {
+    "package": "android.hardware.automotive.vehicle",
+    "version": "2.0",
+    "interface": "IVehicle",
+    "instance": "default"
+  }
+}
