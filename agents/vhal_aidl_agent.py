@@ -1,11 +1,12 @@
-import os
 from llm_client import call_llm
+from tools.safe_writer import SafeWriter
 
 
 class VHALAidlAgent:
     def __init__(self):
         self.name = "VHAL AIDL Agent"
         self.output_dir = "output/vhal_aidl"
+        self.writer = SafeWriter(self.output_dir)
 
     def build_prompt(self, spec_text: str) -> str:
         return f"""
@@ -15,17 +16,26 @@ Your task:
 Generate AIDL definitions for Vehicle HAL based strictly on AOSP standards.
 
 Rules:
-- Package: android.hardware.automotive.vehicle
-- AIDL (Android 12+), NO HIDL
-- IVehicle MUST define:
+- Package MUST be: android.hardware.automotive.vehicle
+- AIDL only (Android 12+), NO HIDL
+- IVehicle MUST declare EXACTLY:
     VehiclePropValue get(int propId, int areaId);
     void set(in VehiclePropValue value);
-- VehiclePropValue MUST be parcelable
 - IVehicleCallback MUST exist
+- VehiclePropValue MUST be declared as parcelable
+- Use correct AIDL syntax
 - No placeholders
 - No explanations
+- No comments describing intent
 
-Output format:
+IMPORTANT:
+- ALL file paths MUST be RELATIVE
+- DO NOT generate absolute paths (/system, /vendor, /etc, /)
+- Use AOSP-style relative paths only
+  (e.g. android/hardware/automotive/vehicle/IVehicle.aidl)
+
+Output format EXACTLY:
+
 --- FILE: <relative path> ---
 <file content>
 
@@ -38,9 +48,8 @@ Specification:
 
         result = call_llm(self.build_prompt(spec_text))
         if not result.strip():
-            raise RuntimeError("[LLM ERROR] Empty AIDL output")
+            raise RuntimeError("[LLM ERROR] Empty VHAL AIDL output")
 
-        os.makedirs(self.output_dir, exist_ok=True)
         self._write_files(result)
 
         print(f"[DEBUG] {self.name}: output -> {self.output_dir}", flush=True)
@@ -54,20 +63,18 @@ Specification:
         for line in text.splitlines():
             if line.strip().startswith("--- FILE:"):
                 if current:
-                    self._flush(current, buf)
-                current = line.replace("--- FILE:", "").replace("---", "").strip()
+                    self.writer.write(current, "\n".join(buf))
+                current = (
+                    line.replace("--- FILE:", "")
+                        .replace("---", "")
+                        .strip()
+                )
                 buf = []
             else:
                 buf.append(line)
 
         if current:
-            self._flush(current, buf)
-
-    def _flush(self, rel, buf):
-        path = os.path.join(self.output_dir, rel)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write("\n".join(buf))
+            self.writer.write(current, "\n".join(buf))
 
 
 def generate_vhal_aidl(spec):
