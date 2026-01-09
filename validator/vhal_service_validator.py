@@ -1,22 +1,31 @@
-def validate_vhal_service(service_code: str):
+# validator/vhal_service_validator.py
+
+def validate_vhal_service(vhal_service: str):
+    """
+    Validate generated VHAL C++ service implementation.
+    """
     issues = []
 
-    if "BnVehicle" not in service_code:
-        issues.append("VHAL Service: Missing BnVehicle inheritance")
+    if not vhal_service or not isinstance(vhal_service, str):
+        issues.append("VHAL Service code is empty or invalid")
+        return issues
 
-    if "get(" not in service_code:
-        issues.append("VHAL Service: Missing get() implementation")
-
-    if "set(" not in service_code:
-        issues.append("VHAL Service: Missing set() implementation")
-
-    if "registerAsService" not in service_code:
-        issues.append("VHAL Service: Missing registerAsService()")
-
-    if "VehiclePropValue" not in service_code:
-        issues.append("VHAL Service: VehiclePropValue not used")
-
+    # Core class checks
     if "VehicleHal" not in vhal_service:
-        issues.append("VHAL Service: VehicleHal implementation missing")
+        issues.append("VHAL Service missing VehicleHal implementation")
+
+    if "IVehicle" not in vhal_service:
+        issues.append("VHAL Service does not reference IVehicle interface")
+
+    # Common AAOS patterns
+    if "get(" not in vhal_service and "getProperty" not in vhal_service:
+        issues.append("VHAL Service missing property getter logic")
+
+    if "set(" not in vhal_service and "setProperty" not in vhal_service:
+        issues.append("VHAL Service missing property setter logic")
+
+    # Threading / Looper (basic heuristic)
+    if "std::mutex" not in vhal_service and "Mutex" not in vhal_service:
+        issues.append("VHAL Service missing concurrency protection (mutex)")
 
     return issues
