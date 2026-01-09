@@ -60,12 +60,20 @@ You MUST implement ALL IVehicle methods EXACTLY:
       const VehiclePropValue& value
   ) override;
 
-5. CALLBACK SUPPORT (CRITICAL)
------------------------------
+5. CALLBACK SUPPORT (MANDATORY – VALIDATOR AWARE)
+------------------------------------------------
 - IVehicleCallback MUST be included
 - Service MUST store registered callbacks
-- Service MUST notify callbacks when property changes
-- The literal string "onPropertyChanged(" MUST appear in VehicleHal implementation
+- Service MUST declare AND implement the following method
+  EXACTLY (name matters):
+    void onPropertyChanged(const VehiclePropValue& value);
+- The literal string "onPropertyChanged(" MUST appear
+  as a method definition in VehicleHal.cpp
+- Inside set(), the service MUST call:
+    onPropertyChanged(value);
+- onPropertyChanged() MUST notify all registered
+  IVehicleCallback instances
+
 
 6. PROPERTY LOGIC (REAL IMPLEMENTATION)
 --------------------------------------
