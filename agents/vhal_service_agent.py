@@ -69,3 +69,8 @@ Specification:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write("\n".join(buf))
+
+def generate_vhal_service(spec: str):
+    agent = VHALServiceAgent()
+    return agent.run(spec)
+            

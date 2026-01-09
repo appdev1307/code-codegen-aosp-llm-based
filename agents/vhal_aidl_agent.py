@@ -58,7 +58,7 @@ Specification:
         buffer = []
 
         for line in text.splitlines():
-            if line.startswith("--- FILE:"):
+            if line.strip().startswith("--- FILE:"):
                 if current_file:
                     self._write_file(current_file, buffer)
                 current_file = line.replace("--- FILE:", "").replace("---", "").strip()
@@ -74,3 +74,9 @@ Specification:
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, "w") as f:
             f.write("\n".join(lines))
+
+
+# ✅ MODULE-LEVEL WRAPPER (THIS IS THE KEY)
+def generate_vhal_aidl(spec: str):
+    agent = VHALAidlAgent()
+    return agent.run(spec)
