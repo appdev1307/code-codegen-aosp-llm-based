@@ -20,6 +20,12 @@ Rules:
 - No placeholders
 - No explanations
 
+IMPORTANT:
+- All file paths MUST be RELATIVE
+- DO NOT generate absolute paths like /etc, /system, /vendor
+- Use AOSP-style relative paths only
+  (e.g. sepolicy/private/vehicle_hal.te)
+
 Output format:
 --- FILE: <relative path> ---
 <file content>
