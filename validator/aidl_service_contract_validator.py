@@ -4,6 +4,12 @@ import re
 def validate_aidl_service_contract(aidl_code: str, service_code: str):
     issues = []
 
+
+    if "interface IVehicle" in aidl and "IVehicle" not in vhal_service:
+        issues.append(
+            "Contract: VHAL service does not implement IVehicle AIDL"
+        )
+
     # ===== 1. Detect AIDL interface name =====
     m = re.search(r'interface\s+(\w+)', aidl_code)
     if not m:

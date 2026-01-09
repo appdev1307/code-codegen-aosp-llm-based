@@ -1,10 +1,10 @@
 def validate_aidl(aidl: str):
     issues = []
 
-    if "IVehicle.aidl" not in aidl:
-        issues.append("AIDL: Missing IVehicle.aidl")
+    if "interface IVehicle" not in aidl:
+        issues.append("AIDL: IVehicle interface missing")
 
-    if "Android.bp" not in aidl:
-        issues.append("AIDL: Missing Android.bp")
+    if "parcelable VehiclePropValue" not in aidl:
+        issues.append("AIDL: VehiclePropValue parcelable missing")
 
     return issues

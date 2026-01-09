@@ -16,4 +16,7 @@ def validate_vhal_service(service_code: str):
     if "VehiclePropValue" not in service_code:
         issues.append("VHAL Service: VehiclePropValue not used")
 
+    if "VehicleHal" not in vhal_service:
+        issues.append("VHAL Service: VehicleHal implementation missing")
+
     return issues

@@ -1,7 +1,7 @@
 from validator.aidl_validator import validate_aidl
 from validator.vhal_service_validator import validate_vhal_service
 from validator.aidl_service_contract_validator import (
-    validate_aidl_service_contract
+    validate_aidl_service_contract,
 )
 
 

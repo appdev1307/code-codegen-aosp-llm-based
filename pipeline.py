@@ -4,7 +4,6 @@ from agents.car_service_agent import generate_car_service
 from agents.selinux_agent import generate_selinux
 from validator.validate_all import validate_all
 
-
 MAX_RETRY = 3
 
 
@@ -45,6 +44,7 @@ MANDATORY:
 - Follow AAOS AIDL Vehicle HAL design
 """
 
+        # === AGENT EXECUTION (CACHED) ===
         if artifacts["aidl"] is None:
             artifacts["aidl"] = generate_vhal_aidl(spec)
 
@@ -57,6 +57,7 @@ MANDATORY:
         if artifacts["sepolicy"] is None:
             artifacts["sepolicy"] = generate_selinux(spec)
 
+        # === VALIDATION ===
         issues = validate_all(
             aidl=artifacts["aidl"],
             vhal_service=artifacts["vhal_service"],
@@ -68,17 +69,27 @@ MANDATORY:
             print("\n[DEBUG] ✅ PIPELINE PASSED", flush=True)
             return
 
-        error_context = "\n".join(f"- {i}" for i in issues)
+        # === PRINT ISSUES (CRITICAL) ===
+        print("\n[DEBUG] ❌ Validation issues:", flush=True)
+        for i, issue in enumerate(issues, 1):
+            print(f"  {i}. {issue}", flush=True)
 
-        # 🎯 SMART INVALIDATION
-        joined = " ".join(issues)
-        if "AIDL" in joined or "IVehicle" in joined:
+        error_context = "\n".join(f"- {i}" for i in issues)
+        joined = " | ".join(issues).upper()
+
+        # === SMART INVALIDATION ===
+        if "AIDL" in joined or "IVEHICLE" in joined:
             artifacts["aidl"] = None
-        if "VehicleService" in joined:
+        if "VHAL SERVICE" in joined or "VEHICLEHAL" in joined:
             artifacts["vhal_service"] = None
-        if "CarService" in joined:
+        if "CARSERVICE" in joined:
             artifacts["car_service"] = None
-        if "SELinux" in joined:
+        if "SELINUX" in joined:
             artifacts["sepolicy"] = None
+
+        # === CONVERGENCE GUARD ===
+        if attempt > 1 and artifacts["aidl"] is None and "AIDL" in joined:
+            print("[DEBUG] AIDL failed repeatedly — stopping early")
+            break
 
     raise RuntimeError("Validation failed after max retries")
