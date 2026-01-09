@@ -1,5 +1,6 @@
 from schemas.hal_spec import HalSpec, PropertySpec
 from agents.architect_agent import ArchitectAgent
+from tools.aosp_layout import ensure_aosp_layout
 
 spec = HalSpec(
     domain="HVAC",
@@ -14,5 +15,7 @@ spec = HalSpec(
         )
     ],
 )
+
+ensure_aosp_layout(spec)
 
 ArchitectAgent().run(spec)

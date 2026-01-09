@@ -1,20 +1,74 @@
+import os
 from llm_client import call_llm
 
-def generate_vhal_aidl(spec):
-    print("[AGENT:AIDL] Generating Vehicle HAL AIDL")
 
-    prompt = f"""
-Generate AAOS Vehicle HAL AIDL for domain {spec.domain}.
+class VHALAidlAgent:
+    def __init__(self):
+        self.name = "VHAL AIDL Agent"
+        self.output_dir = "output/vhal_aidl"
 
-Requirements:
-- AIDL-based Vehicle HAL (Android {spec.aosp_level}+)
+    def build_prompt(self, spec_text: str) -> str:
+        return f"""
+You are an Android Automotive OS architect.
+
+Your task:
+Generate AIDL definitions for Vehicle HAL based strictly on AOSP standards.
+
+Rules:
 - Package: android.hardware.automotive.vehicle
-- IVehicle with get/set
-- VehiclePropValue parcelable
-- Support properties:
-{[p.id for p in spec.properties]}
+- AIDL (Android 12+), NO HIDL
+- IVehicle MUST define:
+    VehiclePropValue get(int propId, int areaId);
+    void set(in VehiclePropValue value);
+- VehiclePropValue MUST be parcelable
+- IVehicleCallback MUST exist
+- No placeholders
+- No explanations
 
-Output REAL AOSP-COMPATIBLE AIDL files.
+Output format:
+--- FILE: <relative path> ---
+<file content>
+
+Specification:
+{spec_text}
 """
 
-    return call_llm(prompt)
+    def run(self, spec_text: str):
+        print(f"[DEBUG] {self.name}: start", flush=True)
+
+        result = call_llm(self.build_prompt(spec_text))
+        if not result.strip():
+            raise RuntimeError("[LLM ERROR] Empty AIDL output")
+
+        os.makedirs(self.output_dir, exist_ok=True)
+        self._write_files(result)
+
+        print(f"[DEBUG] {self.name}: output -> {self.output_dir}", flush=True)
+        print(f"[DEBUG] {self.name}: done", flush=True)
+        return result
+
+    def _write_files(self, text: str):
+        current = None
+        buf = []
+
+        for line in text.splitlines():
+            if line.strip().startswith("--- FILE:"):
+                if current:
+                    self._flush(current, buf)
+                current = line.replace("--- FILE:", "").replace("---", "").strip()
+                buf = []
+            else:
+                buf.append(line)
+
+        if current:
+            self._flush(current, buf)
+
+    def _flush(self, rel, buf):
+        path = os.path.join(self.output_dir, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("\n".join(buf))
+
+
+def generate_vhal_aidl(spec):
+    return VHALAidlAgent().run(spec.to_llm_spec())

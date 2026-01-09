@@ -11,22 +11,9 @@ class ArchitectAgent:
         print("[ARCHITECT] AAOS HAL Architect Agent START")
         print("[ARCHITECT] ================================")
 
-        print("[ARCHITECT] Input HalSpec received")
-        print(f"[ARCHITECT]   Domain      : {spec.domain}")
-        print(f"[ARCHITECT]   AOSP Level  : {spec.aosp_level}")
-        print(f"[ARCHITECT]   Vendor      : {spec.vendor}")
-        print(f"[ARCHITECT]   Properties  : {len(spec.properties)}")
+        print("[ARCHITECT] Input HAL specification:")
+        print(spec.to_llm_spec())
 
-        for p in spec.properties:
-            print("[ARCHITECT]   └─ Property:")
-            print(f"[ARCHITECT]        id     = {p.id}")
-            print(f"[ARCHITECT]        type   = {p.type}")
-            print(f"[ARCHITECT]        access = {p.access}")
-            print(f"[ARCHITECT]        areas  = {p.areas}")
-
-        print("[ARCHITECT] Deriving HAL architecture from AOSP standards...")
-
-        # Architecture decision is implicit via agent selection
         print("[ARCHITECT] Dispatching generation agents...")
 
         aidl = generate_vhal_aidl(spec)
