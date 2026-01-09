@@ -11,6 +11,10 @@ class VHALServiceAgent:
         return f"""
 You are a PRINCIPAL Android Automotive OS Vehicle HAL engineer.
 
+You are generating FINAL, PRODUCTION-READY code.
+This code will be compiled directly by AOSP.
+If ANY rule below is violated, the build will FAIL.
+
 Target:
 - Android Automotive OS (Android 12+)
 - AIDL-based Vehicle HAL backend
@@ -21,24 +25,25 @@ Target:
 MANDATORY – DO NOT VIOLATE ANY RULE
 ====================================
 
-1. SERVICE CLASS
-----------------
-- Service class MUST be named:
+1. SERVICE CLASS (CRITICAL)
+--------------------------
+- Service class MUST be named EXACTLY:
     VehicleService
 - Service class MUST inherit EXACTLY from:
     aidl::android::hardware::automotive::vehicle::BnIVehicle
 
-2. NAMESPACE (MANDATORY)
------------------------
-The following namespace MUST appear in code:
-    aidl::android::hardware::automotive::vehicle
+2. NAMESPACE (CRITICAL)
+----------------------
+The following namespace MUST appear in ALL C++ files:
 
-You MUST use:
+    namespace aidl::android::hardware::automotive::vehicle
+
+You MUST also include:
     using namespace aidl::android::hardware::automotive::vehicle;
 
-3. REQUIRED AIDL METHODS
-------------------------
-You MUST implement ALL AIDL methods from IVehicle:
+3. REQUIRED AIDL METHODS (NO EXCEPTION)
+--------------------------------------
+You MUST implement ALL IVehicle methods EXACTLY:
 
 - ndk::ScopedAStatus get(
       int32_t propId,
@@ -50,32 +55,40 @@ You MUST implement ALL AIDL methods from IVehicle:
       const VehiclePropValue& value
   ) override;
 
-4. CALLBACK SUPPORT (CRITICAL)
+4. CALLBACK SUPPORT (MANDATORY)
 ------------------------------
-- IVehicleCallback MUST be referenced
+- IVehicleCallback MUST be included
 - Service MUST:
-  - Store callbacks
-  - Call callback->onChange(...)
-- The literal string "onChange(" MUST exist in service code
+  - Store callbacks internally
+  - Notify callbacks on property change
+- The literal string "onChange(" MUST appear in VehicleService.cpp
 
-5. PROPERTY LOGIC
------------------
+5. PROPERTY LOGIC (REAL IMPLEMENTATION)
+--------------------------------------
 - Implement REAL get/set logic
-- Handle at least ONE property (e.g. VEHICLE_SPEED)
-- Store property internally
-- Use VehiclePropValue correctly
+- Handle at least ONE real property
+  (example: VEHICLE_SPEED)
+- Store property state internally
+- Correctly populate VehiclePropValue
 
 6. THREAD SAFETY (MANDATORY)
-----------------------------
+---------------------------
 - Include <mutex>
 - Declare:
     std::mutex mMutex;
-- Protect get() and set() using:
+- Use:
     std::lock_guard<std::mutex>
+  inside BOTH get() and set()
 
-7. FILES TO GENERATE (ALL REQUIRED)
+7. SERVICE REGISTRATION (CRITICAL)
+---------------------------------
+main.cpp MUST register the service under EXACT name:
+
+    "android.hardware.automotive.vehicle.IVehicle/default"
+
+8. FILES TO GENERATE (ALL REQUIRED)
 ----------------------------------
-You MUST generate ALL files below:
+You MUST generate ALL of the following files:
 
 1. VehicleService.h
 2. VehicleService.cpp
@@ -83,16 +96,17 @@ You MUST generate ALL files below:
 4. Android.bp
 5. vintf_manifest_fragment.xml
 
-8. FORBIDDEN
-------------
+9. FORBIDDEN (ABSOLUTE)
+----------------------
 - NO placeholders
 - NO TODO
 - NO pseudo code
 - NO explanations
 - NO markdown
+- NO comments describing what should be done
 
 ====================================
-OUTPUT FORMAT (STRICT)
+OUTPUT FORMAT (STRICT – NO DEVIATION)
 ====================================
 
 --- FILE: <relative path> ---
@@ -106,8 +120,13 @@ SPECIFICATION
 
     def run(self, spec: str):
         print(f"[DEBUG] {self.name}: start", flush=True)
+
+        os.makedirs(self.output_dir, exist_ok=True)
+
         result = call_llm(self.build_prompt(spec))
         self._write_files(result)
+
+        print(f"[DEBUG] {self.name}: output -> {self.output_dir}", flush=True)
         print(f"[DEBUG] {self.name}: done", flush=True)
         return result
 
