@@ -11,9 +11,9 @@ class VHALServiceAgent:
         return f"""
 You are a PRINCIPAL Android Automotive OS Vehicle HAL engineer.
 
-You are generating FINAL, PRODUCTION-READY code.
+You are generating FINAL, PRODUCTION-READY AOSP code.
 This code will be compiled directly by AOSP.
-If ANY rule below is violated, the build will FAIL.
+Any deviation from rules below is a BUILD FAILURE.
 
 Target:
 - Android Automotive OS (Android 12+)
@@ -22,27 +22,32 @@ Target:
 - Package: android.hardware.automotive.vehicle
 
 ====================================
-MANDATORY – DO NOT VIOLATE ANY RULE
+MANDATORY – ABSOLUTE REQUIREMENTS
 ====================================
 
 1. SERVICE CLASS (CRITICAL)
 --------------------------
 - Service class MUST be named EXACTLY:
-    VehicleService
+    VehicleHal
 - Service class MUST inherit EXACTLY from:
     aidl::android::hardware::automotive::vehicle::BnIVehicle
 
-2. NAMESPACE (CRITICAL)
+2. INTERFACE REFERENCE (CRITICAL)
+--------------------------------
+- IVehicle MUST be explicitly referenced in code
+- BnIVehicle MUST be included and used
+
+3. NAMESPACE (CRITICAL)
 ----------------------
-The following namespace MUST appear in ALL C++ files:
+ALL C++ files MUST reference this namespace:
 
-    namespace aidl::android::hardware::automotive::vehicle
+    aidl::android::hardware::automotive::vehicle
 
-You MUST also include:
+You MUST include:
     using namespace aidl::android::hardware::automotive::vehicle;
 
-3. REQUIRED AIDL METHODS (NO EXCEPTION)
---------------------------------------
+4. REQUIRED AIDL METHODS (EXACT SIGNATURES)
+------------------------------------------
 You MUST implement ALL IVehicle methods EXACTLY:
 
 - ndk::ScopedAStatus get(
@@ -55,23 +60,21 @@ You MUST implement ALL IVehicle methods EXACTLY:
       const VehiclePropValue& value
   ) override;
 
-4. CALLBACK SUPPORT (MANDATORY)
-------------------------------
+5. CALLBACK SUPPORT (CRITICAL)
+-----------------------------
 - IVehicleCallback MUST be included
-- Service MUST:
-  - Store callbacks internally
-  - Notify callbacks on property change
-- The literal string "onChange(" MUST appear in VehicleService.cpp
+- Service MUST store registered callbacks
+- Service MUST notify callbacks when property changes
+- The literal string "onPropertyChanged(" MUST appear in VehicleHal implementation
 
-5. PROPERTY LOGIC (REAL IMPLEMENTATION)
+6. PROPERTY LOGIC (REAL IMPLEMENTATION)
 --------------------------------------
 - Implement REAL get/set logic
-- Handle at least ONE real property
-  (example: VEHICLE_SPEED)
+- Handle at least ONE real property (e.g. VEHICLE_SPEED)
 - Store property state internally
-- Correctly populate VehiclePropValue
+- Populate VehiclePropValue correctly
 
-6. THREAD SAFETY (MANDATORY)
+7. THREAD SAFETY (MANDATORY)
 ---------------------------
 - Include <mutex>
 - Declare:
@@ -80,33 +83,33 @@ You MUST implement ALL IVehicle methods EXACTLY:
     std::lock_guard<std::mutex>
   inside BOTH get() and set()
 
-7. SERVICE REGISTRATION (CRITICAL)
+8. SERVICE REGISTRATION (CRITICAL)
 ---------------------------------
-main.cpp MUST register the service under EXACT name:
+main.cpp MUST register service under EXACT name:
 
     "android.hardware.automotive.vehicle.IVehicle/default"
 
-8. FILES TO GENERATE (ALL REQUIRED)
+9. FILES TO GENERATE (ALL REQUIRED)
 ----------------------------------
-You MUST generate ALL of the following files:
+You MUST generate ALL files:
 
-1. VehicleService.h
-2. VehicleService.cpp
+1. VehicleHal.h
+2. VehicleHal.cpp
 3. main.cpp
 4. Android.bp
 5. vintf_manifest_fragment.xml
 
-9. FORBIDDEN (ABSOLUTE)
-----------------------
+10. FORBIDDEN (ABSOLUTE)
+-----------------------
 - NO placeholders
 - NO TODO
 - NO pseudo code
 - NO explanations
 - NO markdown
-- NO comments describing what should be done
+- NO comments explaining intent
 
 ====================================
-OUTPUT FORMAT (STRICT – NO DEVIATION)
+OUTPUT FORMAT (STRICT)
 ====================================
 
 --- FILE: <relative path> ---
