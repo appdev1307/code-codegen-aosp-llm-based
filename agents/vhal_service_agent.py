@@ -9,65 +9,98 @@ class VHALServiceAgent:
 
     def build_prompt(self, spec: str) -> str:
         return f"""
-You are a senior Android Automotive OS HAL engineer.
+You are a PRINCIPAL Android Automotive OS Vehicle HAL engineer.
 
 Target:
-- Android Automotive Vehicle HAL
-- AIDL backend (Android 12+)
-- C++ implementation
-- Namespace: android.hardware.automotive.vehicle
+- Android Automotive OS (Android 12+)
+- AIDL-based Vehicle HAL backend
+- C++ (NDK Binder)
+- Package: android.hardware.automotive.vehicle
 
-You are implementing the **AIDL Vehicle HAL backend**.
+====================================
+MANDATORY – DO NOT VIOLATE ANY RULE
+====================================
 
-======================
-MANDATORY REQUIREMENTS
-======================
+1. SERVICE CLASS
+----------------
+- Service class MUST be named:
+    VehicleService
+- Service class MUST inherit EXACTLY from:
+    aidl::android::hardware::automotive::vehicle::BnIVehicle
 
-You MUST generate REAL, COMPILABLE C++ code that satisfies ALL rules below.
+2. NAMESPACE (MANDATORY)
+-----------------------
+The following namespace MUST appear in code:
+    aidl::android::hardware::automotive::vehicle
 
-1. The service class MUST be named:
-   - VehicleHal
-   - It MUST inherit from:
-     BnIVehicle
+You MUST use:
+    using namespace aidl::android::hardware::automotive::vehicle;
 
-2. The service MUST implement at least these methods:
-   - ndk::ScopedAStatus get(int32_t propId, int32_t areaId, VehiclePropValue* outValue)
-   - ndk::ScopedAStatus set(const VehiclePropValue& value)
+3. REQUIRED AIDL METHODS
+------------------------
+You MUST implement ALL AIDL methods from IVehicle:
 
-3. You MUST:
-   - Include <mutex>
-   - Declare std::mutex mLock;
-   - Use std::lock_guard<std::mutex> inside get() and set()
+- ndk::ScopedAStatus get(
+      int32_t propId,
+      int32_t areaId,
+      VehiclePropValue* _aidl_return
+  ) override;
 
-4. VehiclePropValue MUST be:
-   - Used as defined by AIDL
-   - Read/write at least ONE property (e.g. VEHICLE_SPEED)
+- ndk::ScopedAStatus set(
+      const VehiclePropValue& value
+  ) override;
 
-5. Namespace usage MUST include:
-   using aidl::android::hardware::automotive::vehicle::VehiclePropValue;
-   using aidl::android::hardware::automotive::vehicle::BnIVehicle;
+4. CALLBACK SUPPORT (CRITICAL)
+------------------------------
+- IVehicleCallback MUST be referenced
+- Service MUST:
+  - Store callbacks
+  - Call callback->onChange(...)
+- The literal string "onChange(" MUST exist in service code
 
-6. Files to generate:
-   - VehicleService.h
-   - VehicleService.cpp
-   - main.cpp
-   - Android.bp
-   - vintf_manifest_fragment.xml
+5. PROPERTY LOGIC
+-----------------
+- Implement REAL get/set logic
+- Handle at least ONE property (e.g. VEHICLE_SPEED)
+- Store property internally
+- Use VehiclePropValue correctly
 
-7. NO placeholders
-8. NO explanations
-9. Code MUST look like real AOSP HAL code
+6. THREAD SAFETY (MANDATORY)
+----------------------------
+- Include <mutex>
+- Declare:
+    std::mutex mMutex;
+- Protect get() and set() using:
+    std::lock_guard<std::mutex>
 
-======================
+7. FILES TO GENERATE (ALL REQUIRED)
+----------------------------------
+You MUST generate ALL files below:
+
+1. VehicleService.h
+2. VehicleService.cpp
+3. main.cpp
+4. Android.bp
+5. vintf_manifest_fragment.xml
+
+8. FORBIDDEN
+------------
+- NO placeholders
+- NO TODO
+- NO pseudo code
+- NO explanations
+- NO markdown
+
+====================================
 OUTPUT FORMAT (STRICT)
-======================
+====================================
 
 --- FILE: <relative path> ---
 <file content>
 
-======================
+====================================
 SPECIFICATION
-======================
+====================================
 {spec}
 """
 
@@ -83,7 +116,7 @@ SPECIFICATION
         buf = []
 
         for line in text.splitlines():
-            if line.startswith("--- FILE:"):
+            if line.strip().startswith("--- FILE:"):
                 if current:
                     self._flush(current, buf)
                 current = line.replace("--- FILE:", "").replace("---", "").strip()
