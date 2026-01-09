@@ -1,14 +1,42 @@
 import re
+from typing import List, Dict
+
+
+def _parse_aidl_methods(aidl_code: str) -> List[Dict]:
+    """
+    Extract method signatures from AIDL.
+    Example:
+      VehiclePropValue get(int propId, int areaId);
+      void set(in VehiclePropValue value);
+    """
+    methods = []
+    pattern = re.compile(
+        r'\b(?P<ret>\w+)\s+'
+        r'(?P<name>\w+)\s*'
+        r'\((?P<params>[^)]*)\)\s*;'
+    )
+
+    for m in pattern.finditer(aidl_code):
+        params = [
+            p.strip().split()[-1]
+            for p in m.group("params").split(",")
+            if p.strip()
+        ]
+        methods.append({
+            "name": m.group("name"),
+            "return": m.group("ret"),
+            "params": params,
+        })
+    return methods
 
 
 def validate_aidl_service_contract(aidl_code: str, service_code: str):
     issues = []
 
-    # Defensive: empty artifacts
     if not aidl_code or not service_code:
         return issues
 
-    # ===== 1. Detect AIDL interface name =====
+    # ===== Interface name =====
     m = re.search(r'\binterface\s+(\w+)\b', aidl_code)
     if not m:
         issues.append("Contract: Cannot find AIDL interface name")
@@ -16,36 +44,34 @@ def validate_aidl_service_contract(aidl_code: str, service_code: str):
 
     interface = m.group(1)
 
-    # ===== 2. Service must inherit from generated Bn interface =====
+    # ===== Inheritance check =====
     if f"Bn{interface}" not in service_code:
         issues.append(
             f"Contract: Service does not inherit from Bn{interface}"
         )
 
-    # ===== 3. Extract AIDL method names =====
-    aidl_methods = re.findall(
-        r'\b(?:oneway\s+)?\w+\s+(\w+)\s*\([^)]*\)\s*;',
-        aidl_code
-    )
-
+    # ===== Parse AIDL methods =====
+    aidl_methods = _parse_aidl_methods(aidl_code)
     if not aidl_methods:
         issues.append("Contract: No methods found in AIDL interface")
         return issues
 
-    # ===== 4. Each AIDL method must be implemented =====
-    for method in aidl_methods:
-        if not re.search(rf'\b{method}\s*\(', service_code):
+    # ===== Match each method signature =====
+    for m in aidl_methods:
+        name = m["name"]
+        # loose C++ signature match but strict name check
+        if not re.search(rf'\b{name}\s*\(', service_code):
             issues.append(
-                f"Contract: Service missing implementation of '{method}()'"
+                f"Contract: Service missing implementation of '{name}()'"
             )
 
-    # ===== 5. VehiclePropValue consistency =====
+    # ===== VehiclePropValue consistency =====
     if "VehiclePropValue" in aidl_code and "VehiclePropValue" not in service_code:
         issues.append(
             "Contract: VehiclePropValue used in AIDL but not in service"
         )
 
-    # ===== 6. AIDL vehicle namespace sanity =====
+    # ===== Namespace sanity =====
     if "aidl::android::hardware::automotive::vehicle" not in service_code:
         issues.append(
             "Contract: Service missing AIDL vehicle namespace"
