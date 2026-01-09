@@ -1,21 +1,17 @@
-from agents.base_agent import BaseAgent
+from llm_client import call_llm
 
-SYSTEM_PROMPT = """
-You are an Android Automotive CarService framework engineer.
-Generate Java code integrated with CarService.
-Ensure permission enforcement and CTS compliance.
-MANDATORY:
-- MUST use android.car.hardware.property.CarPropertyManager
-- MUST call getCarPropertyManager()
-- MUST enforce permission via enforceCallingPermission()
-- DO NOT use direct HAL access
+def generate_car_service(spec):
+    print("[AGENT:CARSVC] Generating CarService integration")
+
+    prompt = f"""
+Generate Android Framework CarService code.
+
+Domain: {spec.domain}
+Properties: {[p.id for p in spec.properties]}
+
+Requirements:
+- Use CarPropertyManager
+- Framework-side listener
 """
 
-_agent = BaseAgent(
-    name="CarService Agent",
-    system_prompt=SYSTEM_PROMPT,
-    output_file="CarService.java"
-)
-
-def generate_car_service(spec: str):
-    return _agent.run(spec)
+    return call_llm(prompt)
