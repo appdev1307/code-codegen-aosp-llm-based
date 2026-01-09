@@ -18,6 +18,17 @@ Target:
 
 Generate COMPLETE, REALISTIC, COMPILABLE AIDL artifacts.
 
+MANDATORY AIDL CONTENT:
+- IVehicle MUST declare EXACTLY these methods (no variations):
+  - VehiclePropValue get(int propId, int areaId);
+  - void set(in VehiclePropValue value);
+- Method signatures MUST end with semicolon ';'
+- Do NOT use 'oneway'
+- Do NOT omit return types
+- VehiclePropValue MUST be declared as parcelable
+- Use package android.hardware.automotive.vehicle
+
+
 You MUST generate the following files:
 1. android/hardware/automotive/vehicle/IVehicle.aidl
 2. android/hardware/automotive/vehicle/IVehicleCallback.aidl
