@@ -1,18 +1,43 @@
+# agents/vhal_service_agent.py
+import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Tuple, Optional
 
 from llm_client import call_llm
-from tools.safe_writer import SafeWriter
+
+
+FILE_HEADER_RE_LIST = [
+    # --- FILE: path ---
+    re.compile(r"^\s*---\s*FILE\s*:\s*(?P<path>.+?)\s*---\s*$", re.IGNORECASE),
+    # --- FILE path ---
+    re.compile(r"^\s*---\s*FILE\s+(?P<path>.+?)\s*---\s*$", re.IGNORECASE),
+    # FILE: path
+    re.compile(r"^\s*FILE\s*:\s*(?P<path>.+?)\s*$", re.IGNORECASE),
+]
+
+
+CODE_FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9_-]*\s*$")
+CODE_FENCE_END_RE = re.compile(r"^\s*```\s*$")
+
+
+@dataclass
+class ParsedFile:
+    rel_path: str
+    content: str
 
 
 class VHALServiceAgent:
     def __init__(self, output_dir: str = "output/vhal_service"):
         self.name = "VHAL C++ Service Agent"
         self.output_dir = output_dir
-        self.writer = SafeWriter(self.output_dir)
 
+    # -----------------------------
+    # Prompting
+    # -----------------------------
     def build_prompt(self, spec_text: str) -> str:
+        # Make the formatting rules extremely explicit.
         return f"""
 You are an AAOS Vehicle HAL C++ engineer.
 
@@ -31,111 +56,173 @@ Requirements:
 - Register service as:
   android.hardware.automotive.vehicle.IVehicle/default
 
-Rules:
-- No placeholders.
-- No explanations.
+ABSOLUTE OUTPUT RULES (MANDATORY):
+- Output ONLY file blocks.
+- Each file MUST be wrapped exactly like:
 
-IMPORTANT:
-- ALL file paths MUST be RELATIVE
-- DO NOT generate absolute paths (/system, /vendor, /etc, /)
-- DO NOT use path traversal (..)
-- Use AOSP-style relative paths only
-
-Output format:
 --- FILE: <relative path> ---
 <file content>
+
+- Do NOT use markdown. Do NOT use ``` fences.
+- Do NOT add explanations, headings, or prose.
+- Use forward slashes in paths.
+- Provide all required includes and namespaces. No placeholders.
 
 Specification:
 {spec_text}
 """.lstrip()
 
+    def build_reformat_prompt(self, bad_output: str) -> str:
+        # Second attempt: do NOT change code, only wrap into correct blocks.
+        return f"""
+Reformat the following content into STRICT file blocks.
+
+RULES:
+- Output ONLY blocks in this exact structure:
+
+--- FILE: <relative path> ---
+<file content>
+
+- No markdown, no ``` fences, no commentary.
+- Do NOT modify code content except adding missing file headers.
+- If multiple files are present, split them into separate blocks.
+- If it is clearly one file, choose a reasonable path under:
+  hardware/interfaces/automotive/vehicle/impl/
+
+CONTENT TO REFORMAT:
+{bad_output}
+""".lstrip()
+
+    # -----------------------------
+    # Parsing + writing
+    # -----------------------------
+    def _strip_code_fences(self, text: str) -> str:
+        # If model mistakenly used ``` fences, remove them safely.
+        lines = text.splitlines()
+        out: List[str] = []
+        in_fence = False
+        for line in lines:
+            if CODE_FENCE_RE.match(line) and not in_fence:
+                in_fence = True
+                continue
+            if CODE_FENCE_END_RE.match(line) and in_fence:
+                in_fence = False
+                continue
+            out.append(line)
+        return "\n".join(out)
+
+    def _match_header(self, line: str) -> Optional[str]:
+        for rx in FILE_HEADER_RE_LIST:
+            m = rx.match(line)
+            if m:
+                return m.group("path").strip()
+        return None
+
+    def parse_llm_files(self, llm_text: str) -> List[ParsedFile]:
+        if not llm_text or not llm_text.strip():
+            return []
+
+        text = self._strip_code_fences(llm_text).strip()
+        lines = text.splitlines()
+
+        files: List[ParsedFile] = []
+        current_path: Optional[str] = None
+        current_buf: List[str] = []
+
+        def flush():
+            nonlocal current_path, current_buf
+            if current_path is None:
+                return
+            content = "\n".join(current_buf).rstrip() + "\n"
+            files.append(ParsedFile(rel_path=current_path, content=content))
+            current_path = None
+            current_buf = []
+
+        for line in lines:
+            maybe_path = self._match_header(line)
+            if maybe_path is not None:
+                # new file header encountered
+                flush()
+                current_path = maybe_path
+                current_buf = []
+            else:
+                if current_path is not None:
+                    current_buf.append(line)
+
+        flush()
+
+        # Filter out empty-path or empty-content blocks (but keep small files)
+        cleaned: List[ParsedFile] = []
+        for f in files:
+            p = f.rel_path.strip().lstrip("./")
+            if not p:
+                continue
+            cleaned.append(ParsedFile(rel_path=p, content=f.content))
+
+        return cleaned
+
+    def _safe_join_output(self, rel_path: str) -> Path:
+        # Prevent path traversal
+        rel_path = rel_path.replace("\\", "/").lstrip("/")
+        out_root = Path(self.output_dir).resolve()
+        full = (out_root / rel_path).resolve()
+        if out_root not in full.parents and full != out_root:
+            raise RuntimeError(f"[SECURITY] Refusing to write outside output_dir: {rel_path}")
+        return full
+
+    def write_files(self, parsed_files: List[ParsedFile]) -> List[Path]:
+        os.makedirs(self.output_dir, exist_ok=True)
+        written: List[Path] = []
+        for f in parsed_files:
+            full_path = self._safe_join_output(f.rel_path)
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(f.content, encoding="utf-8")
+            written.append(full_path)
+        return written
+
+    def dump_raw(self, text: str, name: str = "vhal_service_raw.txt") -> Path:
+        os.makedirs(self.output_dir, exist_ok=True)
+        p = Path(self.output_dir) / name
+        p.write_text(text or "", encoding="utf-8")
+        return p
+
+    # -----------------------------
+    # Main entry
+    # -----------------------------
     def run(self, spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
 
         prompt = self.build_prompt(spec_text)
-        result = call_llm(prompt)
-        if not result or not result.strip():
-            raise RuntimeError("[LLM ERROR] Empty VHAL service output")
+        result1 = call_llm(prompt) or ""
+        self.dump_raw(result1, "vhal_service_llm_raw_attempt1.txt")
 
-        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
-        written = self._write_files(result)
+        files = self.parse_llm_files(result1)
+        if not files:
+            # Auto-retry: ask model to ONLY reformat into file blocks
+            print(f"[WARN] {self.name}: no file blocks found, retrying with reformat prompt", flush=True)
+            prompt2 = self.build_reformat_prompt(result1.strip() or "(empty)")
+            result2 = call_llm(prompt2) or ""
+            self.dump_raw(result2, "vhal_service_llm_raw_attempt2.txt")
+            files = self.parse_llm_files(result2)
 
-        if written == 0:
-            # Fail fast: if the LLM didn't follow the required file format,
-            # don't silently do nothing.
+        if not files:
+            raw_path = Path(self.output_dir) / "vhal_service_llm_raw_attempt2.txt"
             raise RuntimeError(
-                "[FORMAT ERROR] No files found in LLM output. "
-                "Expected blocks like: --- FILE: <relative path> ---"
+                "[FORMAT ERROR] No files found in LLM output.\n"
+                "Expected blocks like: --- FILE: <relative path> ---\n"
+                f"Raw outputs dumped to:\n"
+                f"- {Path(self.output_dir) / 'vhal_service_llm_raw_attempt1.txt'}\n"
+                f"- {raw_path}\n"
+                "Tip: Open the raw file to see what the model returned."
             )
 
-        print(f"[DEBUG] {self.name}: output -> {self.output_dir} (files={written})", flush=True)
+        written = self.write_files(files)
+        print(f"[DEBUG] {self.name}: wrote {len(written)} files into {self.output_dir}", flush=True)
         print(f"[DEBUG] {self.name}: done", flush=True)
-        return result
 
-    def _write_files(self, text: str) -> int:
-        """
-        Parse LLM output of the form:
-          --- FILE: path ---
-          <content>
-          --- FILE: other/path ---
-          <content>
-        and write them under output_dir.
-        """
-        file_count = 0
-        current_path: Optional[str] = None
-        buf: list[str] = []
-
-        for line in text.splitlines():
-            m = re.match(r"^\s*---\s*FILE:\s*(.+?)\s*---\s*$", line)
-            if m:
-                if current_path is not None:
-                    self._flush(current_path, buf)
-                    file_count += 1
-                current_path = m.group(1).strip()
-                buf = []
-            else:
-                buf.append(line)
-
-        if current_path is not None:
-            self._flush(current_path, buf)
-            file_count += 1
-
-        return file_count
-
-    def _flush(self, rel_path: str, buf: list[str]) -> None:
-        # Keep your existing sanitizer (already correct)
-        safe_rel = self._sanitize_rel_path(rel_path)
-
-        # Write using shared SafeWriter (central enforcement)
-        content = "\n".join(buf).rstrip() + "\n"
-        self.writer.write(safe_rel, content)
-
-    @staticmethod
-    def _sanitize_rel_path(rel_path: str) -> str:
-        """
-        Prevent path traversal and normalize separators.
-        - Disallow absolute paths
-        - Disallow '..' segments
-        - Strip empty or '.' segments
-        """
-        p = Path(rel_path.replace("\\", "/"))
-        if p.is_absolute():
-            raise ValueError(f"Unsafe FILE path (absolute): {rel_path}")
-
-        parts = []
-        for part in p.parts:
-            if part in ("", "."):
-                continue
-            if part == "..":
-                raise ValueError(f"Unsafe FILE path (path traversal): {rel_path}")
-            parts.append(part)
-
-        if not parts:
-            raise ValueError(f"Unsafe FILE path (empty): {rel_path}")
-
-        return str(Path(*parts))
+        return "\n".join(str(p) for p in written)
 
 
-def generate_vhal_service(spec) -> str:
-    # spec is expected to implement to_llm_spec()
-    return VHALServiceAgent().run(spec.to_llm_spec())
+# Backward-compatible helper if your architect imports generate_vhal_service(...)
+def generate_vhal_service(spec_text: str) -> str:
+    return VHALServiceAgent().run(spec_text)
