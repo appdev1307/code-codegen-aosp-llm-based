@@ -11,22 +11,23 @@ class SelinuxAgent:
         return f"""
 You are an Android SELinux policy expert.
 
-Generate SELinux rules for Vehicle HAL service.
+Generate SELinux rules for an Android Automotive Vehicle HAL service.
 
 Rules:
-- Allow binder communication
-- Define service domain
-- Follow AOSP conventions
+- Follow AOSP SELinux conventions
+- Define service domain and type
+- Allow required binder communication
 - No placeholders
 - No explanations
 
 IMPORTANT:
-- All file paths MUST be RELATIVE
-- DO NOT generate absolute paths like /etc, /system, /vendor
+- ALL file paths MUST be RELATIVE
+- DO NOT generate absolute paths (/, /etc, /system, /vendor)
 - Use AOSP-style relative paths only
   (e.g. sepolicy/private/vehicle_hal.te)
 
-Output format:
+Output format EXACTLY:
+
 --- FILE: <relative path> ---
 <file content>
 
@@ -64,8 +65,14 @@ Specification:
             self._flush(current, buf)
 
     def _flush(self, rel, buf):
+        # 🔒 CRITICAL SAFETY GUARDS
+        rel = rel.lstrip("/")              # prevent absolute paths
+        if ".." in rel:
+            raise RuntimeError(f"Invalid relative path from LLM: {rel}")
+
         path = os.path.join(self.output_dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+
         with open(path, "w") as f:
             f.write("\n".join(buf))
 
