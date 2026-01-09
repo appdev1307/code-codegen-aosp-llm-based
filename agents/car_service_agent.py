@@ -1,11 +1,12 @@
-import os
 from llm_client import call_llm
+from tools.safe_writer import SafeWriter
 
 
 class CarServiceAgent:
     def __init__(self):
         self.name = "Car Service Agent"
         self.output_dir = "output/car_service"
+        self.writer = SafeWriter(self.output_dir)
 
     def build_prompt(self, spec_text: str) -> str:
         return f"""
@@ -16,9 +17,16 @@ Generate framework-side CarService integration for Vehicle HAL.
 Rules:
 - Use CarPropertyManager
 - Reflect properties defined in HAL
-- Java code
+- Java code only
+- Follow AOSP framework conventions
 - No placeholders
 - No explanations
+
+IMPORTANT:
+- All file paths MUST be RELATIVE
+- DO NOT generate absolute paths
+- Use AOSP-style paths
+  (e.g. frameworks/base/services/car/... )
 
 Output format:
 --- FILE: <relative path> ---
@@ -35,7 +43,6 @@ Specification:
         if not result.strip():
             raise RuntimeError("[LLM ERROR] Empty CarService output")
 
-        os.makedirs(self.output_dir, exist_ok=True)
         self._write_files(result)
 
         print(f"[DEBUG] {self.name}: done", flush=True)
@@ -49,7 +56,11 @@ Specification:
             if line.strip().startswith("--- FILE:"):
                 if current:
                     self._flush(current, buf)
-                current = line.replace("--- FILE:", "").replace("---", "").strip()
+                current = (
+                    line.replace("--- FILE:", "")
+                    .replace("---", "")
+                    .strip()
+                )
                 buf = []
             else:
                 buf.append(line)
@@ -58,10 +69,7 @@ Specification:
             self._flush(current, buf)
 
     def _flush(self, rel, buf):
-        path = os.path.join(self.output_dir, rel)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write("\n".join(buf))
+        self.writer.write(rel, "\n".join(buf))
 
 
 def generate_car_service(spec):

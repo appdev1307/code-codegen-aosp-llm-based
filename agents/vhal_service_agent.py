@@ -1,33 +1,23 @@
-import os
 from llm_client import call_llm
+from tools.safe_writer import SafeWriter
 
 
-class VHALServiceAgent:
+class VhalServiceAgent:
     def __init__(self):
-        self.name = "VHAL C++ Service Agent"
-        self.output_dir = "output/vhal_service"
+        self.name = "VHAL Service Agent"
+        self.output_dir = "output/vhal"
+        self.writer = SafeWriter(self.output_dir)
 
     def build_prompt(self, spec_text: str) -> str:
         return f"""
-You are an AAOS Vehicle HAL C++ engineer.
+You are an Android Automotive VHAL service developer.
 
-Target:
-- Android Automotive OS
-- AIDL-based Vehicle HAL backend
-- C++ NDK Binder
-- Android 12+
+Generate VHAL service implementation.
 
-Requirements:
-- Implement BnIVehicle
-- Implement get() and set()
-- Implement property storage
-- Implement callback notification
-- Thread-safe
-- Register service as:
-  android.hardware.automotive.vehicle.IVehicle/default
-
-No placeholders.
-No explanations.
+Rules:
+- Follow AOSP AAOS architecture
+- No explanations
+- No placeholders
 
 Output format:
 --- FILE: <relative path> ---
@@ -44,10 +34,8 @@ Specification:
         if not result.strip():
             raise RuntimeError("[LLM ERROR] Empty VHAL service output")
 
-        os.makedirs(self.output_dir, exist_ok=True)
         self._write_files(result)
 
-        print(f"[DEBUG] {self.name}: output -> {self.output_dir}", flush=True)
         print(f"[DEBUG] {self.name}: done", flush=True)
         return result
 
@@ -59,7 +47,11 @@ Specification:
             if line.strip().startswith("--- FILE:"):
                 if current:
                     self._flush(current, buf)
-                current = line.replace("--- FILE:", "").replace("---", "").strip()
+                current = (
+                    line.replace("--- FILE:", "")
+                    .replace("---", "")
+                    .strip()
+                )
                 buf = []
             else:
                 buf.append(line)
@@ -68,11 +60,8 @@ Specification:
             self._flush(current, buf)
 
     def _flush(self, rel, buf):
-        path = os.path.join(self.output_dir, rel)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write("\n".join(buf))
+        self.writer.write(rel, "\n".join(buf))
 
 
 def generate_vhal_service(spec):
-    return VHALServiceAgent().run(spec.to_llm_spec())
+    return VhalServiceAgent().run(spec.to_llm_spec())
