@@ -5,6 +5,34 @@ from typing import Any, Dict, List, Optional
 from schemas.hal_spec import HalSpec, PropertySpec, Domain, PropType, Access
 
 
+import re
+
+def _strip_yaml_fences(text: str) -> str:
+    """
+    Removes Markdown code fences like:
+      ```yaml
+      ...
+      ```
+    and returns raw YAML content.
+    """
+    if not text:
+        return text
+
+    s = text.strip()
+
+    # If it's fenced, extract the inner content
+    if s.startswith("```"):
+        # Remove opening fence line (``` or ```yaml)
+        s = re.sub(r"^```[a-zA-Z0-9_-]*\s*\n", "", s)
+        # Remove closing fence
+        s = re.sub(r"\n```$", "", s.strip())
+        return s.strip()
+
+    # Also handle accidental inline fences anywhere
+    s = s.replace("```yaml", "").replace("```", "")
+    return s.strip()
+
+
 def _require(d: Dict[str, Any], key: str, ctx: str) -> Any:
     if key not in d:
         raise ValueError(f"[YAML SPEC ERROR] Missing required key '{key}' in {ctx}")
@@ -94,6 +122,7 @@ def load_hal_spec_from_yaml_text(yaml_text: str) -> HalSpec:
     except Exception as e:
         raise RuntimeError("Missing dependency: PyYAML. Install with: pip install pyyaml") from e
 
+    yaml_text = _strip_yaml_fences(yaml_text)
     doc = yaml.safe_load(yaml_text)
     if not isinstance(doc, dict):
         raise ValueError("[YAML SPEC ERROR] YAML root must be a mapping/object")

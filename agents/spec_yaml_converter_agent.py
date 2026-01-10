@@ -17,6 +17,13 @@ class SpecYamlConverterAgent:
         return f"""
 You are an automotive system specification normalizer.
 
+ABSOLUTE OUTPUT RULES:
+- Output YAML ONLY
+- Do NOT wrap output in markdown code fences
+- Do NOT output any backtick characters
+- The first non-empty line MUST be: spec_version:
+- No explanation text, no headings, no bullet lists outside YAML
+
 TASK:
 Convert the provided Simple Spec into STRICT YAML ONLY.
 
@@ -33,27 +40,20 @@ properties: list of properties
 
 Each properties[] item MUST include:
 - name: <string> (use Property ID string as name)
-- type: INT|FLOAT|BOOLEAN (MUST be one of these; map INT32/INT64/INTEGER -> INT)
-- access: READ|WRITE|READ_WRITE (MUST be one of these)
+- type: INT|FLOAT|BOOLEAN (map INT32/INT64/INTEGER -> INT)
+- access: READ|WRITE|READ_WRITE
 - areas: YAML list of strings (if GLOBAL or not provided -> [])
 
-If a Range is provided like:
-  Range: 0..3 step 1
-then include:
+If a Range is provided like "0..3 step 1", include:
 constraints:
   min: 0
   max: 3
   step: 1
 
-OUTPUT RULES (MANDATORY):
-- Output YAML ONLY
-- No markdown, no ``` fences, no explanation
-- Use 2-space indentation
-- Ensure valid YAML parsable by PyYAML
-
 Simple Spec:
 {simple_spec_text}
 """.lstrip()
+
 
     def run(self, simple_spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
