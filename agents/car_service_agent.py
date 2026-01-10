@@ -32,13 +32,11 @@ class CarServiceAgent:
         return f"--- FILE: {rel_path} ---\n{content}"
 
     def _render_car_hvac_service(self, cloud_settable_props) -> str:
-        # Java string; no placeholders; compiles as standalone class in that package
-        props_array = ", ".join([f"\"{p}\"" for p in cloud_settable_props])
+        props_array = ", ".join(['"%s"' % p for p in cloud_settable_props])
 
-        return f"""\
+        template = """\
 package com.android.server.car;
 
-import android.car.hardware.CarPropertyValue;
 import android.car.hardware.property.CarPropertyManager;
 import android.content.Context;
 import android.os.Handler;
@@ -52,17 +50,19 @@ import java.util.Set;
 
 /**
  * Framework-side HVAC integration with SDV cloud gating.
+ *
+ * NOTE:
+ * This class demonstrates policy enforcement gates (consent + stationary) for cloud-initiated sets.
+ * OEM glue should map propertyName -> VehiclePropertyIds and perform the actual CarPropertyManager set call.
  */
 public final class CarHvacService {
     private static final String TAG = "CarHvacService";
 
-    // User consent gate (toggleable by OEM UX or provisioning).
-    // 1 = consented, 0 = not consented.
+    // User consent gate (1 = consented, 0 = not consented).
     private static final String CONSENT_KEY = "sdv_cloud_climate_consent";
 
-    // Cloud-settable properties in this build (from spec.sdv.cloud_control.allowed).
     private static final Set<String> CLOUD_SETTABLE = new HashSet<>(
-            Arrays.asList({props_array})
+            Arrays.asList({cloud_props})
     );
 
     private final Context mContext;
@@ -70,46 +70,35 @@ public final class CarHvacService {
     private final HandlerThread mThread;
     private final Handler mHandler;
 
+    // Provided by OEM glue (e.g., VehicleStateService) for stationary gating.
     private volatile float mVehicleSpeedMps = 0.0f;
 
     public CarHvacService(Context context, CarPropertyManager carPropertyManager) {
         mContext = context;
         mCarPropertyManager = carPropertyManager;
-
         mThread = new HandlerThread("CarHvacService");
         mThread.start();
         mHandler = new Handler(mThread.getLooper());
     }
 
     public void init() {
-        // Optional: subscribe to vehicle speed for "vehicle_stationary" gating.
-        // If speed subscription is not available on some builds, gating will degrade safely.
-        mHandler.post(() -> {{
-            try {{
-                // VehiclePropertyIds.PERF_VEHICLE_SPEED is common in AAOS builds, but IDs may vary.
-                // We read speed via CarPropertyManager using the property int directly if you integrate IDs.
-                // For now, speed stays 0 unless updated by OEM glue.
-                Slog.i(TAG, "Initialized. Cloud-settable=" + CLOUD_SETTABLE);
-            }} catch (Throwable t) {{
-                Slog.w(TAG, "init: speed subscription unavailable", t);
-            }}
-        }});
+        mHandler.post(() -> {
+            Slog.i(TAG, "Initialized. Cloud-settable=" + CLOUD_SETTABLE);
+        });
     }
 
-    /**
-     * OEM glue can call this to update speed for policy checks.
-     * (Example: called from a VehicleStateService that listens to VHAL speed.)
-     */
     public void onVehicleSpeedUpdated(float speedMps) {
         mVehicleSpeedMps = speedMps;
     }
 
     /**
-     * Cloud-initiated request to set an HVAC property.
-     * This method enforces SDV policy gates:
-     * - property must be allowed by spec
-     * - user consent must be granted
-     * - vehicle must be stationary
+     * Cloud-initiated request to set an HVAC control.
+     * Enforces SDV policy gates:
+     * - property allowed by spec
+     * - user consent granted
+     * - vehicle stationary
+     *
+     * OEM glue should map propertyName to the appropriate VehiclePropertyIds constant and call CarPropertyManager.
      */
     public void setHvacFromCloud(String propertyName, int areaId, float value) {
         if (!CLOUD_SETTABLE.contains(propertyName)) {
@@ -127,15 +116,17 @@ public final class CarHvacService {
             return;
         }
 
-        // NOTE: This method expects OEM glue to map propertyName -> VehiclePropertyIds int.
-        // For strict AOSP integration, replace this mapping with actual VehiclePropertyIds constants.
         Slog.i(TAG, "Cloud set accepted: " + propertyName + " area=" + areaId + " value=" + value);
+
+        // TODO (OEM integration):
+        // int propId = mapPropertyNameToVehiclePropertyId(propertyName);
+        // mCarPropertyManager.setFloatProperty(propId, areaId, value);
     }
 
     private boolean isUserConsented() {
         try {
-            int v = Settings.Secure.getInt(mContext.getContentResolver(), CONSENT_KEY, 0);
-            return v == 1;
+            return Settings.Secure.getInt(
+                    mContext.getContentResolver(), CONSENT_KEY, 0) == 1;
         } catch (Throwable t) {
             return false;
         }
@@ -150,5 +141,8 @@ public final class CarHvacService {
     }
 }
 """
+        return template.format(cloud_props=props_array)
+
+
 def generate_car_service(spec: HalSpec) -> str:
     return CarServiceAgent().run(spec)
