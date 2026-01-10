@@ -5,38 +5,38 @@ from tools.safe_writer import SafeWriter
 class CarServiceAgent:
     def __init__(self):
         self.name = "Car Service Agent"
-        self.output_dir = "output/car_service"
+        # ✅ Write into output/ so relative paths can be frameworks/...
+        self.output_dir = "output"
         self.writer = SafeWriter(self.output_dir)
 
     def build_prompt(self, spec_text: str) -> str:
         return f"""
 You are an Android Automotive Framework engineer.
 
-Generate framework-side CarService integration for Vehicle HAL.
+Target:
+- frameworks/base/services/core/java/com/android/server/car/
+- Android 13+ (AAOS)
+- Integrate with Vehicle HAL via CarPropertyService / CarPropertyManager patterns
 
-Rules:
-- Use CarPropertyManager
-- Reflect properties defined in HAL
-- Java code only
-- Follow AOSP framework conventions
+Requirements:
+- Generate framework-side service class for the given domain (HVAC -> CarHvacService)
+- Subscribe to relevant properties and update internal state
+- Provide handler thread usage (no blocking binder thread)
 - No placeholders
 - No explanations
 
-IMPORTANT:
-- All file paths MUST be RELATIVE
-- DO NOT generate absolute paths
-- Use AOSP-style paths
-  (e.g. frameworks/base/services/car/... )
-
-Output format:
+Output format EXACTLY:
 --- FILE: <relative path> ---
 <file content>
 
+ALL paths MUST be relative and under AOSP tree, e.g.:
+frameworks/base/services/core/java/com/android/server/car/CarHvacService.java
+
 Specification:
 {spec_text}
-"""
+""".lstrip()
 
-    def run(self, spec_text: str):
+    def run(self, spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
 
         result = call_llm(self.build_prompt(spec_text))
@@ -45,6 +45,7 @@ Specification:
 
         self._write_files(result)
 
+        print(f"[DEBUG] {self.name}: output -> {self.output_dir}", flush=True)
         print(f"[DEBUG] {self.name}: done", flush=True)
         return result
 
@@ -55,21 +56,18 @@ Specification:
         for line in text.splitlines():
             if line.strip().startswith("--- FILE:"):
                 if current:
-                    self._flush(current, buf)
+                    self.writer.write(current, "\n".join(buf).rstrip() + "\n")
                 current = (
                     line.replace("--- FILE:", "")
-                    .replace("---", "")
-                    .strip()
+                        .replace("---", "")
+                        .strip()
                 )
                 buf = []
             else:
                 buf.append(line)
 
         if current:
-            self._flush(current, buf)
-
-    def _flush(self, rel, buf):
-        self.writer.write(rel, "\n".join(buf))
+            self.writer.write(current, "\n".join(buf).rstrip() + "\n")
 
 
 def generate_car_service(spec):
