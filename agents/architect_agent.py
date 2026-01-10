@@ -1,5 +1,5 @@
 from schemas.hal_spec import HalSpec
-from validators.spec_validator import validate_hal_spec
+from validator.spec_validator import validate_hal_spec
 
 from agents.vhal_aidl_agent import generate_vhal_aidl
 from agents.vhal_service_agent import generate_vhal_service
