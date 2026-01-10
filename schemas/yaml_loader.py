@@ -6,20 +6,92 @@ from typing import Any, Dict, List, Optional
 from schemas.hal_spec import HalSpec, PropertySpec, Domain, PropType, Access
 
 
+# ----------------------------
+# LLM output cleanup helpers
+# ----------------------------
+
+_FENCE_RE = re.compile(r"```(?:yaml|yml)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+
+
 def _strip_yaml_fences(text: str) -> str:
+    """
+    Backwards-compatible fence stripper.
+    Keeps behavior but we now prefer _extract_yaml_text() which is stricter.
+    """
     if not text:
         return text
     s = text.strip()
 
     # Extract fenced block content if present
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z0-9_-]*\s*\n", "", s)
-        s = re.sub(r"\n```$", "", s.strip())
-        return s.strip()
+    m = _FENCE_RE.search(s)
+    if m:
+        return m.group(1).strip()
 
     # Remove stray fences if model inserted them
-    s = s.replace("```yaml", "").replace("```", "")
+    s = s.replace("```yaml", "").replace("```yml", "").replace("```", "")
     return s.strip()
+
+
+def _extract_yaml_text(text: str) -> str:
+    """
+    Make LLM output safe for yaml.safe_load by extracting only YAML-like content.
+    Priority:
+      1) fenced ```yaml blocks
+      2) first YAML document if '---' present (we still parse only first doc)
+      3) heuristic: keep YAML-looking lines; stop at first prose line after YAML begins
+    """
+    if not text:
+        return ""
+
+    s = text.strip()
+
+    # 1) Prefer fenced blocks
+    m = _FENCE_RE.search(s)
+    if m:
+        return m.group(1).strip()
+
+    # 2) If there are explicit YAML doc markers, keep from first marker onward.
+    # We'll later parse the first doc only.
+    if "---" in s:
+        idx = s.find("---")
+        return s[idx:].strip()
+
+    # 3) Heuristic: retain YAML-ish lines, cut off trailing prose
+    lines = s.splitlines()
+    kept: List[str] = []
+    started = False
+
+    # YAML-ish patterns:
+    key_line = re.compile(r"^\s*[A-Za-z0-9_.\-/]+\s*:\s*(?:#.*)?$")  # "key:" or "key: #comment"
+    key_value_line = re.compile(r"^\s*[A-Za-z0-9_.\-/]+\s*:\s+.+$")  # "key: value"
+    list_item_line = re.compile(r"^\s*-\s+.+$")  # "- item"
+    comment_line = re.compile(r"^\s*#")
+
+    for line in lines:
+        raw = line.rstrip("\n")
+        t = raw.strip()
+
+        # Always allow blank lines / comments once started (and even before)
+        if not t or comment_line.match(t):
+            if started:
+                kept.append(raw)
+            continue
+
+        is_yaml_like = bool(key_line.match(raw) or key_value_line.match(raw) or list_item_line.match(raw))
+
+        if is_yaml_like:
+            kept.append(raw)
+            started = True
+            continue
+
+        # If we already started capturing YAML and we hit a prose line -> stop.
+        if started:
+            break
+
+        # Otherwise, ignore leading non-YAML junk
+        continue
+
+    return "\n".join(kept).strip()
 
 
 def _require(d: Dict[str, Any], key: str, ctx: str) -> Any:
@@ -100,8 +172,32 @@ def load_hal_spec_from_yaml_text(yaml_text: str) -> HalSpec:
     except Exception as e:
         raise RuntimeError("Missing dependency: PyYAML. Install with: pip install pyyaml") from e
 
-    yaml_text = _strip_yaml_fences(yaml_text)
-    doc = yaml.safe_load(yaml_text)
+    # NEW: strict extraction to prevent trailing prose from breaking parsing
+    cleaned = _extract_yaml_text(yaml_text)
+
+    # Keep your old fence-stripper as a fallback if extraction somehow returns empty
+    if not cleaned.strip():
+        cleaned = _strip_yaml_fences(yaml_text)
+
+    if not cleaned.strip():
+        raise ValueError("[YAML SPEC ERROR] No YAML content found in input text")
+
+    # Parse (first doc only if multi-doc)
+    try:
+        if cleaned.lstrip().startswith("---"):
+            doc = next(yaml.safe_load_all(cleaned))
+        else:
+            doc = yaml.safe_load(cleaned)
+    except yaml.YAMLError as e:
+        tail = "\n".join(cleaned.splitlines()[-40:])
+        raise ValueError(
+            "[YAML SPEC ERROR] YAML parsing failed (after sanitizing LLM output).\n"
+            "---- YAML (last 40 lines) ----\n"
+            f"{tail}\n"
+            "-----------------------------\n"
+            f"{e}"
+        ) from e
+
     if not isinstance(doc, dict):
         raise ValueError("[YAML SPEC ERROR] YAML root must be a mapping/object")
 
