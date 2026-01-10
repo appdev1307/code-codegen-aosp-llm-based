@@ -3,11 +3,6 @@ from llm_client import call_llm
 
 
 class SpecYamlConverterAgent:
-    """
-    Convert designer simple spec (free text) into standardized YAML-only spec.
-    YAML is later converted to HalSpec/PropertySpec (with normalization).
-    """
-
     def __init__(self, output_root: str = "output"):
         self.name = "Spec YAML Converter Agent"
         self.output_root = output_root
@@ -18,42 +13,53 @@ class SpecYamlConverterAgent:
 You are an automotive system specification normalizer.
 
 ABSOLUTE OUTPUT RULES:
-- Output YAML ONLY
-- Do NOT wrap output in markdown code fences
+- Output YAML ONLY (no markdown, no fenced blocks)
 - Do NOT output any backtick characters
 - The first non-empty line MUST be: spec_version:
-- No explanation text, no headings, no bullet lists outside YAML
+- Use 2-space indentation
+- Ensure YAML parses with PyYAML
 
 TASK:
-Convert the provided Simple Spec into STRICT YAML ONLY.
+Convert Simple Spec into YAML spec v1.1.
 
-YAML SCHEMA (v1.1):
+YAML REQUIRED STRUCTURE:
 spec_version: 1.1
 product:
   vendor: <string> (if missing -> "AOSP")
-  android: <AAOS_13|AAOS_14|AAOS_15...> (if input says only "AAOS" -> use "AAOS_14")
+  android: <AAOS_13|AAOS_14|AAOS_15...> (if input says only "AAOS" -> "AAOS_14")
 target:
-  module: <HVAC|ADAS|MEDIA|POWER> (MUST be one of these; infer from text; default HVAC)
-  domains: [vehicle_hal, car_service, sepolicy] (default)
-features: (optional list of strings)
-properties: list of properties
+  module: <HVAC|ADAS|MEDIA|POWER> (infer; default HVAC)
+  domains: [vehicle_hal, car_service, sepolicy]
+features: list of objects:
+  - name: <snake_case>
+    description: <string>
+properties: list of objects
 
-Each properties[] item MUST include:
-- name: <string> (use Property ID string as name)
-- type: INT|FLOAT|BOOLEAN (map INT32/INT64/INTEGER -> INT)
-- access: READ|WRITE|READ_WRITE
-- areas: YAML list of strings (if GLOBAL or not provided -> [])
+FOR EACH property in properties[] you MUST output:
+- name, type (INT|FLOAT|BOOLEAN), access, areas
+- aosp:
+    standard: <true|false>
+    kind: <system|vendor>
+    id_hex: <0x...> (ONLY if standard=true and you know it; otherwise omit)
+    defined_in: VehicleProperty.aidl (ONLY if standard=true)
+    vendor_namespace: <vendor.module> (ONLY if standard=false)
+- sdv:
+    updatable_behavior: <true|false> (default true for controls, false for read-only sensors)
+    cloud_control:
+      allowed: <true|false>
+      mode: <gated|disabled> (gated if allowed=true)
+      requires: [vehicle_stationary, user_consent] (if allowed=true)
+    telemetry:
+      publish: <true|false> (default true)
+      rate_limit_hz: <int> (default 1)
 
-If a Range is provided like "0..3 step 1", include:
-constraints:
-  min: 0
-  max: 3
-  step: 1
+AOSP STANDARD HEURISTIC:
+- HVAC_TEMPERATURE_SET is AOSP standard system property with id_hex 0x1140050A.
+- If a property name is not known to you as AOSP standard, mark it as vendor.
 
 Simple Spec:
 {simple_spec_text}
 """.lstrip()
-
 
     def run(self, simple_spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)

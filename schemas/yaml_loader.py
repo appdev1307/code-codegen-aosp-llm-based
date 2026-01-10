@@ -1,34 +1,23 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from schemas.hal_spec import HalSpec, PropertySpec, Domain, PropType, Access
 
 
-import re
-
 def _strip_yaml_fences(text: str) -> str:
-    """
-    Removes Markdown code fences like:
-      ```yaml
-      ...
-      ```
-    and returns raw YAML content.
-    """
     if not text:
         return text
-
     s = text.strip()
 
-    # If it's fenced, extract the inner content
+    # Extract fenced block content if present
     if s.startswith("```"):
-        # Remove opening fence line (``` or ```yaml)
         s = re.sub(r"^```[a-zA-Z0-9_-]*\s*\n", "", s)
-        # Remove closing fence
         s = re.sub(r"\n```$", "", s.strip())
         return s.strip()
 
-    # Also handle accidental inline fences anywhere
+    # Remove stray fences if model inserted them
     s = s.replace("```yaml", "").replace("```", "")
     return s.strip()
 
@@ -40,21 +29,13 @@ def _require(d: Dict[str, Any], key: str, ctx: str) -> Any:
 
 
 def _aaos_to_aosp_level(android_str: str) -> int:
-    """
-    Accepts:
-      - "AAOS" -> default 14
-      - "AAOS_14" / "AOSP_14" -> 14
-      - "14" -> 14
-    """
     s = (android_str or "").strip().upper()
     if s in ("AAOS", "AOSP", "ANDROID"):
         return 14
-
     if s.startswith("AAOS_"):
         s = s.replace("AAOS_", "", 1)
     if s.startswith("AOSP_"):
         s = s.replace("AOSP_", "", 1)
-
     try:
         return int(s)
     except Exception:
@@ -65,17 +46,14 @@ def _normalize_domain(module: Optional[str]) -> Domain:
     m = (module or "").strip().upper()
     if m in ("HVAC", "ADAS", "MEDIA", "POWER"):
         return m  # type: ignore[return-value]
-
-    # Best-effort inference from free text
-    if "HVAC" in m or "CLIMATE" in m or "AIR" in m or "TEMP" in m:
+    if "CLIMATE" in m or "HVAC" in m:
         return "HVAC"
-    if "ADAS" in m or "ACC" in m or "LKA" in m:
+    if "ADAS" in m:
         return "ADAS"
-    if "MEDIA" in m or "AUDIO" in m or "IVI" in m:
+    if "MEDIA" in m or "AUDIO" in m:
         return "MEDIA"
     if "POWER" in m or "BMS" in m or "BATTERY" in m:
         return "POWER"
-
     return "HVAC"
 
 
@@ -131,19 +109,11 @@ def load_hal_spec_from_yaml_text(yaml_text: str) -> HalSpec:
     target = _require(doc, "target", "root")
     props = _require(doc, "properties", "root")
 
-    if not isinstance(product, dict):
-        raise ValueError("[YAML SPEC ERROR] 'product' must be an object")
-    if not isinstance(target, dict):
-        raise ValueError("[YAML SPEC ERROR] 'target' must be an object")
-    if not isinstance(props, list):
-        raise ValueError("[YAML SPEC ERROR] 'properties' must be a list")
+    if not isinstance(product, dict) or not isinstance(target, dict) or not isinstance(props, list):
+        raise ValueError("[YAML SPEC ERROR] Invalid product/target/properties types")
 
-    vendor = product.get(" hookupvendor")  # NOTE: will be fixed below
-    # fix accidental typo if any
     vendor = product.get("vendor") or "AOSP"
-
     android = product.get("android") or "AAOS_14"
-    # handle "Platform: AAOS" style results if converter outputs "AAOS"
     aosp_level = _aaos_to_aosp_level(str(android))
 
     module = target.get("module") or "HVAC"
@@ -159,12 +129,16 @@ def load_hal_spec_from_yaml_text(yaml_text: str) -> HalSpec:
         access = _require(p, "access", f"properties[{i}]")
         areas = p.get("areas", [])
 
+        # ✅ carry everything else as meta (aosp/sdv/constraints/...)
+        meta = {k: v for k, v in p.items() if k not in ("name", "type", "access", "areas")}
+
         properties.append(
             PropertySpec(
                 id=str(name),
                 type=_normalize_type(str(ptype)),
                 access=_normalize_access(str(access)),
                 areas=_normalize_areas(areas),
+                meta=meta,
             )
         )
 

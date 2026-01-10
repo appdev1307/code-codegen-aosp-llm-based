@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import List, Literal, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Literal, Optional, Any
 
 
 Domain = Literal["HVAC", "ADAS", "MEDIA", "POWER"]
@@ -13,6 +13,9 @@ class PropertySpec:
     type: PropType
     access: Access
     areas: List[str]
+
+    # ✅ NEW: carry extra metadata from YAML (AOSP/SDV/constraints/etc.)
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -36,7 +39,7 @@ class HalSpec:
                 f"- Property ID : {p.id}",
                 f"  Type        : {p.type}",
                 f"  Access      : {p.access}",
-                f"  Areas       : {', '.join(p.areas)}",
+                f"  Areas       : {', '.join(p.areas) if p.areas else 'GLOBAL'}",
                 "",
             ])
 
