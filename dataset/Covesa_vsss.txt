@@ -1,0 +1,44 @@
+git clone https://github.com/COVESA/vehicle_signal_specification.git
+cd vehicle_signal_specification
+
+spec/
+ ├─ VehicleSignalSpecification.vspec   # main entry
+ ├─ signals/                            # domain definitions
+ ├─ types/                              # data types
+
+
+pip install vss-tools
+
+
+vspec2json.py \
+  spec/VehicleSignalSpecification.vspec \
+  vss.json
+
+
+ls -lh vss.json
+
+
+python - <<'EOF'
+import json
+
+def walk_vss(node, prefix=""):
+    out = []
+    for name, child in node.get("children", {}).items():
+        p = f"{prefix}.{name}" if prefix else name
+        if "datatype" in child:
+            out.append(p)
+        out.extend(walk_vss(child, p))
+    return out
+
+tree = json.load(open("vss.json"))
+paths = walk_vss(tree["Vehicle"], "Vehicle")
+
+print("First 20 signals:")
+for p in paths[:20]:
+    print(" ", p)
+
+print("\nTotal signals:", len(paths))
+EOF
+
+
+
