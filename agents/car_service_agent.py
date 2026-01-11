@@ -1,3 +1,4 @@
+from string import Template
 from tools.safe_writer import SafeWriter
 from schemas.hal_spec import HalSpec
 
@@ -10,6 +11,7 @@ class CarServiceAgent:
     def run(self, spec: HalSpec) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
 
+        # Only generate framework service for HVAC domain
         if spec.domain != "HVAC":
             print(f"[DEBUG] {self.name}: domain={spec.domain}, skip", flush=True)
             return ""
@@ -18,23 +20,30 @@ class CarServiceAgent:
         cloud_settable = []
         for p in spec.properties:
             sdv = (p.meta or {}).get("sdv") or {}
-            cc = (sdv.get("cloud_control") or {})
+            cc = sdv.get("cloud_control") or {}
             allowed = bool(cc.get("allowed", False))
             if allowed and p.access in ("WRITE", "READ_WRITE"):
                 cloud_settable.append(p.id)
 
-        rel_path = "frameworks/base/services/core/java/com/android/server/car/CarHvacService.java"
+        rel_path = (
+            "frameworks/base/services/core/java/"
+            "com/android/server/car/CarHvacService.java"
+        )
+
         content = self._render_car_hvac_service(cloud_settable)
 
         self.writer.write(rel_path, content)
         print(f"[DEBUG] {self.name}: wrote {rel_path}", flush=True)
         print(f"[DEBUG] {self.name}: done", flush=True)
+
         return f"--- FILE: {rel_path} ---\n{content}"
 
     def _render_car_hvac_service(self, cloud_settable_props) -> str:
-        props_array = ", ".join(['"%s"' % p for p in cloud_settable_props])
+        # Render Java string array safely
+        props_array = ", ".join(f"\"{p}\"" for p in cloud_settable_props)
 
-        template = """\
+        template = Template(
+            """\
 package com.android.server.car;
 
 import android.car.hardware.property.CarPropertyManager;
@@ -52,8 +61,11 @@ import java.util.Set;
  * Framework-side HVAC integration with SDV cloud gating.
  *
  * NOTE:
- * This class demonstrates policy enforcement gates (consent + stationary) for cloud-initiated sets.
- * OEM glue should map propertyName -> VehiclePropertyIds and perform the actual CarPropertyManager set call.
+ * This class demonstrates policy enforcement gates (consent + stationary)
+ * for cloud-initiated sets.
+ *
+ * OEM glue should map propertyName -> VehiclePropertyIds and perform the
+ * actual CarPropertyManager set call.
  */
 public final class CarHvacService {
     private static final String TAG = "CarHvacService";
@@ -62,7 +74,7 @@ public final class CarHvacService {
     private static final String CONSENT_KEY = "sdv_cloud_climate_consent";
 
     private static final Set<String> CLOUD_SETTABLE = new HashSet<>(
-            Arrays.asList({cloud_props})
+            Arrays.asList($cloud_props)
     );
 
     private final Context mContext;
@@ -98,7 +110,8 @@ public final class CarHvacService {
      * - user consent granted
      * - vehicle stationary
      *
-     * OEM glue should map propertyName to the appropriate VehiclePropertyIds constant and call CarPropertyManager.
+     * OEM glue should map propertyName to the appropriate VehiclePropertyIds
+     * constant and call CarPropertyManager.
      */
     public void setHvacFromCloud(String propertyName, int areaId, float value) {
         if (!CLOUD_SETTABLE.contains(propertyName)) {
@@ -116,7 +129,8 @@ public final class CarHvacService {
             return;
         }
 
-        Slog.i(TAG, "Cloud set accepted: " + propertyName + " area=" + areaId + " value=" + value);
+        Slog.i(TAG, "Cloud set accepted: " + propertyName
+                + " area=" + areaId + " value=" + value);
 
         // TODO (OEM integration):
         // int propId = mapPropertyNameToVehiclePropertyId(propertyName);
@@ -141,7 +155,9 @@ public final class CarHvacService {
     }
 }
 """
-        return template.format(cloud_props=props_array)
+        )
+
+        return template.substitute(cloud_props=props_array)
 
 
 def generate_car_service(spec: HalSpec) -> str:
