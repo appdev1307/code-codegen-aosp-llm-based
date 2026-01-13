@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agents.spec_yaml_converter_agent import SpecYamlConverterAgent
 from schemas.yaml_loader import load_hal_spec_from_yaml_text
@@ -126,10 +126,10 @@ def build_spec_text_from_vss(
 
 
 # ============================================================
-# 2) NEW: Chunking to avoid Ollama timeout
+# 2) Chunking to avoid Ollama timeout
 # ============================================================
 
-def split_spec_into_property_blocks(spec_text: str) -> (str, List[str]):
+def split_spec_into_property_blocks(spec_text: str) -> Tuple[str, List[str]]:
     """
     Returns (header, property_blocks)
     - header includes everything up to and including "Properties:"
@@ -150,7 +150,6 @@ def split_spec_into_property_blocks(spec_text: str) -> (str, List[str]):
             if current:
                 blocks.append("\n".join(current).strip())
                 current = []
-        # keep empty lines inside a block (but skip leading empties)
         if line.strip() or current:
             current.append(line)
     if current:
@@ -160,9 +159,7 @@ def split_spec_into_property_blocks(spec_text: str) -> (str, List[str]):
 
 
 def chunk_property_blocks(header: str, blocks: List[str], chunk_size: int = 40) -> List[str]:
-    """
-    Combine header + up to chunk_size property blocks into chunk specs.
-    """
+    """Combine header + up to chunk_size property blocks into chunk specs."""
     chunks: List[str] = []
     for i in range(0, len(blocks), chunk_size):
         part = blocks[i : i + chunk_size]
@@ -171,47 +168,112 @@ def chunk_property_blocks(header: str, blocks: List[str], chunk_size: int = 40) 
     return chunks
 
 
-def extract_properties_section(yaml_text: str) -> str:
+# ============================================================
+# 2b) NEW: Robust YAML merge (handles LLM format variations)
+# ============================================================
+
+def _find_section_start(lines: List[str], keys: List[str]) -> Optional[int]:
     """
-    Extract everything after the line 'properties:'.
-    Assumes SpecYamlConverterAgent outputs a YAML with top-level 'properties:'.
+    Return line index of a section header matching any key in keys (case-insensitive),
+    where the line looks like:  key:
     """
-    lines = yaml_text.splitlines()
+    keyset = {k.lower() for k in keys}
     for i, line in enumerate(lines):
-        if re.match(r"^\s*properties\s*:\s*$", line):
-            return "\n".join(lines[i + 1 :]).rstrip()
-    raise ValueError("Converted YAML missing top-level `properties:` section")
+        m = re.match(r"^\s*([A-Za-z0-9_]+)\s*:\s*$", line)
+        if m and m.group(1).lower() in keyset:
+            return i
+    return None
 
 
-def extract_yaml_header(yaml_text: str) -> str:
+def extract_yaml_header_and_props(yaml_text: str) -> Tuple[str, str]:
     """
-    Extract everything up to (but not including) 'properties:'.
+    Robustly extract:
+      - header: everything above the properties section (best-effort)
+      - props_body: YAML list items under properties (best-effort)
+    Supports variants: properties:, Properties:, property:, props:, signals:
     """
     lines = yaml_text.splitlines()
-    out = []
-    for line in lines:
-        if re.match(r"^\s*properties\s*:\s*$", line):
-            break
-        out.append(line)
-    return "\n".join(out).rstrip()
+
+    prop_keys = ["properties", "property", "props", "signals"]
+    idx = _find_section_start(lines, prop_keys)
+
+    if idx is not None:
+        header = "\n".join(lines[:idx]).rstrip()
+        body = "\n".join(lines[idx + 1 :]).rstrip()
+        return header, body
+
+    # Fallback: if it looks like a YAML list, treat whole doc as properties body
+    looks_like_list = any(re.match(r"^\s*-\s+", ln) for ln in lines)
+    if looks_like_list:
+        return "", yaml_text.rstrip()
+
+    preview = "\n".join(lines[:40])
+    raise ValueError(
+        "Converted YAML missing a recognizable properties section.\n"
+        "---- YAML preview (first 40 lines) ----\n"
+        f"{preview}\n"
+        "--------------------------------------\n"
+        "Fix: enforce converter output to include a top-level `properties:` list."
+    )
 
 
 def merge_converted_yaml(yaml_parts: List[str]) -> str:
     """
-    Merge multiple YAML docs:
-      - header from first
-      - concat all properties list items
+    Merge multiple YAML docs into one:
+      - take first non-empty header encountered
+      - always output:
+            <header>
+            properties:
+              <all list items from chunks>
     """
     if not yaml_parts:
         raise ValueError("No YAML parts to merge")
 
-    header = extract_yaml_header(yaml_parts[0]).rstrip()
-    merged_props: List[str] = []
+    chosen_header = ""
+    merged_bodies: List[str] = []
 
-    for part in yaml_parts:
-        merged_props.append(extract_properties_section(part))
+    for i, part in enumerate(yaml_parts, 1):
+        header, body = extract_yaml_header_and_props(part)
 
-    return f"{header}\nproperties:\n" + "\n".join(p for p in merged_props if p.strip()) + "\n"
+        if not chosen_header and header.strip():
+            chosen_header = header.strip()
+
+        if body.strip():
+            merged_bodies.append(body.rstrip())
+
+        # Helpful warning (doesn't fail)
+        if "properties:" not in part.lower():
+            print(f"[WARN] Chunk {i} YAML has no explicit 'properties:' key; using fallback parser.", flush=True)
+
+    if not chosen_header:
+        # Minimal valid header if model omitted it in every chunk
+        chosen_header = "system: VSS -> HAL\nplatform: AAOS"
+
+    # Ensure merged bodies are indented under `properties:`
+    indented_bodies: List[str] = []
+    for body in merged_bodies:
+        body_lines = body.splitlines()
+
+        # If body already starts like "  - ..." or "- ...", normalize to "  - ..."
+        normalized_lines: List[str] = []
+        for ln in body_lines:
+            if not ln.strip():
+                normalized_lines.append(ln)
+                continue
+            if re.match(r"^\s*-\s+", ln):
+                normalized_lines.append("  " + ln.lstrip())
+            elif re.match(r"^\s{2,}-\s+", ln):
+                # already indented enough
+                normalized_lines.append(ln)
+            else:
+                # general line, indent by 2
+                normalized_lines.append("  " + ln)
+
+        indented_bodies.append("\n".join(normalized_lines).rstrip())
+
+    merged_props = "\n".join(x for x in indented_bodies if x.strip()).rstrip()
+
+    return f"{chosen_header}\nproperties:\n{merged_props}\n"
 
 
 def convert_spec_with_chunking(
@@ -230,12 +292,14 @@ def convert_spec_with_chunking(
     yaml_parts: List[str] = []
 
     for i, chunk in enumerate(chunks, 1):
-        print(f"[DEBUG] SpecYamlConverterAgent: converting chunk {i}/{len(chunks)} "
-              f"(~{chunk.count('- Property ID')} properties)", flush=True)
+        print(
+            f"[DEBUG] SpecYamlConverterAgent: converting chunk {i}/{len(chunks)} "
+            f"(~{chunk.count('- Property ID')} properties)",
+            flush=True,
+        )
         yaml_parts.append(converter.run(chunk))
 
-    merged = merge_converted_yaml(yaml_parts)
-    return merged
+    return merge_converted_yaml(yaml_parts)
 
 
 # ============================================================
@@ -252,7 +316,6 @@ designer_simple_spec = build_spec_text_from_vss(
 
 converter = SpecYamlConverterAgent(output_root="output")
 
-# ✅ chunk conversion to avoid ReadTimeout(600)
 yaml_spec = convert_spec_with_chunking(
     converter=converter,
     spec_text=designer_simple_spec,
