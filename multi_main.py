@@ -7,6 +7,57 @@ from schemas.yaml_loader import load_hal_spec_from_yaml_text
 from agents.architect_agent import ArchitectAgent
 from tools.aosp_layout import ensure_aosp_layout
 
+from pathlib import Path
+
+def looks_like_yaml(text: str) -> bool:
+    """
+    Very simple heuristic: YAML usually contains ':' keys or list items.
+    Reject obvious apology / chatty responses.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+
+    lower = t.lower()
+    bad_markers = [
+        "i'm sorry",
+        "i am sorry",
+        "could you please provide",
+        "missing some context",
+        "as an ai",
+        "i can't",
+        "i cannot",
+    ]
+    if any(m in lower for m in bad_markers):
+        return False
+
+    # Looks like YAML if it has a key line or list items
+    if re.search(r"(?m)^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*", t):
+        return True
+    if re.search(r"(?m)^\s*-\s+\w+", t):
+        return True
+
+    return False
+
+
+def wrap_chunk_for_llm(chunk_text: str) -> str:
+    """
+    Force the model to output YAML only.
+    This wrapper is added *outside* your SpecYamlConverterAgent prompt,
+    but we can also just inject it into the chunk text as extra instruction.
+    """
+    return (
+        "IMPORTANT:\n"
+        "- Output MUST be valid YAML.\n"
+        "- Output MUST contain a top-level key: properties:\n"
+        "- Do NOT ask questions.\n"
+        "- Do NOT include any explanations.\n"
+        "- Do NOT include markdown fences.\n\n"
+        "INPUT SPEC:\n"
+        f"{chunk_text}\n"
+    )
+
+
 
 # ============================================================
 # 1) VSS JSON -> "spec text" (YAML-ish) that LLM will normalize
@@ -280,9 +331,14 @@ def convert_spec_with_chunking(
     converter: SpecYamlConverterAgent,
     spec_text: str,
     chunk_size: int = 40,
+    max_retries_per_chunk: int = 2,
 ) -> str:
     """
     Split large spec text into chunks and convert each chunk via LLM, then merge.
+    Adds:
+      - YAML validation
+      - retries with stricter wrapper
+      - dump bad outputs to output/ for debugging
     """
     header, blocks = split_spec_into_property_blocks(spec_text)
     if not blocks:
@@ -291,15 +347,50 @@ def convert_spec_with_chunking(
     chunks = chunk_property_blocks(header, blocks, chunk_size=chunk_size)
     yaml_parts: List[str] = []
 
+    dump_dir = Path("output") / "llm_chunks"
+    dump_dir.mkdir(parents=True, exist_ok=True)
+
     for i, chunk in enumerate(chunks, 1):
         print(
             f"[DEBUG] SpecYamlConverterAgent: converting chunk {i}/{len(chunks)} "
             f"(~{chunk.count('- Property ID')} properties)",
             flush=True,
         )
-        yaml_parts.append(converter.run(chunk))
+
+        last_text = ""
+        ok = False
+
+        for attempt in range(1, max_retries_per_chunk + 2):  # 1..(retries+1)
+            chunk_for_llm = chunk if attempt == 1 else wrap_chunk_for_llm(chunk)
+
+            y = converter.run(chunk_for_llm)
+            last_text = y
+
+            # dump every attempt for traceability
+            (dump_dir / f"chunk_{i:02d}_attempt_{attempt}.txt").write_text(
+                y, encoding="utf-8"
+            )
+
+            if looks_like_yaml(y):
+                ok = True
+                yaml_parts.append(y)
+                break
+
+            print(
+                f"[WARN] Chunk {i} attempt {attempt}: LLM output is not YAML. Retrying...",
+                flush=True,
+            )
+
+        if not ok:
+            preview = "\n".join(last_text.splitlines()[:30])
+            raise RuntimeError(
+                f"Chunk {i} failed to produce YAML after {max_retries_per_chunk + 1} attempts.\n"
+                f"Saved outputs under: {dump_dir}\n"
+                f"Preview:\n{preview}"
+            )
 
     return merge_converted_yaml(yaml_parts)
+
 
 
 # ============================================================
