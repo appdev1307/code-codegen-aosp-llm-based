@@ -29,8 +29,8 @@ class VHALServiceAgent:
 
     def build_prompt(self, spec_text: str) -> str:
         fewshot = f"""--- FILE: {self.impl_cpp} ---
-#include <iostream>
-int main() {{ std::cout << "ok"; }}
+#include <android-base/logging.h>
+int main(int, char**) {{ return 0; }}
 """
         return f"""
 YOU MUST OUTPUT ONLY FILE BLOCKS.
@@ -49,7 +49,7 @@ Target:
 Requirements:
 - Implement BnIVehicle
 - Implement get(), set()
-- Implement registerCallback(), unregisterCallback() if present in AIDL
+- Implement registerCallback(), unregisterCallback() IF AND ONLY IF present in AIDL
 - Property storage
 - Callback notification
 - Thread-safe
@@ -59,6 +59,7 @@ Requirements:
 Hard constraints:
 - No placeholders, no TODOs
 - No prose, no comments, no markdown, no code fences
+- Must compile (include required headers, correct overrides)
 
 Paths:
 - Paths MUST start with: hardware/
@@ -176,7 +177,12 @@ Now output the C++ service implementation files.
         return p
 
     def _write_fallback_service(self) -> int:
+        # NOTE:
+        # - Do NOT use raw-string literals (r"""...""") here; it previously introduced a leading "\" in output.
+        # - Ensure required headers for std::remove and SharedRefBase are present.
         cpp = """\
+// FILE: hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp
+
 #include <android-base/logging.h>
 #include <android/binder_interface_utils.h>
 #include <android/binder_manager.h>
@@ -187,6 +193,7 @@ Now output the C++ service implementation files.
 #include <unordered_map>
 #include <vector>
 
+// Generated AIDL headers (from aidl_interface NDK backend)
 #include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
 #include <aidl/android/hardware/automotive/vehicle/IVehicleCallback.h>
 #include <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
@@ -234,6 +241,7 @@ public:
         return ::ndk::ScopedAStatus::ok();
     }
 
+    // Only valid if IVehicle.aidl contains these methods.
     ::ndk::ScopedAStatus registerCallback(const std::shared_ptr<IVehicleCallback>& callback) override {
         std::lock_guard<std::mutex> lk(mMutex);
         if (callback) mCallbacks.push_back(callback);

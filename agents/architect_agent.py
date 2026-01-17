@@ -15,11 +15,18 @@ class ArchitectAgent:
         print("[ARCHITECT] AAOS HAL Architect Agent START")
         print("[ARCHITECT] ================================")
 
-        domain = getattr(spec, "domain", None)
-        print(f"[ARCHITECT] Domain: {domain}", flush=True)
+        # Always read domain late (after any upstream normalization) and normalize it
+        raw_domain = getattr(spec, "domain", None)
+        domain = (raw_domain or "").strip().upper() if isinstance(raw_domain, str) else raw_domain
+        print(f"[ARCHITECT] Domain(raw)={raw_domain} normalized={domain}", flush=True)
 
-        print("[ARCHITECT] Input HAL specification:")
-        print(spec.to_llm_spec())
+        # Helpful visibility for debugging wrong domain mapping
+        try:
+            spec_text = spec.to_llm_spec()
+        except Exception as e:
+            spec_text = f"[ARCHITECT] WARNING: spec.to_llm_spec() failed: {e}"
+        print("[ARCHITECT] Input HAL specification:", flush=True)
+        print(spec_text)
 
         # 1) AIDL
         print("[ARCHITECT] Step 1: Generate VHAL AIDL", flush=True)
@@ -34,12 +41,13 @@ class ArchitectAgent:
         generate_vhal_aidl_bp(spec)
         generate_vhal_service_build_glue(spec)
 
-        # 4) Framework (HVAC only)
+        # 4) Framework (HVAC only) - HARD GATE
+        # Do NOT generate CarHvacService unless the domain is exactly HVAC.
         if domain == "HVAC":
             print("[ARCHITECT] Step 4: Generate framework service (HVAC)", flush=True)
             generate_car_service(spec)
         else:
-            print(f"[ARCHITECT] Step 4: Skip framework generation (domain={domain}, HVAC-only).", flush=True)
+            print(f"[ARCHITECT] Step 4: Skip framework generation (domain={raw_domain}, HVAC-only).", flush=True)
 
         # 5) SELinux
         print("[ARCHITECT] Step 5: Generate SELinux policy", flush=True)
