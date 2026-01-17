@@ -41,13 +41,15 @@ class ArchitectAgent:
         generate_vhal_aidl_bp(spec)
         generate_vhal_service_build_glue(spec)
 
-        # 4) Framework (HVAC only) - HARD GATE
-        # Do NOT generate CarHvacService unless the domain is exactly HVAC.
+        # ===== Step 4: Framework service generation (HVAC only) =====
+        domain = getattr(spec, "domain", None)
+        print(f"[ARCHITECT] Step 4: Generate framework service (domain={domain})", flush=True)
+
         if domain == "HVAC":
-            print("[ARCHITECT] Step 4: Generate framework service (HVAC)", flush=True)
             generate_car_service(spec)
         else:
-            print(f"[ARCHITECT] Step 4: Skip framework generation (domain={raw_domain}, HVAC-only).", flush=True)
+            print(f"[ARCHITECT] Domain={domain}: skip framework generation (HVAC-only).", flush=True)
+
 
         # 5) SELinux
         print("[ARCHITECT] Step 5: Generate SELinux policy", flush=True)
