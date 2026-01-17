@@ -2,19 +2,14 @@
 
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
+from tools.llm_file_parser import parse_files_json
 
 
 class VHALAidlBuildAgent:
-    """
-    Generates build glue for AIDL interface:
-      hardware/interfaces/automotive/vehicle/aidl/Android.bp
-    LLM-first, deterministic fallback.
-    """
-
     def __init__(self):
         self.name = "VHAL AIDL Build Agent"
         self.output_root = "output"
@@ -25,10 +20,8 @@ class VHALAidlBuildAgent:
 
         self.system = (
             "You are an expert Android Soong build engineer.\n"
-            "Follow instructions exactly.\n"
-            "Do not ask questions.\n"
-            "Output only multi-file blocks starting with '--- FILE:'.\n"
-            "No explanations.\n"
+            "Return STRICT JSON only.\n"
+            "No prose.\n"
         )
 
         self.bp_path = "hardware/interfaces/automotive/vehicle/aidl/Android.bp"
@@ -41,49 +34,29 @@ class VHALAidlBuildAgent:
     def build_prompt(self, spec_text: str) -> str:
         srcs_lines = "\n".join([f'        "{s}",' for s in self.aidl_srcs])
 
-        example = f"""--- FILE: {self.bp_path} ---
-aidl_interface {{
-    name: "android.hardware.automotive.vehicle",
-    vendor_available: true,
-    srcs: [
-{srcs_lines}
-    ],
-    versions: ["1"],
-    stability: "vintf",
-    backend: {{
-        ndk: {{ enabled: true }},
-        cpp: {{ enabled: false }},
-        java: {{ enabled: false }},
-    }},
-}}
-"""
-
         return f"""
-YOU MUST OUTPUT ONLY FILE BLOCKS.
-THE FIRST NON-EMPTY LINE MUST START WITH: --- FILE:
+OUTPUT MUST BE STRICT JSON ONLY (NO MARKDOWN, NO PROSE).
+Return exactly:
+{{
+  "files": [
+    {{
+      "path": "{self.bp_path}",
+      "content": "..."
+    }}
+  ]
+}}
 
-Goal:
-Generate a build-correct Soong Android.bp for an AAOS AIDL VHAL interface.
-
-Hard constraints (MUST):
-- Output EXACTLY ONE file: {self.bp_path}
-- Use aidl_interface
-- name MUST be: android.hardware.automotive.vehicle
+Constraints for Android.bp:
+- Must define aidl_interface
+- name: "android.hardware.automotive.vehicle"
 - vendor_available: true
-- stability: "vintf"
-- versions: ["1"]
-- backend: enable ONLY ndk; disable cpp/java
-- srcs MUST include exactly these AIDL files:
+- srcs MUST be exactly:
 {srcs_lines}
+- versions: ["1"]
+- stability: "vintf"
+- backend: enable ndk only; disable cpp/java
 
-Output format:
---- FILE: <relative path> ---
-<file content>
-
-Example (format demonstration only; do not repeat verbatim):
-{example}
-
-Input (context only):
+Context (spec text; do not echo):
 {spec_text}
 """.lstrip()
 
@@ -91,95 +64,38 @@ Input (context only):
         print(f"[DEBUG] {self.name}: start", flush=True)
         prompt = self.build_prompt(spec_text)
 
-        # Attempt 1
-        out1 = call_llm(prompt, system=self.system) or ""
+        # Attempt 1 (JSON)
+        out1 = call_llm(prompt, system=self.system, stream=False, temperature=0.0, response_format="json") or ""
         self._dump_raw(out1, 1)
-        if self._write_and_validate(out1):
-            print(f"[DEBUG] {self.name}: done (LLM)", flush=True)
+        if self._write_json(out1):
             return out1
 
-        # Attempt 2 (repair)
-        repair = (
-            prompt
-            + "\n\nREPAIR (MANDATORY):\n"
-              "- Output ONLY '--- FILE:' blocks.\n"
-              f"- Output EXACTLY ONE file: {self.bp_path}\n"
-              "- No prose.\n"
-        )
-        out2 = call_llm(repair, system=self.system) or ""
+        # Attempt 2 (JSON repair, disable formatter in case model doesn't support it)
+        repair = prompt + "\nREPAIR: Output STRICT JSON with files[].path and files[].content."
+        out2 = call_llm(repair, system=self.system, stream=False, temperature=0.0, response_format=None) or ""
         self._dump_raw(out2, 2)
-        if self._write_and_validate(out2):
-            print(f"[DEBUG] {self.name}: done (LLM retry)", flush=True)
+        if self._write_json(out2):
             return out2
 
-        # Fallback
         print(f"[WARN] {self.name}: LLM output invalid. Using deterministic fallback.", flush=True)
         self._write_fallback()
         return "[FALLBACK] AIDL Android.bp generated."
 
-    # -----------------------------
-    # Validation-aware writer
-    # -----------------------------
-    def _write_and_validate(self, text: str) -> bool:
-        """
-        Returns True only if:
-        - LLM wrote at least 1 file block
-        - The expected bp_path was written
-        - The Android.bp content passes minimal semantic checks
-        """
-        blocks = self._parse_file_blocks(self._strip_outer_fences(text))
-        if not blocks:
+    def _write_json(self, text: str) -> bool:
+        try:
+            files = parse_files_json(text)
+        except Exception:
             return False
 
-        wrote_target = False
-        target_body = None
-
-        for path, body in blocks:
-            safe = self._sanitize(path)
+        wrote = 0
+        for p, c in files:
+            safe = self._sanitize(p)
             if not safe:
                 continue
-            self.writer.write(safe, body.rstrip() + "\n")
+            self.writer.write(safe, c)
+            wrote += 1
+        return wrote > 0
 
-            if safe == self.bp_path:
-                wrote_target = True
-                target_body = body
-
-        if not wrote_target or not target_body:
-            return False
-
-        return self._validate_bp(target_body)
-
-    def _validate_bp(self, bp_text: str) -> bool:
-        t = (bp_text or "").replace("\r\n", "\n")
-
-        required_snippets = [
-            "aidl_interface",
-            'name: "android.hardware.automotive.vehicle"',
-            "vendor_available: true",
-            'stability: "vintf"',
-            'versions: ["1"]',
-            "backend",
-            "ndk",
-            "enabled: true",
-        ]
-        for s in required_snippets:
-            if s not in t:
-                return False
-
-        # src presence checks
-        for s in self.aidl_srcs:
-            if s not in t:
-                return False
-
-        # Ensure cpp/java are disabled (can appear as enabled: false)
-        if "cpp" not in t or "java" not in t:
-            return False
-
-        return True
-
-    # -----------------------------
-    # Fallback
-    # -----------------------------
     def _write_fallback(self) -> None:
         content = """\
 aidl_interface {
@@ -199,32 +115,10 @@ aidl_interface {
     },
 }
 """
-        self.writer.write(self.bp_path, content.rstrip() + "\n")
+        self.writer.write(self.bp_path, content)
 
-    # -----------------------------
-    # Utilities
-    # -----------------------------
     def _dump_raw(self, text: str, attempt: int) -> None:
         (self.raw_dir / f"VHAL_AIDL_BP_RAW_attempt{attempt}.txt").write_text(text or "", encoding="utf-8")
-
-    def _strip_outer_fences(self, text: str) -> str:
-        t = text.replace("\r\n", "\n").strip()
-        if t.startswith("```"):
-            t = re.sub(r"(?m)^```[^\n]*\n", "", t, count=1)
-            t = re.sub(r"(?m)\n```$", "", t, count=1)
-        return t + "\n"
-
-    def _parse_file_blocks(self, text: str) -> List[Tuple[str, str]]:
-        pat = re.compile(
-            r"(?ms)^\s*---\s*FILE:\s*(?P<path>[^-\n]+?)\s*---\s*\n(?P<body>.*?)(?=^\s*---\s*FILE:\s*|\Z)"
-        )
-        out: List[Tuple[str, str]] = []
-        for m in pat.finditer(text):
-            p = (m.group("path") or "").strip()
-            b = (m.group("body") or "").rstrip() + "\n"
-            if p and b.strip():
-                out.append((p, b))
-        return out
 
     def _sanitize(self, rel_path: str) -> Optional[str]:
         p = (rel_path or "").strip().replace("\\", "/")
