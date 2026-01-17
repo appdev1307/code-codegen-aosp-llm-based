@@ -4,6 +4,7 @@ import json
 import requests
 from typing import Any, Dict, List, Optional
 
+# Colab: be explicit
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 MODEL = "qwen2.5-coder:7b"
 TIMEOUT = 600  # seconds
@@ -17,13 +18,15 @@ def call_llm(
     temperature: float = 0.0,
     top_p: float = 1.0,
     stop: Optional[List[str]] = None,
-    response_format: Optional[str] = None,  # keep OFF
-    num_predict: int = 2048,
-    repeat_penalty: float = 1.1,
+    response_format: Optional[str] = None,  # IMPORTANT: default OFF
 ) -> str:
     """
-    Ollama client for structured codegen.
-    Use stream=False for best schema compliance.
+    Ollama client.
+
+    Notes:
+    - stream=False is recommended for structured outputs (JSON / file blocks)
+    - temperature=0 reduces chatty/apology responses
+    - DO NOT default to format=json; some Ollama versions/models reject it ("Invalid request")
     """
 
     payload: Dict[str, Any] = {
@@ -34,14 +37,13 @@ def call_llm(
         "options": {
             "temperature": temperature,
             "top_p": top_p,
-            "num_predict": num_predict,
-            "repeat_penalty": repeat_penalty,
         },
     }
 
     if stop:
         payload["options"]["stop"] = stop
 
+    # Only include "format" if explicitly requested
     if response_format is not None:
         payload["format"] = response_format
 

@@ -1,8 +1,9 @@
 # FILE: agents/vhal_aidl_agent.py
 
+import json
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
@@ -17,201 +18,157 @@ class VHALAidlAgent:
         self.raw_dir = Path(self.output_root)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
+        # JSON-only contract (LLM primary)
         self.system = (
-            "You are a senior Android Automotive OS engineer.\n"
-            "Follow instructions exactly.\n"
-            "Do not ask questions.\n"
-            "Output only multi-file blocks starting with '--- FILE:'.\n"
-            "No explanations.\n"
+            "You are a deterministic code generator.\n"
+            "Output STRICT JSON only.\n"
+            "No prose. No markdown. No code fences.\n"
+            "If you cannot comply, output exactly: {\"files\": []}\n"
         )
 
-        # Canonical AOSP-style locations (matches your example)
-        self.base = "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
+        self.base_dir = "hardware/interfaces/automotive/vehicle/aidl"
+        self.pkg_dir = f"{self.base_dir}/android/hardware/automotive/vehicle"
 
-        self.iv = f"{self.base}/IVehicle.aidl"
-        self.cb = f"{self.base}/IVehicleCallback.aidl"
-        self.vpv = f"{self.base}/VehiclePropValue.aidl"
+        self.required_files = [
+            f"{self.pkg_dir}/IVehicle.aidl",
+            f"{self.pkg_dir}/IVehicleCallback.aidl",
+            f"{self.pkg_dir}/VehiclePropValue.aidl",
+        ]
 
     def build_prompt(self, spec_text: str) -> str:
-        # Few-shot example forces structure compliance for weaker models.
-        example = f"""--- FILE: {self.vpv} ---
-package android.hardware.automotive.vehicle;
-parcelable VehiclePropValue;
-"""
-
         return f"""
-YOU MUST OUTPUT ONLY FILE BLOCKS.
-THE FIRST NON-EMPTY LINE MUST START WITH: --- FILE:
+OUTPUT CONTRACT (MANDATORY):
+Return ONLY valid JSON matching this schema:
 
-Glossary:
-- VSS = Vehicle Signal Specification (signal tree), NOT "Vehicle Security System".
+{{
+  "files": [
+    {{"path": "hardware/...", "content": "..."}}
+  ]
+}}
 
-You are an Android Automotive OS architect.
+HARD RULES:
+- Output ONLY JSON. No other text.
+- NO markdown, NO code fences, NO headings.
+- DO NOT generate app-layer AIDL (no com.example, no AndroidManifest, no Service).
+- TARGET IS AOSP AAOS VEHICLE HAL AIDL:
+  - Root: hardware/interfaces/automotive/vehicle/aidl/
+  - package: android.hardware.automotive.vehicle
 
-Your task:
-Generate AIDL definitions for an AIDL-based Vehicle HAL interface.
+YOU MUST GENERATE EXACTLY THESE FILES:
+- {self.required_files[0]}
+- {self.required_files[1]}
+- {self.required_files[2]}
 
-Rules:
-- Package MUST be: android.hardware.automotive.vehicle
-- AIDL only (Android 12+), NO HIDL
-- VehiclePropValue MUST be declared as parcelable
-- IVehicle MUST declare:
-    VehiclePropValue get(int propId, int areaId);
-    void set(in VehiclePropValue value);
-- IVehicle MUST ALSO declare callback registration (required for callback notification):
-    void registerCallback(in IVehicleCallback callback);
-    void unregisterCallback(in IVehicleCallback callback);
-- IVehicleCallback MUST exist and accept VehiclePropValue in onPropertyEvent()
-- Use correct AIDL syntax
-- No placeholders, no TODO
-- No prose, no comments, no markdown fences
+AIDL REQUIREMENTS:
+- IVehicle MUST declare exactly these methods:
+  VehiclePropValue get(int propId, int areaId);
+  void set(in VehiclePropValue value);
+  void registerCallback(in IVehicleCallback callback);
+  void unregisterCallback(in IVehicleCallback callback);
 
-Paths:
-- Paths MUST start with: hardware/
-- Required files (all must be emitted):
-  1) {self.iv}
-  2) {self.cb}
-  3) {self.vpv}
+- IVehicleCallback MUST declare:
+  void onPropertyEvent(in VehiclePropValue value);
 
-Output format EXACTLY:
+- VehiclePropValue MUST be parcelable (can be empty)
 
---- FILE: <relative path> ---
-<file content>
-
-Example (format demonstration only; do not repeat verbatim):
-{example}
-
-Specification:
+SPEC CONTEXT (do not repeat):
 {spec_text}
 
-Now output the AIDL files.
+RETURN JSON NOW.
 """.lstrip()
 
     def run(self, spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
-
         prompt = self.build_prompt(spec_text)
 
         # Attempt 1
-        result1 = call_llm(prompt, system=self.system) or ""
-        self._dump_raw(result1, attempt=1)
-        written1 = self._write_files(result1)
-        if written1 > 0:
-            print(f"[DEBUG] {self.name}: wrote {written1} files", flush=True)
-            return result1
+        out1 = call_llm(prompt, system=self.system, stream=False, temperature=0.0) or ""
+        self._dump_raw(out1, 1)
+        if self._write_json_files(out1):
+            print(f"[DEBUG] {self.name}: LLM wrote AIDL files", flush=True)
+            return out1
 
         # Attempt 2 (repair)
-        repair_prompt = (
+        repair = (
             prompt
-            + "\n\nREPAIR INSTRUCTIONS (MANDATORY):\n"
-              "- Your previous output was INVALID because it contained no '--- FILE:' blocks.\n"
-              "- Output ONLY file blocks.\n"
-              "- The first non-empty line MUST start with: --- FILE:\n"
-              "- You MUST emit ALL of these files:\n"
-              f"  1) {self.iv}\n"
-              f"  2) {self.cb}\n"
-              f"  3) {self.vpv}\n"
-              "- No prose.\n"
+            + "\nREPAIR (MANDATORY):\n"
+              "- Your previous output was INVALID.\n"
+              "- Output ONLY JSON exactly matching the schema.\n"
+              "- Do NOT include markdown or any explanation.\n"
+              "- Ensure paths and package are AAOS VHAL as specified.\n"
+              "\nPREVIOUS OUTPUT (for correction, do not repeat):\n"
+              f"{out1}\n"
         )
-        result2 = call_llm(repair_prompt, system=self.system) or ""
-        self._dump_raw(result2, attempt=2)
-        written2 = self._write_files(result2)
-        if written2 > 0:
-            print(f"[DEBUG] {self.name}: wrote {written2} files (after retry)", flush=True)
-            return result2
+        out2 = call_llm(repair, system=self.system, stream=False, temperature=0.0) or ""
+        self._dump_raw(out2, 2)
+        if self._write_json_files(out2):
+            print(f"[DEBUG] {self.name}: LLM wrote AIDL files (after repair)", flush=True)
+            return out2
 
-        # Deterministic fallback (unblocks pipeline)
-        print(f"[WARN] {self.name}: LLM did not produce file blocks. Using deterministic fallback.", flush=True)
-        fallback_written = self._write_fallback_aidl()
-        if fallback_written == 0:
-            raise RuntimeError(
-                "[FORMAT ERROR] No AIDL files written after retry, and fallback failed. "
-                f"See {self.raw_dir / 'VHAL_AIDL_RAW_attempt1.txt'} and {self.raw_dir / 'VHAL_AIDL_RAW_attempt2.txt'}"
-            )
+        # Fallback (unchanged behavior)
+        print(f"[WARN] {self.name}: LLM output invalid. Using deterministic fallback.", flush=True)
+        self._write_fallback()
+        return "[FALLBACK] Deterministic VHAL AIDL generated."
 
-        return "[FALLBACK] Deterministic AIDL files generated."
-
-    # -----------------------------
-    # Raw dump
-    # -----------------------------
     def _dump_raw(self, text: str, attempt: int) -> None:
         (self.raw_dir / f"VHAL_AIDL_RAW_attempt{attempt}.txt").write_text(text or "", encoding="utf-8")
 
-    # -----------------------------
-    # Parsing + writing
-    # -----------------------------
-    def _write_files(self, text: str) -> int:
-        if not text or not text.strip():
-            return 0
+    def _write_json_files(self, text: str) -> bool:
+        t = (text or "").strip()
+        if not t:
+            return False
 
-        normalized = self._strip_outer_code_fences(text)
-        blocks = self._parse_file_blocks(normalized)
-        if not blocks:
-            return 0
+        # Reject obvious non-JSON / tutorial outputs
+        if not t.startswith("{"):
+            return False
+        low = t.lower()
+        if "```" in t or "\n###" in t or "com.example" in low or "androidmanifest" in low:
+            return False
+        if "here are" in low or "sure," in low or "examples" in low:
+            return False
 
-        count = 0
-        for rel_path, content in blocks:
-            safe_path = self._sanitize_rel_path(rel_path)
-            if safe_path is None:
+        try:
+            data = json.loads(t)
+        except Exception:
+            return False
+
+        files = data.get("files")
+        if not isinstance(files, list) or not files:
+            return False
+
+        paths = {(f.get("path") or "").strip() for f in files if isinstance(f, dict)}
+        if any(req not in paths for req in self.required_files):
+            return False
+
+        wrote = 0
+        for f in files:
+            if not isinstance(f, dict):
                 continue
-            self.writer.write(safe_path, content)
-            count += 1
-        return count
+            path = (f.get("path") or "").strip()
+            content = f.get("content")
+            if not path or not isinstance(content, str):
+                continue
+            safe = self._sanitize(path)
+            if not safe:
+                continue
+            if not content.endswith("\n"):
+                content += "\n"
+            self.writer.write(safe, content)
+            wrote += 1
 
-    def _strip_outer_code_fences(self, text: str) -> str:
-        t = text.replace("\r\n", "\n").strip()
-        if t.startswith("```"):
-            t = re.sub(r"(?m)^```[^\n]*\n", "", t, count=1)
-            t = re.sub(r"(?m)\n```$", "", t, count=1)
-        return t.strip() + "\n"
+        return wrote >= len(self.required_files)
 
-    def _parse_file_blocks(self, text: str) -> List[Tuple[str, str]]:
-        pattern = re.compile(
-            r"(?ms)^\s*---\s*FILE:\s*(?P<path>[^-\n]+?)\s*---\s*\n(?P<body>.*?)(?=^\s*---\s*FILE:\s*|\Z)"
-        )
-        blocks: List[Tuple[str, str]] = []
-        for m in pattern.finditer(text):
-            rel_path = (m.group("path") or "").strip()
-            body = (m.group("body") or "").rstrip() + "\n"
-            if rel_path and body.strip():
-                blocks.append((rel_path, body))
-        return blocks
-
-    def _sanitize_rel_path(self, rel_path: str) -> Optional[str]:
-        p = (rel_path or "").strip().replace("\\", "/")
+    def _sanitize(self, rel_path: str) -> Optional[str]:
+        p = rel_path.replace("\\", "/").strip()
         p = re.sub(r"/+", "/", p)
-
-        if not p:
+        if p.startswith("/") or ".." in p.split("/"):
             return None
-        if p.startswith("/"):
-            return None
-        if ".." in p.split("/"):
-            return None
-        if not p.startswith("hardware/"):
+        if not p.startswith("hardware/interfaces/automotive/vehicle/aidl/"):
             return None
         return p
 
-    # -----------------------------
-    # Deterministic fallback
-    # -----------------------------
-    def _write_fallback_aidl(self) -> int:
-        files = {
-            self.vpv: """\
-package android.hardware.automotive.vehicle;
-parcelable VehiclePropValue;
-""",
-            self.cb: """\
-package android.hardware.automotive.vehicle;
-
-import android.hardware.automotive.vehicle.VehiclePropValue;
-
-interface IVehicleCallback {
-    void onPropertyEvent(in VehiclePropValue value);
-    void onPropertySetError(int errorCode, int propId, int areaId);
-}
-""",
-            self.iv: """\
-package android.hardware.automotive.vehicle;
+    def _write_fallback(self) -> None:
+        iv = """package android.hardware.automotive.vehicle;
 
 import android.hardware.automotive.vehicle.VehiclePropValue;
 import android.hardware.automotive.vehicle.IVehicleCallback;
@@ -219,21 +176,25 @@ import android.hardware.automotive.vehicle.IVehicleCallback;
 interface IVehicle {
     VehiclePropValue get(int propId, int areaId);
     void set(in VehiclePropValue value);
-
     void registerCallback(in IVehicleCallback callback);
     void unregisterCallback(in IVehicleCallback callback);
 }
-""",
-        }
+"""
+        cb = """package android.hardware.automotive.vehicle;
 
-        count = 0
-        for rel_path, content in files.items():
-            safe_path = self._sanitize_rel_path(rel_path)
-            if safe_path is None:
-                continue
-            self.writer.write(safe_path, content.strip() + "\n")
-            count += 1
-        return count
+import android.hardware.automotive.vehicle.VehiclePropValue;
+
+interface IVehicleCallback {
+    void onPropertyEvent(in VehiclePropValue value);
+}
+"""
+        vp = """package android.hardware.automotive.vehicle;
+
+parcelable VehiclePropValue;
+"""
+        self.writer.write(f"{self.pkg_dir}/IVehicle.aidl", iv + "\n")
+        self.writer.write(f"{self.pkg_dir}/IVehicleCallback.aidl", cb + "\n")
+        self.writer.write(f"{self.pkg_dir}/VehiclePropValue.aidl", vp + "\n")
 
 
 def generate_vhal_aidl(spec):

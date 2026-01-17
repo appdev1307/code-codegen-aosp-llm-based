@@ -38,18 +38,16 @@ class ArchitectAgent:
 
         # 3) Build glue
         print("[ARCHITECT] Step 3: Generate build glue (Soong + init rc + VINTF)", flush=True)
-        generate_vhal_aidl_bp(spec)
-        generate_vhal_service_build_glue(spec)
+        generate_vhal_aidl_bp()
+        generate_vhal_service_build_glue()
 
-        # ===== Step 4: Framework service generation (HVAC only) =====
-        # ===== Step 4: Framework service generation (HVAC only) =====
+        # 4) Framework service generation (HVAC only)
         print(f"[ARCHITECT] Step 4: Generate framework service (domain={domain})", flush=True)
 
         if domain == "HVAC":
             generate_car_service(spec)
         else:
             print(f"[ARCHITECT] Domain={domain}: skip framework generation (HVAC-only).", flush=True)
-
 
         # 5) SELinux
         print("[ARCHITECT] Step 5: Generate SELinux policy", flush=True)

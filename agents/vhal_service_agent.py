@@ -1,8 +1,9 @@
 # FILE: agents/vhal_service_agent.py
 
+import json
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
@@ -18,170 +19,150 @@ class VHALServiceAgent:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
         self.system = (
-            "You are a senior Android Automotive Vehicle HAL engineer.\n"
-            "Follow instructions exactly.\n"
-            "Do not ask questions.\n"
-            "Output only multi-file blocks starting with '--- FILE:'.\n"
-            "No explanations.\n"
+            "You are a deterministic code generator.\n"
+            "Output STRICT JSON only.\n"
+            "No prose. No markdown. No code fences.\n"
+            "If you cannot comply, output exactly: {\"files\": []}\n"
         )
 
         self.impl_cpp = "hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp"
 
+        self.required_files = [
+            self.impl_cpp,
+        ]
+
     def build_prompt(self, spec_text: str) -> str:
-        fewshot = f"""--- FILE: {self.impl_cpp} ---
-#include <android-base/logging.h>
-int main(int, char**) {{ return 0; }}
-"""
         return f"""
-YOU MUST OUTPUT ONLY FILE BLOCKS.
-THE FIRST NON-EMPTY LINE MUST START WITH: --- FILE:
+OUTPUT CONTRACT (MANDATORY):
+Return ONLY valid JSON matching this schema:
 
-Glossary:
-- VSS = Vehicle Signal Specification (signal tree), NOT "Vehicle Security System".
+{{
+  "files": [
+    {{"path": "hardware/...", "content": "..."}}
+  ]
+}}
 
-You are an AAOS Vehicle HAL C++ engineer.
+HARD RULES:
+- Output ONLY JSON. No other text.
+- NO markdown, NO code fences, NO headings.
+- DO NOT generate app-layer code (no AndroidManifest, no Java Service, no com.example).
+- TARGET IS AOSP AAOS VHAL SERVICE (AIDL NDK Binder).
+- Paths MUST start with: hardware/interfaces/automotive/vehicle/impl/
 
-Target:
+YOU MUST GENERATE EXACTLY THIS FILE:
+- {self.impl_cpp}
+
+C++ REQUIREMENTS:
 - Android Automotive OS 14
-- AIDL-based Vehicle HAL backend
-- C++ NDK Binder
-
-Requirements:
-- Implement BnIVehicle
-- Implement get(), set()
-- Implement registerCallback(), unregisterCallback() IF AND ONLY IF present in AIDL
-- Property storage
-- Callback notification
-- Thread-safe
-- Register service:
+- Implement AIDL NDK Binder service for:
   android.hardware.automotive.vehicle.IVehicle/default
+- Use generated AIDL NDK headers:
+  <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
+  <aidl/android/hardware/automotive/vehicle/IVehicleCallback.h>
+  <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
+- Implement:
+  get(propId, areaId, _aidl_return)
+  set(value)
+  registerCallback(callback)
+  unregisterCallback(callback)
+- Thread-safe store
+- Notify callbacks on set()
+- Must compile (include required headers; correct overrides; no TODOs)
 
-Hard constraints:
-- No placeholders, no TODOs
-- No prose, no comments, no markdown, no code fences
-- Must compile (include required headers, correct overrides)
-
-Paths:
-- Paths MUST start with: hardware/
-- Example:
-  {self.impl_cpp}
-
-Output format EXACTLY:
-
---- FILE: <relative path> ---
-<file content>
-
-Example (format demonstration only; do not repeat verbatim):
-{fewshot}
-
-Specification:
+SPEC CONTEXT (do not repeat):
 {spec_text}
 
-Now output the C++ service implementation files.
+RETURN JSON NOW.
 """.lstrip()
 
     def run(self, spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
-
         prompt = self.build_prompt(spec_text)
 
-        # Attempt 1
-        result1 = call_llm(prompt, system=self.system) or ""
-        self._dump_raw(result1, attempt=1)
-        written1 = self._write_files(result1)
-        if written1 > 0:
-            print(f"[DEBUG] {self.name}: wrote {written1} files", flush=True)
-            return result1
+        out1 = call_llm(prompt, system=self.system, stream=False, temperature=0.0) or ""
+        self._dump_raw(out1, 1)
+        if self._write_json_files(out1):
+            print(f"[DEBUG] {self.name}: LLM wrote service files", flush=True)
+            return out1
 
-        # Attempt 2 (repair)
-        repair_prompt = (
+        repair = (
             prompt
-            + "\n\nREPAIR INSTRUCTIONS (MANDATORY):\n"
-              "- Your previous output was INVALID because it contained no '--- FILE:' blocks.\n"
-              "- Output ONLY file blocks.\n"
-              "- The first non-empty line MUST start with: --- FILE:\n"
-              "- Include at minimum:\n"
-              f"  1) {self.impl_cpp}\n"
-              "- No prose.\n"
+            + "\nREPAIR (MANDATORY):\n"
+              "- Your previous output was INVALID.\n"
+              "- Output ONLY JSON exactly matching the schema.\n"
+              "- Do NOT include markdown or any explanation.\n"
+              "- Ensure the file path is exactly required.\n"
+              "\nPREVIOUS OUTPUT (for correction, do not repeat):\n"
+              f"{out1}\n"
         )
-        result2 = call_llm(repair_prompt, system=self.system) or ""
-        self._dump_raw(result2, attempt=2)
-        written2 = self._write_files(result2)
-        if written2 > 0:
-            print(f"[DEBUG] {self.name}: wrote {written2} files (after retry)", flush=True)
-            return result2
+        out2 = call_llm(repair, system=self.system, stream=False, temperature=0.0) or ""
+        self._dump_raw(out2, 2)
+        if self._write_json_files(out2):
+            print(f"[DEBUG] {self.name}: LLM wrote service files (after repair)", flush=True)
+            return out2
 
-        # Deterministic fallback
-        print(f"[WARN] {self.name}: LLM did not produce file blocks. Using deterministic fallback.", flush=True)
-        fallback_written = self._write_fallback_service()
-        if fallback_written == 0:
-            raise RuntimeError(
-                "[FORMAT ERROR] No VHAL service files written after retry, and fallback failed. "
-                f"See {self.raw_dir / 'VHAL_SERVICE_RAW_attempt1.txt'} and {self.raw_dir / 'VHAL_SERVICE_RAW_attempt2.txt'}"
-            )
-
-        return "[FALLBACK] Deterministic VHAL service skeleton generated."
+        print(f"[WARN] {self.name}: LLM did not produce valid JSON. Using deterministic fallback.", flush=True)
+        self._write_fallback()
+        return "[FALLBACK] Deterministic VHAL service generated."
 
     def _dump_raw(self, text: str, attempt: int) -> None:
         (self.raw_dir / f"VHAL_SERVICE_RAW_attempt{attempt}.txt").write_text(text or "", encoding="utf-8")
 
-    def _write_files(self, text: str) -> int:
-        if not text or not text.strip():
-            return 0
+    def _write_json_files(self, text: str) -> bool:
+        t = (text or "").strip()
+        if not t:
+            return False
 
-        normalized = self._strip_outer_code_fences(text)
-        blocks = self._parse_file_blocks(normalized)
-        if not blocks:
-            return 0
+        if not t.startswith("{"):
+            return False
+        low = t.lower()
+        if "```" in t or "\n###" in t or "com.example" in low or "androidmanifest" in low:
+            return False
+        if "here are" in low or "sure," in low or "examples" in low:
+            return False
 
-        count = 0
-        for rel_path, content in blocks:
-            safe_path = self._sanitize_rel_path(rel_path)
-            if safe_path is None:
+        try:
+            data = json.loads(t)
+        except Exception:
+            return False
+
+        files = data.get("files")
+        if not isinstance(files, list) or not files:
+            return False
+
+        paths = {(f.get("path") or "").strip() for f in files if isinstance(f, dict)}
+        if any(req not in paths for req in self.required_files):
+            return False
+
+        wrote = 0
+        for f in files:
+            if not isinstance(f, dict):
                 continue
-            self.writer.write(safe_path, content)
-            count += 1
-        return count
+            path = (f.get("path") or "").strip()
+            content = f.get("content")
+            if not path or not isinstance(content, str):
+                continue
+            safe = self._sanitize(path)
+            if not safe:
+                continue
+            if not content.endswith("\n"):
+                content += "\n"
+            self.writer.write(safe, content)
+            wrote += 1
 
-    def _strip_outer_code_fences(self, text: str) -> str:
-        t = text.replace("\r\n", "\n").strip()
-        if t.startswith("```"):
-            t = re.sub(r"(?m)^```[^\n]*\n", "", t, count=1)
-            t = re.sub(r"(?m)\n```$", "", t, count=1)
-        return t.strip() + "\n"
+        return wrote >= len(self.required_files)
 
-    def _parse_file_blocks(self, text: str) -> List[Tuple[str, str]]:
-        pattern = re.compile(
-            r"(?ms)^\s*---\s*FILE:\s*(?P<path>[^-\n]+?)\s*---\s*\n(?P<body>.*?)(?=^\s*---\s*FILE:\s*|\Z)"
-        )
-        blocks: List[Tuple[str, str]] = []
-        for m in pattern.finditer(text):
-            rel_path = (m.group("path") or "").strip()
-            body = (m.group("body") or "").rstrip() + "\n"
-            if rel_path and body.strip():
-                blocks.append((rel_path, body))
-        return blocks
-
-    def _sanitize_rel_path(self, rel_path: str) -> Optional[str]:
-        p = (rel_path or "").strip().replace("\\", "/")
+    def _sanitize(self, rel_path: str) -> Optional[str]:
+        p = rel_path.replace("\\", "/").strip()
         p = re.sub(r"/+", "/", p)
-
-        if not p:
+        if p.startswith("/") or ".." in p.split("/"):
             return None
-        if p.startswith("/"):
-            return None
-        if ".." in p.split("/"):
-            return None
-        if not p.startswith("hardware/"):
+        if not p.startswith("hardware/interfaces/automotive/vehicle/impl/"):
             return None
         return p
 
-    def _write_fallback_service(self) -> int:
-        # NOTE:
-        # - Do NOT use raw-string literals (r"""...""") here; it previously introduced a leading "\" in output.
-        # - Ensure required headers for std::remove and SharedRefBase are present.
-        cpp = """\
-// FILE: hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp
+    def _write_fallback(self) -> None:
+        cpp = """// FILE: hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp
 
 #include <android-base/logging.h>
 #include <android/binder_interface_utils.h>
@@ -193,7 +174,6 @@ Now output the C++ service implementation files.
 #include <unordered_map>
 #include <vector>
 
-// Generated AIDL headers (from aidl_interface NDK backend)
 #include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
 #include <aidl/android/hardware/automotive/vehicle/IVehicleCallback.h>
 #include <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
@@ -226,12 +206,8 @@ public:
         std::vector<std::shared_ptr<IVehicleCallback>> callbacksCopy;
         {
             std::lock_guard<std::mutex> lk(mMutex);
-
-            // VehiclePropValue is an empty parcelable in your fallback AIDL.
-            // Store under propId=0 until you define fields.
-            const int32_t propId = 0;
+            const int32_t propId = 0;  // fallback AIDL has empty parcelable
             mStore[propId] = value;
-
             callbacksCopy = mCallbacks;
         }
 
@@ -241,7 +217,6 @@ public:
         return ::ndk::ScopedAStatus::ok();
     }
 
-    // Only valid if IVehicle.aidl contains these methods.
     ::ndk::ScopedAStatus registerCallback(const std::shared_ptr<IVehicleCallback>& callback) override {
         std::lock_guard<std::mutex> lk(mMutex);
         if (callback) mCallbacks.push_back(callback);
@@ -284,7 +259,6 @@ int main(int argc, char** argv) {
 }
 """
         self.writer.write(self.impl_cpp, cpp.rstrip() + "\n")
-        return 1
 
 
 def generate_vhal_service(spec):
