@@ -4,7 +4,8 @@ import json
 import requests
 from typing import Any, Dict, List, Optional
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+# Colab: be explicit
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 MODEL = "deepseek-coder:6.7b"
 TIMEOUT = 600  # seconds
 
@@ -17,13 +18,15 @@ def call_llm(
     temperature: float = 0.0,
     top_p: float = 1.0,
     stop: Optional[List[str]] = None,
-    response_format: Optional[str] = "json",  # try json by default; set None to disable
+    response_format: Optional[str] = None,  # IMPORTANT: default OFF
 ) -> str:
     """
     Ollama client.
+
+    Notes:
     - stream=False is recommended for structured outputs (JSON / file blocks)
     - temperature=0 reduces chatty/apology responses
-    - response_format="json" uses Ollama 'format' if the model supports it
+    - DO NOT default to format=json; some Ollama versions/models reject it ("Invalid request")
     """
 
     payload: Dict[str, Any] = {
@@ -40,7 +43,8 @@ def call_llm(
     if stop:
         payload["options"]["stop"] = stop
 
-    if response_format:
+    # Only include "format" if explicitly requested
+    if response_format is not None:
         payload["format"] = response_format
 
     resp = requests.post(OLLAMA_URL, json=payload, stream=stream, timeout=TIMEOUT)

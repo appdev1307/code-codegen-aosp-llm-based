@@ -11,7 +11,8 @@
 !tail -n 20 ollama.log
 
 # 4. Pull model
-!ollama pull deepseek-coder:6.7b
+#!ollama pull deepseek-coder:6.7b
+!ollama pull qwen2.5-coder:7b
 
 
 
