@@ -42,7 +42,7 @@ class ArchitectAgent:
         generate_vhal_service_build_glue(spec)
 
         # ===== Step 4: Framework service generation (HVAC only) =====
-        domain = getattr(spec, "domain", None)
+        # ===== Step 4: Framework service generation (HVAC only) =====
         print(f"[ARCHITECT] Step 4: Generate framework service (domain={domain})", flush=True)
 
         if domain == "HVAC":
