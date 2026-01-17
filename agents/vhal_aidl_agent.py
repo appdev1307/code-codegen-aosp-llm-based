@@ -28,9 +28,13 @@ class VHALAidlAgent:
         # Canonical AOSP-style locations (matches your example)
         self.base = "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
 
+        self.iv = f"{self.base}/IVehicle.aidl"
+        self.cb = f"{self.base}/IVehicleCallback.aidl"
+        self.vpv = f"{self.base}/VehiclePropValue.aidl"
+
     def build_prompt(self, spec_text: str) -> str:
         # Few-shot example forces structure compliance for weaker models.
-        example = f"""--- FILE: {self.base}/VehiclePropValue.aidl ---
+        example = f"""--- FILE: {self.vpv} ---
 package android.hardware.automotive.vehicle;
 parcelable VehiclePropValue;
 """
@@ -45,26 +49,29 @@ Glossary:
 You are an Android Automotive OS architect.
 
 Your task:
-Generate AIDL definitions for Vehicle HAL based strictly on AOSP standards.
+Generate AIDL definitions for an AIDL-based Vehicle HAL interface.
 
 Rules:
 - Package MUST be: android.hardware.automotive.vehicle
 - AIDL only (Android 12+), NO HIDL
-- IVehicle MUST declare EXACTLY:
+- VehiclePropValue MUST be declared as parcelable
+- IVehicle MUST declare:
     VehiclePropValue get(int propId, int areaId);
     void set(in VehiclePropValue value);
-- IVehicleCallback MUST exist
-- VehiclePropValue MUST be declared as parcelable
+- IVehicle MUST ALSO declare callback registration (required for callback notification):
+    void registerCallback(in IVehicleCallback callback);
+    void unregisterCallback(in IVehicleCallback callback);
+- IVehicleCallback MUST exist and accept VehiclePropValue in onPropertyEvent()
 - Use correct AIDL syntax
-- No placeholders
-- No explanations
-- No comments
-- No markdown fences
+- No placeholders, no TODO
+- No prose, no comments, no markdown fences
 
 Paths:
 - Paths MUST start with: hardware/
-- Example:
-  {self.base}/IVehicle.aidl
+- Required files (all must be emitted):
+  1) {self.iv}
+  2) {self.cb}
+  3) {self.vpv}
 
 Output format EXACTLY:
 
@@ -100,10 +107,10 @@ Now output the AIDL files.
               "- Your previous output was INVALID because it contained no '--- FILE:' blocks.\n"
               "- Output ONLY file blocks.\n"
               "- The first non-empty line MUST start with: --- FILE:\n"
-              "- Include at minimum:\n"
-              "  1) IVehicle.aidl\n"
-              "  2) IVehicleCallback.aidl\n"
-              "  3) VehiclePropValue.aidl\n"
+              "- You MUST emit ALL of these files:\n"
+              f"  1) {self.iv}\n"
+              f"  2) {self.cb}\n"
+              f"  3) {self.vpv}\n"
               "- No prose.\n"
         )
         result2 = call_llm(repair_prompt, system=self.system) or ""
@@ -188,25 +195,22 @@ Now output the AIDL files.
     # Deterministic fallback
     # -----------------------------
     def _write_fallback_aidl(self) -> int:
-        """
-        Minimal AIDL set satisfying your hard requirements.
-        This is intentionally small but syntactically valid.
-        """
         files = {
-            f"{self.base}/VehiclePropValue.aidl": """\
+            self.vpv: """\
 package android.hardware.automotive.vehicle;
 parcelable VehiclePropValue;
 """,
-            f"{self.base}/IVehicleCallback.aidl": """\
+            self.cb: """\
 package android.hardware.automotive.vehicle;
 
+import android.hardware.automotive.vehicle.VehiclePropValue;
+
 interface IVehicleCallback {
-    // Minimal callback surface (expand later as needed)
     void onPropertyEvent(in VehiclePropValue value);
     void onPropertySetError(int errorCode, int propId, int areaId);
 }
 """,
-            f"{self.base}/IVehicle.aidl": """\
+            self.iv: """\
 package android.hardware.automotive.vehicle;
 
 import android.hardware.automotive.vehicle.VehiclePropValue;
@@ -216,7 +220,6 @@ interface IVehicle {
     VehiclePropValue get(int propId, int areaId);
     void set(in VehiclePropValue value);
 
-    // Minimal subscription APIs (optional but common); safe to remove if you do not want them.
     void registerCallback(in IVehicleCallback callback);
     void unregisterCallback(in IVehicleCallback callback);
 }

@@ -39,13 +39,14 @@ class VHALAidlBuildAgent:
         ]
 
     def build_prompt(self, spec_text: str) -> str:
-        # Few-shot format demonstration
+        srcs_lines = "\n".join([f'        "{s}",' for s in self.aidl_srcs])
+
         example = f"""--- FILE: {self.bp_path} ---
 aidl_interface {{
     name: "android.hardware.automotive.vehicle",
     vendor_available: true,
     srcs: [
-        "android/hardware/automotive/vehicle/IVehicle.aidl",
+{srcs_lines}
     ],
     versions: ["1"],
     stability: "vintf",
@@ -56,7 +57,6 @@ aidl_interface {{
     }},
 }}
 """
-        srcs_lines = "\n".join([f'        "{s}",' for s in self.aidl_srcs])
 
         return f"""
 YOU MUST OUTPUT ONLY FILE BLOCKS.
@@ -65,7 +65,8 @@ THE FIRST NON-EMPTY LINE MUST START WITH: --- FILE:
 Goal:
 Generate a build-correct Soong Android.bp for an AAOS AIDL VHAL interface.
 
-Constraints:
+Hard constraints (MUST):
+- Output EXACTLY ONE file: {self.bp_path}
 - Use aidl_interface
 - name MUST be: android.hardware.automotive.vehicle
 - vendor_available: true
@@ -79,7 +80,7 @@ Output format:
 --- FILE: <relative path> ---
 <file content>
 
-Example (format only, do not copy verbatim):
+Example (format demonstration only; do not repeat verbatim):
 {example}
 
 Input (context only):
@@ -88,29 +89,97 @@ Input (context only):
 
     def run(self, spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
-
         prompt = self.build_prompt(spec_text)
 
         # Attempt 1
         out1 = call_llm(prompt, system=self.system) or ""
         self._dump_raw(out1, 1)
-        if self._write_files(out1) > 0:
+        if self._write_and_validate(out1):
             print(f"[DEBUG] {self.name}: done (LLM)", flush=True)
             return out1
 
-        # Attempt 2
-        repair = prompt + "\nREPAIR: Output ONLY '--- FILE:' blocks. No prose."
+        # Attempt 2 (repair)
+        repair = (
+            prompt
+            + "\n\nREPAIR (MANDATORY):\n"
+              "- Output ONLY '--- FILE:' blocks.\n"
+              f"- Output EXACTLY ONE file: {self.bp_path}\n"
+              "- No prose.\n"
+        )
         out2 = call_llm(repair, system=self.system) or ""
         self._dump_raw(out2, 2)
-        if self._write_files(out2) > 0:
+        if self._write_and_validate(out2):
             print(f"[DEBUG] {self.name}: done (LLM retry)", flush=True)
             return out2
 
         # Fallback
-        print(f"[WARN] {self.name}: LLM did not produce file blocks. Using deterministic fallback.", flush=True)
+        print(f"[WARN] {self.name}: LLM output invalid. Using deterministic fallback.", flush=True)
         self._write_fallback()
         return "[FALLBACK] AIDL Android.bp generated."
 
+    # -----------------------------
+    # Validation-aware writer
+    # -----------------------------
+    def _write_and_validate(self, text: str) -> bool:
+        """
+        Returns True only if:
+        - LLM wrote at least 1 file block
+        - The expected bp_path was written
+        - The Android.bp content passes minimal semantic checks
+        """
+        blocks = self._parse_file_blocks(self._strip_outer_fences(text))
+        if not blocks:
+            return False
+
+        wrote_target = False
+        target_body = None
+
+        for path, body in blocks:
+            safe = self._sanitize(path)
+            if not safe:
+                continue
+            self.writer.write(safe, body.rstrip() + "\n")
+
+            if safe == self.bp_path:
+                wrote_target = True
+                target_body = body
+
+        if not wrote_target or not target_body:
+            return False
+
+        return self._validate_bp(target_body)
+
+    def _validate_bp(self, bp_text: str) -> bool:
+        t = (bp_text or "").replace("\r\n", "\n")
+
+        required_snippets = [
+            "aidl_interface",
+            'name: "android.hardware.automotive.vehicle"',
+            "vendor_available: true",
+            'stability: "vintf"',
+            'versions: ["1"]',
+            "backend",
+            "ndk",
+            "enabled: true",
+        ]
+        for s in required_snippets:
+            if s not in t:
+                return False
+
+        # src presence checks
+        for s in self.aidl_srcs:
+            if s not in t:
+                return False
+
+        # Ensure cpp/java are disabled (can appear as enabled: false)
+        if "cpp" not in t or "java" not in t:
+            return False
+
+        return True
+
+    # -----------------------------
+    # Fallback
+    # -----------------------------
     def _write_fallback(self) -> None:
         content = """\
 aidl_interface {
@@ -132,23 +201,11 @@ aidl_interface {
 """
         self.writer.write(self.bp_path, content.rstrip() + "\n")
 
+    # -----------------------------
+    # Utilities
+    # -----------------------------
     def _dump_raw(self, text: str, attempt: int) -> None:
         (self.raw_dir / f"VHAL_AIDL_BP_RAW_attempt{attempt}.txt").write_text(text or "", encoding="utf-8")
-
-    def _write_files(self, text: str) -> int:
-        if not text or not text.strip():
-            return 0
-        blocks = self._parse_file_blocks(self._strip_outer_fences(text))
-        if not blocks:
-            return 0
-
-        n = 0
-        for path, body in blocks:
-            safe = self._sanitize(path)
-            if safe:
-                self.writer.write(safe, body.rstrip() + "\n")
-                n += 1
-        return n
 
     def _strip_outer_fences(self, text: str) -> str:
         t = text.replace("\r\n", "\n").strip()

@@ -1,7 +1,6 @@
 # FILE: tools/safe_writer.py
 
 import os
-from typing import Optional
 
 
 class SafeWriter:
@@ -26,7 +25,8 @@ class SafeWriter:
         if not (abs_path == self.output_root or abs_path.startswith(self.output_root + os.sep)):
             raise ValueError(f"[SAFE WRITER] Path escape detected: {abs_path}")
 
-        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        parent_dir = os.path.dirname(abs_path) or self.output_root
+        os.makedirs(parent_dir, exist_ok=True)
 
         with open(abs_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
@@ -38,6 +38,10 @@ class SafeWriter:
             raise ValueError("[SAFE WRITER] Empty path")
 
         p = rel_path.strip()
+
+        # Reject directory-like paths early (keep this effective)
+        if p.endswith("/") or p.endswith("\\"):
+            raise ValueError(f"[SAFE WRITER] Path points to directory: {rel_path}")
 
         # Normalize slashes early (LLMs often emit backslashes)
         p = p.replace("\\", "/")
@@ -61,8 +65,7 @@ class SafeWriter:
 
         safe_rel = "/".join(parts)
 
-        # Basic sanity: prevent writing to directory only
-        if safe_rel.endswith("/"):
-            raise ValueError(f"[SAFE WRITER] Path points to directory: {rel_path}")
+        if not safe_rel:
+            raise ValueError(f"[SAFE WRITER] Empty normalized path: {rel_path}")
 
         return safe_rel

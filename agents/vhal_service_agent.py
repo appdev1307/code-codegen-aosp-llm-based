@@ -25,10 +25,7 @@ class VHALServiceAgent:
             "No explanations.\n"
         )
 
-        # Default service file locations (your example)
         self.impl_cpp = "hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp"
-        self.impl_h = "hardware/interfaces/automotive/vehicle/impl/VehicleHalService.h"
-        self.impl_bp = "hardware/interfaces/automotive/vehicle/impl/Android.bp"
 
     def build_prompt(self, spec_text: str) -> str:
         fewshot = f"""--- FILE: {self.impl_cpp} ---
@@ -51,7 +48,8 @@ Target:
 
 Requirements:
 - Implement BnIVehicle
-- Implement get() and set()
+- Implement get(), set()
+- Implement registerCallback(), unregisterCallback() if present in AIDL
 - Property storage
 - Callback notification
 - Thread-safe
@@ -103,8 +101,6 @@ Now output the C++ service implementation files.
               "- The first non-empty line MUST start with: --- FILE:\n"
               "- Include at minimum:\n"
               f"  1) {self.impl_cpp}\n"
-              f"  2) {self.impl_h}\n"
-              f"  3) {self.impl_bp}\n"
               "- No prose.\n"
         )
         result2 = call_llm(repair_prompt, system=self.system) or ""
@@ -125,15 +121,9 @@ Now output the C++ service implementation files.
 
         return "[FALLBACK] Deterministic VHAL service skeleton generated."
 
-    # -----------------------------
-    # Raw dump
-    # -----------------------------
     def _dump_raw(self, text: str, attempt: int) -> None:
         (self.raw_dir / f"VHAL_SERVICE_RAW_attempt{attempt}.txt").write_text(text or "", encoding="utf-8")
 
-    # -----------------------------
-    # Parsing + writing
-    # -----------------------------
     def _write_files(self, text: str) -> int:
         if not text or not text.strip():
             return 0
@@ -185,62 +175,18 @@ Now output the C++ service implementation files.
             return None
         return p
 
-    # -----------------------------
-    # Deterministic fallback
-    # -----------------------------
     def _write_fallback_service(self) -> int:
-        """
-        Minimal AAOS AIDL VHAL service skeleton.
-        This is intentionally small and may require alignment to your repo,
-        but it satisfies the pipeline expectation of producing files.
-        """
-        bp = f"""\
-cc_binary {{
-    name: "android.hardware.automotive.vehicle-service-default",
-    srcs: [
-        "VehicleHalService.cpp",
-    ],
-    shared_libs: [
-        "libbase",
-        "libbinder_ndk",
-        "liblog",
-    ],
-    cflags: ["-Wall", "-Werror"],
-}}
-"""
-
-        h = """\
-#pragma once
-
-#include <mutex>
-#include <unordered_map>
-#include <vector>
-
-#include <android/binder_ibinder.h>
-
-namespace aidl::android::hardware::automotive::vehicle {
-class BnIVehicle;
-class IVehicleCallback;
-class VehiclePropValue;
-}  // namespace aidl::android::hardware::automotive::vehicle
-
-class VehicleHalServiceImpl;
-"""
-
-        cpp = r"""\
+        cpp = """\
 #include <android-base/logging.h>
+#include <android/binder_interface_utils.h>
 #include <android/binder_manager.h>
 #include <android/binder_process.h>
 
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
 
-#include "VehicleHalService.h"
-
-// NOTE:
-// This is a minimal skeleton. You will likely need to replace includes below with your
-// generated AIDL headers depending on your build tree.
 #include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
 #include <aidl/android/hardware/automotive/vehicle/IVehicleCallback.h>
 #include <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
@@ -273,41 +219,30 @@ public:
         std::vector<std::shared_ptr<IVehicleCallback>> callbacksCopy;
         {
             std::lock_guard<std::mutex> lk(mMutex);
-            // Minimal storage strategy: use prop field if present; otherwise no-op.
-            // Many AOSP VehiclePropValue schemas include prop/areaId/value fields.
-            // If your AIDL differs, adapt accordingly.
-            // We store using a best-effort heuristic:
-            int32_t propId = 0;
-            // If your VehiclePropValue has a "prop" field, uncomment next line and remove propId=0.
-            // propId = value.prop;
+
+            // VehiclePropValue is an empty parcelable in your fallback AIDL.
+            // Store under propId=0 until you define fields.
+            const int32_t propId = 0;
             mStore[propId] = value;
 
             callbacksCopy = mCallbacks;
         }
 
-        // Notify callbacks best-effort (ignore failures)
         for (auto& cb : callbacksCopy) {
-            if (cb) {
-                (void)cb->onPropertyEvent(value);
-            }
+            if (cb) (void)cb->onPropertyEvent(value);
         }
         return ::ndk::ScopedAStatus::ok();
     }
 
-    // These methods are not part of your "EXACTLY" requirement for IVehicle;
-    // include them only if your AIDL contains them. If not, remove.
-    ::ndk::ScopedAStatus registerCallback(const std::shared_ptr<IVehicleCallback>& callback) {
+    ::ndk::ScopedAStatus registerCallback(const std::shared_ptr<IVehicleCallback>& callback) override {
         std::lock_guard<std::mutex> lk(mMutex);
         if (callback) mCallbacks.push_back(callback);
         return ::ndk::ScopedAStatus::ok();
     }
 
-    ::ndk::ScopedAStatus unregisterCallback(const std::shared_ptr<IVehicleCallback>& callback) {
+    ::ndk::ScopedAStatus unregisterCallback(const std::shared_ptr<IVehicleCallback>& callback) override {
         std::lock_guard<std::mutex> lk(mMutex);
-        mCallbacks.erase(
-            std::remove(mCallbacks.begin(), mCallbacks.end(), callback),
-            mCallbacks.end()
-        );
+        mCallbacks.erase(std::remove(mCallbacks.begin(), mCallbacks.end(), callback), mCallbacks.end());
         return ::ndk::ScopedAStatus::ok();
     }
 
@@ -320,9 +255,6 @@ private:
 }  // namespace
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
-
     android::base::InitLogging(argv, android::base::LogdLogger(android::base::SYSTEM));
 
     ABinderProcess_setThreadPoolMaxThreadCount(4);
@@ -343,21 +275,8 @@ int main(int argc, char** argv) {
     return 0;
 }
 """
-
-        files = {
-            self.impl_bp: bp,
-            self.impl_h: h,
-            self.impl_cpp: cpp,
-        }
-
-        count = 0
-        for rel_path, content in files.items():
-            safe_path = self._sanitize_rel_path(rel_path)
-            if safe_path is None:
-                continue
-            self.writer.write(safe_path, content.rstrip() + "\n")
-            count += 1
-        return count
+        self.writer.write(self.impl_cpp, cpp.rstrip() + "\n")
+        return 1
 
 
 def generate_vhal_service(spec):
