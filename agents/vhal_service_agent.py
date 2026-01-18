@@ -3,7 +3,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
@@ -20,6 +20,8 @@ class VHALServiceAgent:
 
         self.raw_dir = Path(self.output_root)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
+
+        self.report_path = Path(self.output_root) / "VHAL_SERVICE_VALIDATE_REPORT.json"
 
         self.system = (
             "Output STRICT JSON only.\n"
@@ -86,29 +88,70 @@ RETURN JSON NOW.
         print(f"[DEBUG] {self.name}: start", flush=True)
         prompt = self.build_prompt(spec_text)
 
+        # Attempt 1
         out1 = call_llm(prompt, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out1, 1)
-        if self._write_json_files(out1):
+        ok1, report1 = self._validate_llm(out1)
+        self.report_path.write_text(json.dumps(report1, indent=2), encoding="utf-8")
+
+        if ok1 and self._write_json_files(out1):
             print(f"[DEBUG] {self.name}: LLM wrote service files (draft)", flush=True)
             return out1
 
+        # Attempt 2 (targeted repair)
+        missing = report1.get("missing_required_paths", [])
         repair = (
             prompt
             + "\nREPAIR (MANDATORY): Return ONLY JSON matching schema.\n"
-              "Avoid:\n"
-              "- ``` fences\n"
-              "- extra commentary\n"
-              "- missing required file path\n"
+              "You MUST include required path exactly.\n"
+              f"MISSING REQUIRED PATHS: {missing}\n"
+              "Do NOT wrap in code fences. Do NOT add commentary.\n"
         )
+
         out2 = call_llm(repair, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out2, 2)
-        if self._write_json_files(out2):
+        ok2, report2 = self._validate_llm(out2)
+        (Path(self.output_root) / "VHAL_SERVICE_VALIDATE_REPORT_attempt2.json").write_text(
+            json.dumps(report2, indent=2), encoding="utf-8"
+        )
+
+        if ok2 and self._write_json_files(out2):
             print(f"[DEBUG] {self.name}: LLM wrote service files (draft, after repair)", flush=True)
             return out2
 
         print(f"[WARN] {self.name}: LLM did not produce valid JSON. Using deterministic fallback (draft).", flush=True)
         self._write_fallback()
         return "[FALLBACK] Deterministic VHAL service generated (draft)."
+
+    def _validate_llm(self, text: str) -> Tuple[bool, Dict[str, Any]]:
+        data, err = parse_json_object(text or "")
+        report: Dict[str, Any] = {
+            "parse_error": err,
+            "has_files": False,
+            "file_count": 0,
+            "paths": [],
+            "missing_required_paths": [],
+        }
+        if err or not data:
+            return False, report
+
+        files = data.get("files")
+        if not isinstance(files, list):
+            report["parse_error"] = report["parse_error"] or "Top-level key 'files' must be a list."
+            return False, report
+
+        report["has_files"] = True
+        report["file_count"] = len(files)
+
+        paths = []
+        for f in files:
+            if isinstance(f, dict) and isinstance(f.get("path"), str):
+                paths.append(f["path"].strip())
+        report["paths"] = paths
+
+        missing = [p for p in self.required_files if p not in set(paths)]
+        report["missing_required_paths"] = missing
+        return (len(missing) == 0), report
 
     def _dump_raw(self, text: str, attempt: int) -> None:
         (self.raw_dir / f"VHAL_SERVICE_RAW_attempt{attempt}.txt").write_text(text or "", encoding="utf-8")
@@ -187,7 +230,6 @@ struct Key {
 
 struct KeyHash {
     size_t operator()(const Key& k) const {
-        // simple combine
         return (static_cast<size_t>(static_cast<uint32_t>(k.propId)) << 32) ^
                static_cast<size_t>(static_cast<uint32_t>(k.areaId));
     }

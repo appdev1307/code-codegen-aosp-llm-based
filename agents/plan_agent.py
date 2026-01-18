@@ -1,5 +1,4 @@
 # FILE: agents/plan_agent.py
-
 import json
 from typing import Any, Dict, List
 
@@ -10,8 +9,8 @@ from tools.json_contract import parse_json_object
 
 class PlanAgent:
     """
-    Phase 1 (LLM): Produce a strict JSON plan that guides emitters/LLM draft generators.
-    Chunked so it works with 200+ properties.
+    Phase 1 (LLM): Produce a strict JSON plan.
+    Must NEVER drop spec properties: we force-include all IDs from spec after merge.
     """
 
     def __init__(self):
@@ -23,10 +22,6 @@ class PlanAgent:
         )
 
     def _compact_properties(self, spec: HalSpec) -> List[str]:
-        """
-        Convert HalSpec.properties into compact lines to keep prompt small.
-        Each line: ID|TYPE|ACCESS|AREAS
-        """
         lines = []
         for p in spec.properties:
             pid = getattr(p, "id", "")
@@ -62,27 +57,24 @@ Schema:
 Rules:
 - Enums must match exactly (case-sensitive).
 - Do not invent properties not in the input list.
-- For READ properties: default change_mode="ON_CHANGE".
-- For READ_WRITE properties: default change_mode="ON_CHANGE".
 - If unsure: callback_policy="notify_on_change", default_change_mode="ON_CHANGE", default=null.
 
-Global context:
+Context:
 - domain={spec.domain}
 - aosp_level={spec.aosp_level}
 - vendor={spec.vendor}
 
-You will be given a chunk of properties as compact lines:
+You will be given a chunk of properties as:
 ID|TYPE|ACCESS|AREAS
-You must output JSON only, with "properties" containing ONLY the ids you see in the chunk.
+
+Return JSON only.
 """.strip()
 
     def _build_chunk_prompt(self, header: str, chunk_lines: List[str]) -> str:
-        # Keep it ultra compact
-        props_blob = "\n".join(chunk_lines)
         return f"""{header}
 
 PROPERTIES (CHUNK):
-{props_blob}
+{chr(10).join(chunk_lines)}
 
 RETURN JSON NOW.
 """.strip()
@@ -90,10 +82,12 @@ RETURN JSON NOW.
     def run(self, spec: HalSpec) -> Dict[str, Any]:
         print(f"[DEBUG] {self.name}: start", flush=True)
 
+        spec_ids = [(getattr(p, "id", "") or "").strip() for p in spec.properties]
+        spec_ids = [x for x in spec_ids if x]  # remove empties, preserve order
+
         lines = self._compact_properties(spec)
         header = self._build_header_prompt(spec)
 
-        # Chunk size tuned to avoid long prompts; 60-80 is usually safe
         chunk_size = 60
         merged: Dict[str, Any] = {
             "domain": spec.domain,
@@ -104,46 +98,35 @@ RETURN JSON NOW.
             "properties": [],
         }
 
-        # First chunk: allow model to set top-level knobs
+        # Chunk calls
         for idx in range(0, len(lines), chunk_size):
             chunk = lines[idx : idx + chunk_size]
             prompt = self._build_chunk_prompt(header, chunk)
 
             raw = call_llm(prompt, system=self.system, stream=False, temperature=0.0) or ""
             data, err = parse_json_object(raw)
-            if err or not data:
-                # Fail soft: just keep going with defaults; still merge IDs deterministically
-                # but we do want entries for every property id
-                for line in chunk:
-                    pid = (line.split("|")[0] or "").strip()
-                    if pid:
-                        merged["properties"].append({"id": pid, "change_mode": "ON_CHANGE", "default": None})
-                continue
 
-            if idx == 0:
-                merged["callback_policy"] = data.get("callback_policy") or merged["callback_policy"]
-                merged["default_change_mode"] = data.get("default_change_mode") or merged["default_change_mode"]
+            if not err and data:
+                if idx == 0:
+                    merged["callback_policy"] = data.get("callback_policy") or merged["callback_policy"]
+                    merged["default_change_mode"] = data.get("default_change_mode") or merged["default_change_mode"]
 
-            props = data.get("properties") or []
-            if isinstance(props, list) and props:
-                merged["properties"].extend(props)
-            else:
-                # If model returns empty, fill deterministically from chunk IDs
-                for line in chunk:
-                    pid = (line.split("|")[0] or "").strip()
-                    if pid:
-                        merged["properties"].append({"id": pid, "change_mode": merged["default_change_mode"], "default": None})
+                props = data.get("properties") or []
+                if isinstance(props, list):
+                    merged["properties"].extend([p for p in props if isinstance(p, dict)])
 
-        # Normalize: ensure all IDs exist exactly once (preserve order)
-        seen = set()
-        normalized = []
+        # Index what model returned
+        model_map: Dict[str, Dict[str, Any]] = {}
         for p in merged["properties"]:
-            if not isinstance(p, dict):
-                continue
             pid = (p.get("id") or "").strip()
-            if not pid or pid in seen:
+            if not pid or pid in model_map:
                 continue
-            seen.add(pid)
+            model_map[pid] = p
+
+        # FORCE: include every spec id exactly once
+        normalized: List[Dict[str, Any]] = []
+        for pid in spec_ids:
+            p = model_map.get(pid) or {}
             normalized.append(
                 {
                     "id": pid,
@@ -151,6 +134,7 @@ RETURN JSON NOW.
                     "default": p.get("default", None),
                 }
             )
+
         merged["properties"] = normalized
 
         print(f"[DEBUG] {self.name}: done (properties in plan={len(merged['properties'])})", flush=True)
