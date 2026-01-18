@@ -7,13 +7,14 @@ from typing import Optional
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
+from tools.json_contract import parse_json_object
 
 
 class VHALServiceAgent:
     def __init__(self):
         self.name = "VHAL C++ Service Agent"
 
-        # Stage-1 outputs go to draft
+        # Stage-1 goes to draft
         self.output_root = "output/.llm_draft/latest"
         self.writer = SafeWriter(self.output_root)
 
@@ -21,7 +22,6 @@ class VHALServiceAgent:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
         self.system = (
-            "You are a deterministic code generator.\n"
             "Output STRICT JSON only.\n"
             "No prose. No markdown. No code fences.\n"
             "If you cannot comply, output exactly: {\"files\": []}\n"
@@ -30,36 +30,8 @@ class VHALServiceAgent:
         self.impl_cpp = "hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp"
         self.required_files = [self.impl_cpp]
 
-    def _plan_compact(self, plan: Optional[dict], limit: int = 80) -> str:
-        if not isinstance(plan, dict):
-            return ""
-        props = plan.get("properties") or []
-        if not isinstance(props, list) or not props:
-            return ""
-        # limit to keep prompt stable; service can still implement generic map logic
-        items = []
-        for it in props[:limit]:
-            if not isinstance(it, dict):
-                continue
-            pid = (it.get("id") or "").strip()
-            cm = (it.get("change_mode") or "").strip()
-            dv = it.get("default", None)
-            if not pid:
-                continue
-            items.append({"id": pid, "change_mode": cm, "default": dv})
-        return json.dumps(
-            {
-                "callback_policy": plan.get("callback_policy"),
-                "default_change_mode": plan.get("default_change_mode"),
-                "properties_sample": items,
-                "properties_total": len(props),
-            },
-            ensure_ascii=False,
-        )
-
-    def build_prompt(self, spec_text: str, plan: Optional[dict] = None) -> str:
-        plan_json = self._plan_compact(plan)
-
+    def build_prompt(self, spec_text: str) -> str:
+        # IMPORTANT: ask for a PLAN-DRIVEN TEMPLATE, not a 200-property giant file
         return f"""
 OUTPUT CONTRACT (MANDATORY):
 Return ONLY valid JSON matching this schema:
@@ -88,25 +60,21 @@ C++ REQUIREMENTS:
   <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
   <aidl/android/hardware/automotive/vehicle/IVehicleCallback.h>
   <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
+
 - Implement:
   get(propId, areaId, _aidl_return)
   set(value)
   registerCallback(callback)
   unregisterCallback(callback)
-- Thread-safe store
-- Notify callbacks on set() OR on change depending on callback_policy in plan
-- Must compile (include required headers; correct overrides; no TODOs)
 
-IMPORTANT (YAML -> CODE TRACEABILITY):
-- You MUST include a generated comment block:
-  // GENERATED FROM YAML SPEC (VSS)
-  // properties_total=<N>
-  // callback_policy=<...>
-- You MUST seed an internal table for known properties from the plan (at least a SAMPLE),
-  and implement generic storage for arbitrary propId as well.
+- Thread-safe store keyed by (propId, areaId)
+- Notify callbacks on set()
+- Must compile (correct includes; correct overrides; no TODOs)
 
-PLAN (compact, do not repeat verbatim):
-{plan_json if plan_json else "null"}
+IMPORTANT SCALING RULE:
+- Do NOT generate per-property switch/case for hundreds of VSS ids.
+- Implement a generic store and treat propId/areaId as runtime keys.
+- The service should work for any property id.
 
 SPEC CONTEXT (do not repeat):
 {spec_text}
@@ -114,9 +82,9 @@ SPEC CONTEXT (do not repeat):
 RETURN JSON NOW.
 """.lstrip()
 
-    def run(self, spec_text: str, plan: Optional[dict] = None) -> str:
+    def run(self, spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
-        prompt = self.build_prompt(spec_text, plan=plan)
+        prompt = self.build_prompt(spec_text)
 
         out1 = call_llm(prompt, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out1, 1)
@@ -126,13 +94,11 @@ RETURN JSON NOW.
 
         repair = (
             prompt
-            + "\nREPAIR (MANDATORY):\n"
-              "- Your previous output was INVALID.\n"
-              "- Output ONLY JSON exactly matching the schema.\n"
-              "- Do NOT include markdown or any explanation.\n"
-              "- Ensure the file path is exactly required.\n"
-              "\nPREVIOUS OUTPUT (for correction, do not repeat):\n"
-              f"{out1}\n"
+            + "\nREPAIR (MANDATORY): Return ONLY JSON matching schema.\n"
+              "Avoid:\n"
+              "- ``` fences\n"
+              "- extra commentary\n"
+              "- missing required file path\n"
         )
         out2 = call_llm(repair, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out2, 2)
@@ -141,26 +107,15 @@ RETURN JSON NOW.
             return out2
 
         print(f"[WARN] {self.name}: LLM did not produce valid JSON. Using deterministic fallback (draft).", flush=True)
-        self._write_fallback(plan=plan)
+        self._write_fallback()
         return "[FALLBACK] Deterministic VHAL service generated (draft)."
 
     def _dump_raw(self, text: str, attempt: int) -> None:
         (self.raw_dir / f"VHAL_SERVICE_RAW_attempt{attempt}.txt").write_text(text or "", encoding="utf-8")
 
     def _write_json_files(self, text: str) -> bool:
-        t = (text or "").strip()
-        if not t or not t.startswith("{"):
-            return False
-
-        low = t.lower()
-        if "```" in t or "\n###" in t or "com.example" in low or "androidmanifest" in low:
-            return False
-        if "here are" in low or "sure," in low or "examples" in low:
-            return False
-
-        try:
-            data = json.loads(t)
-        except Exception:
+        data, err = parse_json_object(text or "")
+        if err or not data:
             return False
 
         files = data.get("files")
@@ -198,18 +153,8 @@ RETURN JSON NOW.
             return None
         return p
 
-    def _write_fallback(self, plan: Optional[dict] = None) -> None:
-        # Conservative fallback: compiles, includes traceability comment, and generic store.
-        props_total = 0
-        cb_policy = "notify_on_change"
-        if isinstance(plan, dict):
-            props_total = len(plan.get("properties") or [])
-            cb_policy = plan.get("callback_policy") or cb_policy
-
-        cpp = f"""// FILE: hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp
-// GENERATED FROM YAML SPEC (VSS)
-// properties_total={props_total}
-// callback_policy={cb_policy}
+    def _write_fallback(self) -> None:
+        cpp = """// FILE: hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp
 
 #include <android-base/logging.h>
 #include <android/binder_interface_utils.h>
@@ -217,8 +162,10 @@ RETURN JSON NOW.
 #include <android/binder_process.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
@@ -229,64 +176,81 @@ using ::aidl::android::hardware::automotive::vehicle::BnIVehicle;
 using ::aidl::android::hardware::automotive::vehicle::IVehicleCallback;
 using ::aidl::android::hardware::automotive::vehicle::VehiclePropValue;
 
-namespace {{
+namespace {
 
-class VehicleHalServiceImpl final : public BnIVehicle {{
+struct Key {
+    int32_t propId;
+    int32_t areaId;
+
+    bool operator==(const Key& other) const { return propId == other.propId && areaId == other.areaId; }
+};
+
+struct KeyHash {
+    size_t operator()(const Key& k) const {
+        // simple combine
+        return (static_cast<size_t>(static_cast<uint32_t>(k.propId)) << 32) ^
+               static_cast<size_t>(static_cast<uint32_t>(k.areaId));
+    }
+};
+
+class VehicleHalServiceImpl final : public BnIVehicle {
 public:
-    ::ndk::ScopedAStatus get(int32_t propId, int32_t areaId, VehiclePropValue* _aidl_return) override {{
-        (void)areaId;
-        if (_aidl_return == nullptr) {{
+    ::ndk::ScopedAStatus get(int32_t propId, int32_t areaId, VehiclePropValue* _aidl_return) override {
+        if (_aidl_return == nullptr) {
             return ::ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
-        }}
+        }
 
         std::lock_guard<std::mutex> lk(mMutex);
-        auto it = mStore.find(propId);
-        if (it != mStore.end()) {{
+        Key k{propId, areaId};
+        auto it = mStore.find(k);
+        if (it != mStore.end()) {
             *_aidl_return = it->second;
-        }} else {{
-            *_aidl_return = VehiclePropValue{{}};
-        }}
+        } else {
+            VehiclePropValue empty{};
+            empty.prop = propId;
+            empty.areaId = areaId;
+            empty.timestamp = 0;
+            *_aidl_return = empty;
+        }
         return ::ndk::ScopedAStatus::ok();
-    }}
+    }
 
-    ::ndk::ScopedAStatus set(const VehiclePropValue& value) override {{
+    ::ndk::ScopedAStatus set(const VehiclePropValue& value) override {
         std::vector<std::shared_ptr<IVehicleCallback>> callbacksCopy;
-        {{
+        {
             std::lock_guard<std::mutex> lk(mMutex);
-            // NOTE: Without a field definition for VehiclePropValue, we cannot extract propId here.
-            // This fallback keeps behavior compile-safe.
-            const int32_t propId = 0;
-            mStore[propId] = value;
+            Key k{value.prop, value.areaId};
+            mStore[k] = value;
             callbacksCopy = mCallbacks;
-        }}
+        }
 
-        for (auto& cb : callbacksCopy) {{
+        for (auto& cb : callbacksCopy) {
             if (cb) (void)cb->onPropertyEvent(value);
-        }}
+        }
         return ::ndk::ScopedAStatus::ok();
-    }}
+    }
 
-    ::ndk::ScopedAStatus registerCallback(const std::shared_ptr<IVehicleCallback>& callback) override {{
+    ::ndk::ScopedAStatus registerCallback(const std::shared_ptr<IVehicleCallback>& callback) override {
         std::lock_guard<std::mutex> lk(mMutex);
         if (callback) mCallbacks.push_back(callback);
         return ::ndk::ScopedAStatus::ok();
-    }}
+    }
 
-    ::ndk::ScopedAStatus unregisterCallback(const std::shared_ptr<IVehicleCallback>& callback) override {{
+    ::ndk::ScopedAStatus unregisterCallback(const std::shared_ptr<IVehicleCallback>& callback) override {
         std::lock_guard<std::mutex> lk(mMutex);
         mCallbacks.erase(std::remove(mCallbacks.begin(), mCallbacks.end(), callback), mCallbacks.end());
         return ::ndk::ScopedAStatus::ok();
-    }}
+    }
 
 private:
     std::mutex mMutex;
-    std::unordered_map<int32_t, VehiclePropValue> mStore;
+    std::unordered_map<Key, VehiclePropValue, KeyHash> mStore;
     std::vector<std::shared_ptr<IVehicleCallback>> mCallbacks;
-}};
+};
 
-}}  // namespace
+}  // namespace
 
-int main(int argc, char** argv) {{
+int main(int argc, char** argv) {
     android::base::InitLogging(argv, android::base::LogdLogger(android::base::SYSTEM));
 
     ABinderProcess_setThreadPoolMaxThreadCount(4);
@@ -296,19 +260,19 @@ int main(int argc, char** argv) {{
 
     const char* instance = "android.hardware.automotive.vehicle.IVehicle/default";
     binder_status_t status = AServiceManager_addService(service->asBinder().get(), instance);
-    if (status != STATUS_OK) {{
+    if (status != STATUS_OK) {
         LOG(ERROR) << "Failed to register IVehicle service instance: " << instance
                    << " status=" << status;
         return 1;
-    }}
+    }
 
     LOG(INFO) << "Registered IVehicle service: " << instance;
     ABinderProcess_joinThreadPool();
     return 0;
-}}
+}
 """
         self.writer.write(self.impl_cpp, cpp.rstrip() + "\n")
 
 
 def generate_vhal_service(spec, plan=None):
-    return VHALServiceAgent().run(spec.to_llm_spec(), plan=plan)
+    return VHALServiceAgent().run(spec.to_llm_spec())

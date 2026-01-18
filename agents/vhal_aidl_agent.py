@@ -7,13 +7,14 @@ from typing import Optional
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
+from tools.json_contract import parse_json_object
 
 
 class VHALAidlAgent:
     def __init__(self):
         self.name = "VHAL AIDL Agent"
 
-        # Stage-1 outputs go to draft
+        # Stage-1 goes to draft
         self.output_root = "output/.llm_draft/latest"
         self.writer = SafeWriter(self.output_root)
 
@@ -21,7 +22,6 @@ class VHALAidlAgent:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
         self.system = (
-            "You are a deterministic code generator.\n"
             "Output STRICT JSON only.\n"
             "No prose. No markdown. No code fences.\n"
             "If you cannot comply, output exactly: {\"files\": []}\n"
@@ -36,12 +36,7 @@ class VHALAidlAgent:
             f"{self.pkg_dir}/VehiclePropValue.aidl",
         ]
 
-    def build_prompt(self, spec_text: str, plan: Optional[dict] = None) -> str:
-        # AIDL is stable; plan not strictly needed, but keep it for traceability.
-        plan_hint = ""
-        if isinstance(plan, dict) and plan.get("properties"):
-            plan_hint = f"\nPLAN SUMMARY: properties={len(plan.get('properties') or [])}\n"
-
+    def build_prompt(self, spec_text: str) -> str:
         return f"""
 OUTPUT CONTRACT (MANDATORY):
 Return ONLY valid JSON matching this schema:
@@ -75,18 +70,18 @@ AIDL REQUIREMENTS:
 - IVehicleCallback MUST declare:
   void onPropertyEvent(in VehiclePropValue value);
 
-- VehiclePropValue MUST be parcelable (can be empty)
+- VehiclePropValue MUST be parcelable.
+  NOTE: include at least fields prop:int, areaId:int, timestamp:long.
 
-{plan_hint}
 SPEC CONTEXT (do not repeat):
 {spec_text}
 
 RETURN JSON NOW.
 """.lstrip()
 
-    def run(self, spec_text: str, plan: Optional[dict] = None) -> str:
+    def run(self, spec_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
-        prompt = self.build_prompt(spec_text, plan=plan)
+        prompt = self.build_prompt(spec_text)
 
         out1 = call_llm(prompt, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out1, 1)
@@ -94,15 +89,14 @@ RETURN JSON NOW.
             print(f"[DEBUG] {self.name}: LLM wrote AIDL files (draft)", flush=True)
             return out1
 
+        # Repair: ask for strict JSON only, include only error hint, not full previous blob
         repair = (
             prompt
-            + "\nREPAIR (MANDATORY):\n"
-              "- Your previous output was INVALID.\n"
-              "- Output ONLY JSON exactly matching the schema.\n"
-              "- Do NOT include markdown or any explanation.\n"
-              "- Ensure paths and package are AAOS VHAL as specified.\n"
-              "\nPREVIOUS OUTPUT (for correction, do not repeat):\n"
-              f"{out1}\n"
+            + "\nREPAIR (MANDATORY): Return ONLY JSON matching schema.\n"
+              "Common mistakes to avoid:\n"
+              "- Do NOT wrap in ``` fences\n"
+              "- Do NOT add any keys other than {files:[...]}\n"
+              "- Ensure all required paths are included exactly\n"
         )
         out2 = call_llm(repair, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out2, 2)
@@ -118,19 +112,8 @@ RETURN JSON NOW.
         (self.raw_dir / f"VHAL_AIDL_RAW_attempt{attempt}.txt").write_text(text or "", encoding="utf-8")
 
     def _write_json_files(self, text: str) -> bool:
-        t = (text or "").strip()
-        if not t or not t.startswith("{"):
-            return False
-
-        low = t.lower()
-        if "```" in t or "\n###" in t or "com.example" in low or "androidmanifest" in low:
-            return False
-        if "here are" in low or "sure," in low or "examples" in low:
-            return False
-
-        try:
-            data = json.loads(t)
-        except Exception:
+        data, err = parse_json_object(text or "")
+        if err or not data:
             return False
 
         files = data.get("files")
@@ -189,9 +172,18 @@ interface IVehicleCallback {
     void onPropertyEvent(in VehiclePropValue value);
 }
 """
+        # Minimal but non-empty parcelable so service can key by propId/areaId
         vp = """package android.hardware.automotive.vehicle;
 
-parcelable VehiclePropValue;
+parcelable VehiclePropValue {
+    int prop;
+    int areaId;
+    long timestamp;
+    int[] intValues;
+    float[] floatValues;
+    boolean[] boolValues;
+    String stringValue;
+}
 """
         self.writer.write(f"{self.pkg_dir}/IVehicle.aidl", iv + "\n")
         self.writer.write(f"{self.pkg_dir}/IVehicleCallback.aidl", cb + "\n")
@@ -199,4 +191,4 @@ parcelable VehiclePropValue;
 
 
 def generate_vhal_aidl(spec, plan=None):
-    return VHALAidlAgent().run(spec.to_llm_spec(), plan=plan)
+    return VHALAidlAgent().run(spec.to_llm_spec())
