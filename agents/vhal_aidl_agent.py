@@ -231,5 +231,8 @@ parcelable VehiclePropValue {
         self.writer.write(f"{self.pkg_dir}/VehiclePropValue.aidl", vp + "\n")
 
 
-def generate_vhal_aidl(spec, plan=None):
-    return VHALAidlAgent().run(spec.to_llm_spec())
+def generate_vhal_aidl(spec_or_text, plan=None):
+    if isinstance(spec_or_text, str):
+        return VHALAidlAgent().run(spec_or_text)
+    return VHALAidlAgent().run(spec_or_text.to_llm_spec())
+

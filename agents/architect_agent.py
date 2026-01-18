@@ -7,7 +7,6 @@ from agents.plan_agent import PlanAgent
 
 from agents.vhal_aidl_agent import generate_vhal_aidl
 from agents.vhal_service_agent import generate_vhal_service
-
 from agents.vhal_aidl_build_agent import generate_vhal_aidl_bp
 from agents.vhal_service_build_agent import generate_vhal_service_build_glue
 
@@ -29,31 +28,30 @@ class ArchitectAgent:
             spec_text = spec.to_llm_spec()
         except Exception as e:
             spec_text = f"[ARCHITECT] WARNING: spec.to_llm_spec() failed: {e}"
+
         print("[ARCHITECT] Input HAL specification:", flush=True)
         print(spec_text)
 
-        # 0) Plan (LLM intent-only, chunked, robust)
+        # 0) PLAN (LLM intent-only)
         print("[ARCHITECT] Step 0: Generate HAL plan (LLM intent-only, chunked)", flush=True)
-        plan = {}
-        try:
-            plan = PlanAgent().run(spec)
-        except Exception as e:
-            print(f"[ARCHITECT] [WARN] Plan generation failed: {e}. Continue with empty plan.", flush=True)
-            plan = {}
+        plan = PlanAgent().run(spec)
 
         Path("output").mkdir(parents=True, exist_ok=True)
-        Path("output/PLAN.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        Path("output/PLAN.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
         print("[ARCHITECT] Wrote output/PLAN.json", flush=True)
+
+        # Pass PLAN into LLM generators (NOT raw spec)
+        plan_text = json.dumps(plan, separators=(",", ":"))
 
         # 1) AIDL (LLM draft)
         print("[ARCHITECT] Step 1: Generate VHAL AIDL (LLM draft)", flush=True)
-        generate_vhal_aidl(spec, plan=plan)
+        generate_vhal_aidl(plan_text)
 
         # 2) C++ service (LLM draft)
         print("[ARCHITECT] Step 2: Generate VHAL C++ service (LLM draft)", flush=True)
-        generate_vhal_service(spec, plan=plan)
+        generate_vhal_service(plan_text)
 
-        # 3) Build glue (you can later shift these to draft and promote as well)
+        # 3) Build glue
         print("[ARCHITECT] Step 3: Generate build glue (Soong + init rc + VINTF)", flush=True)
         generate_vhal_aidl_bp()
         generate_vhal_service_build_glue()

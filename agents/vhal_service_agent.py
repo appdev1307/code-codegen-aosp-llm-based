@@ -316,5 +316,7 @@ int main(int argc, char** argv) {
         self.writer.write(self.impl_cpp, cpp.rstrip() + "\n")
 
 
-def generate_vhal_service(spec, plan=None):
-    return VHALServiceAgent().run(spec.to_llm_spec())
+def generate_vhal_service(spec_or_text, plan=None):
+    if isinstance(spec_or_text, str):
+        return VHALServiceAgent().run(spec_or_text)
+    return VHALServiceAgent().run(spec_or_text.to_llm_spec())
