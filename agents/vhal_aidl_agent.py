@@ -1,9 +1,10 @@
 # FILE: agents/vhal_aidl_agent.py
+from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Union
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
@@ -14,7 +15,7 @@ class VHALAidlAgent:
     def __init__(self):
         self.name = "VHAL AIDL Agent"
 
-        # Stage-1 goes to draft
+        # Option C: Stage-1 output is draft (NOT the final AOSP module)
         self.output_root = "output/.llm_draft/latest"
         self.writer = SafeWriter(self.output_root)
 
@@ -38,7 +39,7 @@ class VHALAidlAgent:
             f"{self.pkg_dir}/VehiclePropValue.aidl",
         ]
 
-    def build_prompt(self, spec_text: str) -> str:
+    def build_prompt(self, plan_text: str) -> str:
         return f"""
 OUTPUT CONTRACT (MANDATORY):
 Return ONLY valid JSON matching this schema:
@@ -72,20 +73,25 @@ AIDL REQUIREMENTS:
 - IVehicleCallback MUST declare:
   void onPropertyEvent(in VehiclePropValue value);
 
-- VehiclePropValue MUST be parcelable.
-  NOTE: include at least fields prop:int, areaId:int, timestamp:long.
+- VehiclePropValue MUST be parcelable and MUST include at least:
+  int prop;
+  int areaId;
+  long timestamp;
+  int[] intValues;
+  float[] floatValues;
+  boolean[] boolValues;
+  String stringValue;
 
-SPEC CONTEXT (do not repeat):
-{spec_text}
+PLAN CONTEXT (do not repeat):
+{plan_text}
 
 RETURN JSON NOW.
 """.lstrip()
 
-    def run(self, spec_text: str) -> str:
+    def run(self, plan_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
-        prompt = self.build_prompt(spec_text)
+        prompt = self.build_prompt(plan_text)
 
-        # Attempt 1
         out1 = call_llm(prompt, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out1, 1)
         ok1, report1 = self._validate_llm(out1)
@@ -95,7 +101,6 @@ RETURN JSON NOW.
             print(f"[DEBUG] {self.name}: LLM wrote AIDL files (draft)", flush=True)
             return out1
 
-        # Attempt 2 (targeted repair)
         missing = report1.get("missing_required_paths", [])
         repair = (
             prompt
@@ -231,8 +236,13 @@ parcelable VehiclePropValue {
         self.writer.write(f"{self.pkg_dir}/VehiclePropValue.aidl", vp + "\n")
 
 
-def generate_vhal_aidl(spec_or_text, plan=None):
-    if isinstance(spec_or_text, str):
-        return VHALAidlAgent().run(spec_or_text)
-    return VHALAidlAgent().run(spec_or_text.to_llm_spec())
-
+def generate_vhal_aidl(spec_or_plan_text: Union[str, Any]) -> str:
+    """
+    Option C: architect passes plan_text (string).
+    Backward compatible: if a spec object is provided, we use spec.to_llm_spec().
+    """
+    if isinstance(spec_or_plan_text, str):
+        plan_text = spec_or_plan_text
+    else:
+        plan_text = spec_or_plan_text.to_llm_spec()
+    return VHALAidlAgent().run(plan_text)

@@ -1,9 +1,10 @@
 # FILE: agents/vhal_service_agent.py
+from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Union
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
@@ -14,7 +15,7 @@ class VHALServiceAgent:
     def __init__(self):
         self.name = "VHAL C++ Service Agent"
 
-        # Stage-1 goes to draft
+        # Option C: Stage-1 output is draft
         self.output_root = "output/.llm_draft/latest"
         self.writer = SafeWriter(self.output_root)
 
@@ -32,8 +33,7 @@ class VHALServiceAgent:
         self.impl_cpp = "hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp"
         self.required_files = [self.impl_cpp]
 
-    def build_prompt(self, spec_text: str) -> str:
-        # IMPORTANT: ask for a PLAN-DRIVEN TEMPLATE, not a 200-property giant file
+    def build_prompt(self, plan_text: str) -> str:
         return f"""
 OUTPUT CONTRACT (MANDATORY):
 Return ONLY valid JSON matching this schema:
@@ -76,19 +76,17 @@ C++ REQUIREMENTS:
 IMPORTANT SCALING RULE:
 - Do NOT generate per-property switch/case for hundreds of VSS ids.
 - Implement a generic store and treat propId/areaId as runtime keys.
-- The service should work for any property id.
 
-SPEC CONTEXT (do not repeat):
-{spec_text}
+PLAN CONTEXT (do not repeat):
+{plan_text}
 
 RETURN JSON NOW.
 """.lstrip()
 
-    def run(self, spec_text: str) -> str:
+    def run(self, plan_text: str) -> str:
         print(f"[DEBUG] {self.name}: start", flush=True)
-        prompt = self.build_prompt(spec_text)
+        prompt = self.build_prompt(plan_text)
 
-        # Attempt 1
         out1 = call_llm(prompt, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out1, 1)
         ok1, report1 = self._validate_llm(out1)
@@ -98,7 +96,6 @@ RETURN JSON NOW.
             print(f"[DEBUG] {self.name}: LLM wrote service files (draft)", flush=True)
             return out1
 
-        # Attempt 2 (targeted repair)
         missing = report1.get("missing_required_paths", [])
         repair = (
             prompt
@@ -107,7 +104,6 @@ RETURN JSON NOW.
               f"MISSING REQUIRED PATHS: {missing}\n"
               "Do NOT wrap in code fences. Do NOT add commentary.\n"
         )
-
         out2 = call_llm(repair, system=self.system, stream=False, temperature=0.0) or ""
         self._dump_raw(out2, 2)
         ok2, report2 = self._validate_llm(out2)
@@ -224,7 +220,6 @@ namespace {
 struct Key {
     int32_t propId;
     int32_t areaId;
-
     bool operator==(const Key& other) const { return propId == other.propId && areaId == other.areaId; }
 };
 
@@ -316,7 +311,9 @@ int main(int argc, char** argv) {
         self.writer.write(self.impl_cpp, cpp.rstrip() + "\n")
 
 
-def generate_vhal_service(spec_or_text, plan=None):
-    if isinstance(spec_or_text, str):
-        return VHALServiceAgent().run(spec_or_text)
-    return VHALServiceAgent().run(spec_or_text.to_llm_spec())
+def generate_vhal_service(spec_or_plan_text: Union[str, Any]) -> str:
+    if isinstance(spec_or_plan_text, str):
+        plan_text = spec_or_plan_text
+    else:
+        plan_text = spec_or_plan_text.to_llm_spec()
+    return VHALServiceAgent().run(plan_text)
