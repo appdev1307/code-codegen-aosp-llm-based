@@ -1,18 +1,18 @@
 # FILE: agents/architect_agent.py
 
 import json
+from pathlib import Path
 
 from agents.plan_agent import PlanAgent
-from agents.promote_agent import PromoteAgent
 
 from agents.vhal_aidl_agent import generate_vhal_aidl
 from agents.vhal_service_agent import generate_vhal_service
+
 from agents.vhal_aidl_build_agent import generate_vhal_aidl_bp
 from agents.vhal_service_build_agent import generate_vhal_service_build_glue
 
 from agents.car_service_agent import generate_car_service
 from agents.selinux_agent import generate_selinux
-from tools.safe_writer import SafeWriter
 
 
 class ArchitectAgent:
@@ -32,53 +32,42 @@ class ArchitectAgent:
         print("[ARCHITECT] Input HAL specification:", flush=True)
         print(spec_text)
 
-        # Step 0: Optional plan (LLM intent-only)
-        print("[ARCHITECT] Step 0: Generate HAL plan (LLM intent-only)", flush=True)
-        plan = None
+        # 0) Plan (LLM intent-only, chunked, robust)
+        print("[ARCHITECT] Step 0: Generate HAL plan (LLM intent-only, chunked)", flush=True)
+        plan = {}
         try:
             plan = PlanAgent().run(spec)
         except Exception as e:
-            print(f"[ARCHITECT] [WARN] Plan generation failed: {e}. Continue without plan.", flush=True)
-            plan = None
+            print(f"[ARCHITECT] [WARN] Plan generation failed: {e}. Continue with empty plan.", flush=True)
+            plan = {}
 
-        # Persist plan for traceability (if generated)
-        try:
-            w = SafeWriter("output")
-            w.write("PLAN.json", json.dumps(plan or {}, indent=2) + "\n")
-            print("[ARCHITECT] Wrote output/PLAN.json", flush=True)
-        except Exception as e:
-            print(f"[ARCHITECT] [WARN] Could not write PLAN.json: {e}", flush=True)
+        Path("output").mkdir(parents=True, exist_ok=True)
+        Path("output/PLAN.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print("[ARCHITECT] Wrote output/PLAN.json", flush=True)
 
-        # Step 1: Stage 1 LLM draft generation (full files)
+        # 1) AIDL (LLM draft)
         print("[ARCHITECT] Step 1: Generate VHAL AIDL (LLM draft)", flush=True)
         generate_vhal_aidl(spec, plan=plan)
 
+        # 2) C++ service (LLM draft)
         print("[ARCHITECT] Step 2: Generate VHAL C++ service (LLM draft)", flush=True)
         generate_vhal_service(spec, plan=plan)
 
-        # If you also generate build glue / init / vintf / sepolicy in Stage 1 agents,
-        # call them here as well (LLM draft versions).
-        # Otherwise your current deterministic generators can still be used for those.
+        # 3) Build glue (you can later shift these to draft and promote as well)
         print("[ARCHITECT] Step 3: Generate build glue (Soong + init rc + VINTF)", flush=True)
         generate_vhal_aidl_bp()
         generate_vhal_service_build_glue()
 
+        # 4) Framework service generation (HVAC only)
         print(f"[ARCHITECT] Step 4: Generate framework service (domain={domain})", flush=True)
         if domain == "HVAC":
             generate_car_service(spec)
         else:
             print(f"[ARCHITECT] Domain={domain}: skip framework generation (HVAC-only).", flush=True)
 
+        # 5) SELinux
         print("[ARCHITECT] Step 5: Generate SELinux policy", flush=True)
         generate_selinux(spec)
-
-        # Step 6: Stage 2 promotion (gated copy)
-        print("[ARCHITECT] Step 6: Promote LLM draft outputs into output/ (gated)", flush=True)
-        result = PromoteAgent().run()
-        if not result.ok:
-            print("[ARCHITECT] [WARN] Promotion failed. See output/STAGE2_REPORT.json", flush=True)
-        else:
-            print("[ARCHITECT] Promotion succeeded.", flush=True)
 
         print("[ARCHITECT] ================================")
         print("[ARCHITECT] HAL GENERATION COMPLETED ✅")
