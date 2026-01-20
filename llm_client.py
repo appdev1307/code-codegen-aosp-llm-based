@@ -1,13 +1,14 @@
-# FILE: llm_client.py
-
 import json
 import requests
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 MODEL = "qwen2.5-coder:7b"
-TIMEOUT = 600  # seconds
+TIMEOUT = 600
 
+DEBUG_DIR = Path("output/.llm_draft/latest")
+DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 def call_llm(
     prompt: str,
@@ -17,18 +18,8 @@ def call_llm(
     temperature: float = 0.0,
     top_p: float = 1.0,
     stop: Optional[List[str]] = None,
-    response_format: Optional[str] = None,  # IMPORTANT: default OFF
+    response_format: Optional[str] = None,
 ) -> str:
-    """
-    Ollama client (qwen via /api/generate).
-
-    Notes:
-    - stream=False is recommended for structured outputs (JSON / file blocks)
-    - temperature=0 reduces chatty/creative responses
-    - DO NOT default to format=json; some Ollama versions/models reject it
-      or produce "meta JSON" unrelated to your schema.
-    """
-
     payload: Dict[str, Any] = {
         "model": MODEL,
         "prompt": prompt,
@@ -39,11 +30,8 @@ def call_llm(
             "top_p": top_p,
         },
     }
-
     if stop:
         payload["options"]["stop"] = stop
-
-    # Only include "format" if explicitly requested by caller
     if response_format is not None:
         payload["format"] = response_format
 
@@ -52,16 +40,30 @@ def call_llm(
 
     if not stream:
         data = resp.json()
+
+        # dump full HTTP response so we can see what server really returns
+        (DEBUG_DIR / "OLLAMA_HTTP_LAST.json").write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # critical: return ONLY generated text
         return data.get("response", "") or ""
 
     chunks: List[str] = []
+    http_lines: List[dict] = []
+
     for line in resp.iter_lines(decode_unicode=True):
         if not line:
             continue
-        data = json.loads(line)
-        if "response" in data:
-            chunks.append(data["response"])
-        if data.get("done"):
+        obj = json.loads(line)
+        http_lines.append(obj)
+        if "response" in obj:
+            chunks.append(obj["response"])
+        if obj.get("done"):
             break
+
+    (DEBUG_DIR / "OLLAMA_HTTP_LAST_STREAM.json").write_text(
+        json.dumps(http_lines, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
     return "".join(chunks)
