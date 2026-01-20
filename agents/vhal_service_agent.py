@@ -311,9 +311,20 @@ int main(int argc, char** argv) {
         self.writer.write(self.impl_cpp, cpp.rstrip() + "\n")
 
 
-def generate_vhal_service(spec_or_plan_text: Union[str, Any]) -> str:
-    if isinstance(spec_or_plan_text, str):
-        plan_text = spec_or_plan_text
+def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any]) -> str:
+    """
+    Accepts:
+      - plan JSON string
+      - plan dict
+      - spec object (fallback) -> will use spec.to_llm_spec()
+    """
+    if isinstance(plan_or_spec, str):
+        plan_text = plan_or_spec
+    elif isinstance(plan_or_spec, dict):
+        plan_text = json.dumps(plan_or_spec, indent=2)
     else:
-        plan_text = spec_or_plan_text.to_llm_spec()
+        # Fallback for legacy calls
+        plan_text = plan_or_spec.to_llm_spec()
+
     return VHALServiceAgent().run(plan_text)
+

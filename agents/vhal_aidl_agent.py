@@ -236,13 +236,19 @@ parcelable VehiclePropValue {
         self.writer.write(f"{self.pkg_dir}/VehiclePropValue.aidl", vp + "\n")
 
 
-def generate_vhal_aidl(spec_or_plan_text: Union[str, Any]) -> str:
+def generate_vhal_aidl(plan_or_spec: Union[str, Dict[str, Any], Any]) -> str:
     """
-    Option C: architect passes plan_text (string).
-    Backward compatible: if a spec object is provided, we use spec.to_llm_spec().
+    Accepts:
+      - plan JSON string
+      - plan dict
+      - spec object (fallback) -> uses spec.to_llm_spec()
     """
-    if isinstance(spec_or_plan_text, str):
-        plan_text = spec_or_plan_text
+    if isinstance(plan_or_spec, str):
+        plan_text = plan_or_spec
+    elif isinstance(plan_or_spec, dict):
+        plan_text = json.dumps(plan_or_spec, indent=2)
     else:
-        plan_text = spec_or_plan_text.to_llm_spec()
+        plan_text = plan_or_spec.to_llm_spec()
+
     return VHALAidlAgent().run(plan_text)
+
