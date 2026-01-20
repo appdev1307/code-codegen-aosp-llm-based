@@ -116,6 +116,9 @@ def main():
     from agents.selinux_agent import generate_selinux
     generate_selinux(full_spec)  # Use the full original spec
 
+    from agents.build_glue_agent import BuildGlueAgent
+    BuildGlueAgent().run()
+
     print("\n🎉 SUCCESS! Final files are now in:")
     print("   → AIDL: output/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/")
     print("   → C++:  output/hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp")
