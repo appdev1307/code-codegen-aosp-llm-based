@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, Union
+from typing import Optional, Dict, Any, Union
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
 from tools.json_contract import parse_json_object
@@ -34,132 +34,120 @@ class VHALAidlAgent:
         ]
 
     def build_prompt(self, plan_text: str) -> str:
+        required_list = "\n".join(f"- {f}" for f in self.required_files)
         return f"""
-Generate the core AOSP Vehicle HAL AIDL files based on the plan below.
+Generate the core AOSP Vehicle HAL AIDL files.
 
 MANDATORY OUTPUT FORMAT:
-Return ONLY a valid JSON object with this exact structure:
+Return ONLY valid JSON:
 {{
   "files": [
     {{
-      "path": "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/IVehicle.aidl",
-      "content": "full AIDL file content as a single string (use \\n for newlines)"
-    }},
-    ...
+      "path": "<exact path>",
+      "content": "full AIDL content with \\n for newlines"
+    }}
   ]
 }}
 
 CRITICAL RULES:
-- Output ONLY the JSON. Nothing else.
-- NO markdown, NO ```json fences, NO comments.
-- All file paths MUST be exactly as listed below.
-- Content must be valid AIDL syntax.
-- Use proper escaping: newlines as \\n, quotes as \\\"
+- Output ONLY the JSON object. No extra text, no fences, no comments.
+- Use exact file paths (no variations).
+- Escape properly: newlines as \\n, quotes as \\\"
+- All files must have package android.hardware.automotive.vehicle;
 
-REQUIRED FILES (you MUST generate all three exactly):
-{chr(10).join(f"- {f}" for f in self.required_files)}
+REQUIRED FILES (generate exactly these three):
+{required_list}
 
-AIDL SPECIFIC REQUIREMENTS:
-- package android.hardware.automotive.vehicle; must be present in all files
-- IVehicle.aidl must include:
-  - VehiclePropValue get(int propId, int areaId);
-  - void set(in VehiclePropValue value);
-  - void registerCallback(in IVehicleCallback callback);
-  - void unregisterCallback(in IVehicleCallback callback);
-- IVehicleCallback.aidl must include:
-  - void onPropertyEvent(in VehiclePropValue value);
-- VehiclePropValue.aidl must be parcelable and include at least:
-  int prop; int areaId; long timestamp;
-  int[] intValues; float[] floatValues; boolean[] boolValues; String stringValue;
+AIDL REQUIREMENTS:
+- IVehicle.aidl: interface with get(), set(), registerCallback(), unregisterCallback()
+- IVehicleCallback.aidl: interface with onPropertyEvent(in VehiclePropValue)
+- VehiclePropValue.aidl: parcelable with prop, areaId, timestamp, intValues, floatValues, boolValues, stringValue
 
-PLAN (use this to add custom properties if needed):
+PLAN CONTEXT (use only if adding custom extensions):
 {plan_text}
 
-NOW OUTPUT ONLY THE JSON:
+OUTPUT ONLY THE JSON NOW:
 """.strip()
 
     def run(self, plan_text: str) -> bool:
-        """Returns True if LLM successfully generated valid files, False if fallback used."""
         print(f"[DEBUG] {self.name}: start")
 
         prompt = self.build_prompt(plan_text)
 
-        # First attempt with JSON mode enforced
-        raw_output = call_llm(
+        # Attempt 1
+        raw = call_llm(
             prompt=prompt,
             system=self.system_prompt,
             temperature=0.0,
-            response_format="json",  # Critical for reliability
+            response_format="json",
         )
-        self._dump_raw(raw_output, "attempt1")
-        success = self._try_write_from_output(raw_output)
-
-        if success:
+        self._dump_raw(raw, "attempt1")
+        if self._try_write_from_output(raw):
             print(f"[DEBUG] {self.name}: done (LLM success on first try)")
             return True
 
-        # Second attempt: repair prompt
-        print(f"[DEBUG] {self.name}: first attempt failed, trying repair")
-        repair_prompt = prompt + "\n\nPREVIOUS OUTPUT WAS INVALID.\n" \
-            "FIX IT NOW. You MUST include ALL required files with correct paths.\n" \
-            "Output ONLY valid JSON. No excuses."
+        # Attempt 2: Repair
+        print(f"[DEBUG] {self.name}: first attempt failed → repair attempt")
+        repair_prompt = prompt + "\n\nPREVIOUS OUTPUT WAS INVALID OR INCOMPLETE.\n" \
+                                "You MUST output valid JSON with ALL three required files and correct paths.\n" \
+                                "Fix all issues. No explanations."
 
-        raw_output2 = call_llm(
+        raw2 = call_llm(
             prompt=repair_prompt,
             system=self.system_prompt,
             temperature=0.0,
             response_format="json",
         )
-        self._dump_raw(raw_output2, "attempt2")
-        success = self._try_write_from_output(raw_output2)
-
-        if success:
+        self._dump_raw(raw2, "attempt2")
+        if self._try_write_from_output(raw2):
             print(f"[DEBUG] {self.name}: done (LLM success after repair)")
             return True
 
-        # Final fallback
-        print(f"[WARN] {self.name}: LLM output invalid. Using deterministic fallback (draft).")
+        # Fallback
+        print(f"[WARN] {self.name}: LLM failed both attempts → using deterministic fallback")
         self._write_fallback()
         return False
 
     def _try_write_from_output(self, text: str) -> bool:
+        if not text.strip():
+            return False
+
         data, err = parse_json_object(text.strip())
         report = {
             "parse_error": err,
             "valid_json": data is not None,
             "files_found": 0,
             "paths": [],
-            "missing_required": [],
+            "missing_required": self.required_files[:],
         }
 
         if not data or "files" not in data or not isinstance(data["files"], list):
-            report["missing_required"] = self.required_files[:]
             self.report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             return False
 
         files = data["files"]
         report["files_found"] = len(files)
-        found_paths = []
+        written_paths = []
 
         for item in files:
             if not isinstance(item, dict):
                 continue
             path = item.get("path", "").strip()
-            content = item.get("content", "")
+            content = item.get("content")
+
             if not path or not isinstance(content, str):
                 continue
 
             safe_path = self._sanitize_path(path)
-            if not safe_path or safe_path not in self.required_files:
+            if safe_path not in self.required_files:
                 continue
 
-            found_paths.append(safe_path)
-            if not content.endswith("\n"):
-                content += "\n"
+            content = content.rstrip() + "\n"  # Normalize ending
             self.writer.write(safe_path, content)
+            written_paths.append(safe_path)
 
-        missing = [p for p in self.required_files if p not in found_paths]
-        report["paths"] = found_paths
+        missing = [p for p in self.required_files if p not in written_paths]
+        report["paths"] = written_paths
         report["missing_required"] = missing
 
         self.report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -169,14 +157,15 @@ NOW OUTPUT ONLY THE JSON:
         (self.raw_dir / f"VHAL_AIDL_RAW_{label}.txt").write_text(text or "[EMPTY]", encoding="utf-8")
 
     def _sanitize_path(self, rel_path: str) -> Optional[str]:
+        if not rel_path:
+            return None
         p = rel_path.replace("\\", "/").strip("/")
         p = re.sub(r"/+", "/", p)
-        if ".." in p or not p.startswith("hardware/interfaces/automotive/vehicle/aidl/"):
+        if ".." in p.split("/") or not p.startswith("hardware/interfaces/automotive/vehicle/aidl/"):
             return None
         return p
 
     def _write_fallback(self) -> None:
-        """Minimal but correct AIDL stubs — safe and buildable"""
         iv = """package android.hardware.automotive.vehicle;
 
 import android.hardware.automotive.vehicle.VehiclePropValue;
@@ -212,19 +201,17 @@ parcelable VehiclePropValue {
 }
 """
 
-        for path, content in [
+        files = [
             (f"{self.pkg_dir}/IVehicle.aidl", iv),
             (f"{self.pkg_dir}/IVehicleCallback.aidl", cb),
             (f"{self.pkg_dir}/VehiclePropValue.aidl", vp),
-        ]:
-            self.writer.write(path, content + "\n")
+        ]
+
+        for path, content in files:
+            self.writer.write(path, content.rstrip() + "\n")
 
 
 def generate_vhal_aidl(plan_or_spec: Union[str, Dict[str, Any], Any]) -> bool:
-    """
-    Generates VHAL AIDL files.
-    Returns True if LLM succeeded, False if fallback was used.
-    """
     if isinstance(plan_or_spec, str):
         plan_text = plan_or_spec
     elif isinstance(plan_or_spec, dict):

@@ -1,13 +1,14 @@
+# llm_client.py - Optimized for qwen2.5-coder:32b (and similar large coder models)
 import json
 import requests
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import time
 
-MODEL = "qwen2.5-coder:32b"          
-
+# === CONFIGURATION ===
+MODEL = "qwen2.5-coder:32b"        # Perfect choice! Keep this
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-TIMEOUT = 1200                  # Increased timeout for 70B model (can be slow on large prompts)
+TIMEOUT = 1800                     # 30 minutes — safer for long generations with 32B
 DEBUG_DIR = Path("output/.llm_draft/latest")
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -29,16 +30,24 @@ def call_llm(
         "options": {
             "temperature": temperature,
             "top_p": top_p,
-            "num_ctx": 131072,      # Max context for Llama 3.1 (128K tokens) - important for your 200 properties!
+            "num_ctx": 32768,       # Qwen2.5 supports 32K context natively (128K with RoPE scaling, but 32K is stable)
+            "num_predict": -1,      # Unlimited tokens — important for long AIDL/C++ output
+            "num_batch": 512,       # Helps with long generations
         },
     }
+
     if stop:
         payload["options"]["stop"] = stop
-    if response_format is not None:
-        payload["format"] = response_format   # Keep for JSON mode
 
-    resp = requests.post(OLLAMA_URL, json=payload, stream=stream, timeout=TIMEOUT)
-    resp.raise_for_status()
+    # Qwen2.5-Coder handles JSON mode very well — use it!
+    if response_format == "json":
+        payload["format"] = "json"
+
+    try:
+        resp = requests.post(OLLAMA_URL, json=payload, stream=stream, timeout=TIMEOUT)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Ollama request failed: {e}")
 
     if not stream:
         data = resp.json()
@@ -47,45 +56,67 @@ def call_llm(
         )
         return data.get("response", "") or ""
 
-    # Streaming handling (unchanged)
+    # Streaming mode
     chunks: List[str] = []
-    http_lines: List[dict] = []
+    full_response_lines: List[dict] = []
+
     for line in resp.iter_lines(decode_unicode=True):
         if not line:
             continue
-        obj = json.loads(line)
-        http_lines.append(obj)
-        if "response" in obj:
-            chunks.append(obj["response"])
-        if obj.get("done"):
-            break
+        try:
+            obj = json.loads(line)
+            full_response_lines.append(obj)
+            if "response" in obj:
+                chunks.append(obj["response"])
+            if obj.get("done"):
+                break
+        except json.JSONDecodeError:
+            continue  # Skip malformed lines (rare but happens)
+
     (DEBUG_DIR / "OLLAMA_HTTP_LAST_STREAM.json").write_text(
-        json.dumps(http_lines, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(full_response_lines, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return "".join(chunks)
 
 
-# Optional: Add a safe JSON wrapper if you're using response_format="json"
-def call_llm_json(prompt: str, system: str = "", max_retries: int = 5) -> dict:
+def call_llm_json(prompt: str, system: str = "", max_retries: int = 6) -> dict:
+    """
+    Reliable JSON extraction with cleaning + retries.
+    Qwen2.5-Coder is excellent at JSON — this will almost always succeed on first try.
+    """
     for attempt in range(max_retries):
         try:
             raw = call_llm(
                 prompt=prompt,
                 system=system,
                 temperature=0.0,
-                response_format="json",
+                response_format="json",  # Enforced
             )
-            # Clean common markdown wrappers
+
             raw = raw.strip()
+
+            # Clean common wrappers (even though Qwen rarely does this)
             if raw.startswith("```json"):
-                raw = raw[7:].strip()
+                raw = raw[7:]
             if raw.endswith("```"):
-                raw = raw[:-3].strip()
+                raw = raw[:-3]
+            raw = raw.strip()
+
+            if not raw:
+                raise ValueError("Empty response after cleaning")
 
             data = json.loads(raw)
             return data
+
         except json.JSONDecodeError as e:
             print(f"[LLM] JSON parse failed (attempt {attempt+1}/{max_retries}): {e}")
-            (DEBUG_DIR / f"failed_json_attempt_{attempt}.txt").write_text(raw)
-            time.sleep(2)
-    raise ValueError("Failed to get valid JSON from LLM after retries")
+            if attempt < max_retries - 1:
+                (DEBUG_DIR / f"failed_json_attempt_{attempt+1}.txt").write_text(raw)
+                time.sleep(3)  # Slight delay before retry
+            else:
+                raise ValueError(f"Failed to get valid JSON after {max_retries} attempts") from e
+        except Exception as e:
+            print(f"[LLM] Unexpected error: {e}")
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(3)

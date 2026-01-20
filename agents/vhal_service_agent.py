@@ -20,7 +20,7 @@ class VHALServiceAgent:
 
         self.system_prompt = (
             "You are an expert Android Automotive OS (AAOS) Vehicle HAL engineer.\n"
-            "Your task is to generate a correct, generic, and scalable C++ implementation of the Vehicle HAL service using AIDL NDK backend.\n"
+            "Generate a correct, generic, and highly scalable C++ service implementation using AIDL NDK backend.\n"
             "You MUST output ONLY valid JSON. No explanations, no markdown, no code blocks.\n"
             "If you cannot produce perfect JSON, output exactly: {\"files\": []}"
         )
@@ -30,98 +30,91 @@ class VHALServiceAgent:
 
     def build_prompt(self, plan_text: str) -> str:
         return f"""
-Generate the core AOSP Vehicle HAL service implementation in C++ using the AIDL NDK backend.
+Generate the core AOSP Vehicle HAL service implementation in C++ (AIDL NDK backend).
 
 MANDATORY OUTPUT FORMAT:
-Return ONLY a valid JSON object with this exact structure:
+Return ONLY valid JSON:
 {{
   "files": [
     {{
-      "path": "hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp",
-      "content": "full C++ file content as a single string (use \\n for newlines)"
+      "path": "{self.impl_cpp}",
+      "content": "full C++ source with \\n for newlines and proper escaping"
     }}
   ]
 }}
 
 CRITICAL RULES:
-- Output ONLY the JSON. Nothing else.
-- NO markdown, NO ```cpp fences, NO comments outside the code.
-- All strings must be properly escaped (newlines as \\n, quotes as \\\").
+- Output ONLY the JSON object. No extra text, no fences, no comments.
 - Path must be exactly: {self.impl_cpp}
+- Use proper string escaping (\\n for newlines, \\\" for quotes)
 
 IMPLEMENTATION REQUIREMENTS (AAOS 14+):
-- Use AIDL-generated NDK headers:
+- Include AIDL NDK headers:
   #include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
   #include <aidl/android/hardware/automotive/vehicle/IVehicleCallback.h>
   #include <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
-- Implement BnIVehicle with correct overrides:
-  - get(int32_t propId, int32_t areaId, VehiclePropValue* _aidl_return)
-  - set(const VehiclePropValue& value)
-  - registerCallback(const std::shared_ptr<IVehicleCallback>& callback)
-  - unregisterCallback(const std::shared_ptr<IVehicleCallback>& callback)
-- Use thread-safe generic storage: std::unordered_map<Key, VehiclePropValue>
-- Key = {propId, areaId}, with proper hash
-- On set(): store value and notify ALL registered callbacks via onPropertyEvent(value)
-- Use ndk::ScopedAStatus for return values
+- Inherit from BnIVehicle and override:
+  get(), set(), registerCallback(), unregisterCallback()
+- Use thread-safe generic storage: std::unordered_map<PropKey, VehiclePropValue, PropKeyHash>
+- On set(): update store and notify ALL callbacks via onPropertyEvent()
+- Use ndk::ScopedAStatus for status returns
 - In main(): register service as "android.hardware.automotive.vehicle.IVehicle/default"
-- Use ABinderProcess_startThreadPool() and join
+- Call ABinderProcess_startThreadPool() and join
 
-SCALING RULE (CRITICAL):
-- DO NOT generate giant switch/case statements for property IDs.
-- MUST be fully generic — treat all properties as runtime keys.
-- This allows handling 200+ VSS properties without code explosion.
+SCALING (MANDATORY):
+- MUST be fully generic — no switch/case on property IDs
+- Treat all properties as runtime (propId, areaId) keys
+- Supports 200+ VSS properties without code bloat
 
-PLAN (use only for context if needed — do not hardcode properties):
+PLAN CONTEXT (use only for reference if needed):
 {plan_text}
 
-NOW OUTPUT ONLY THE JSON:
+OUTPUT ONLY THE JSON NOW:
 """.strip()
 
     def run(self, plan_text: str) -> bool:
-        """Returns True if LLM successfully generated valid file, False if fallback used."""
         print(f"[DEBUG] {self.name}: start")
 
         prompt = self.build_prompt(plan_text)
 
-        # First attempt with JSON mode
-        raw_output = call_llm(
+        # Attempt 1
+        raw = call_llm(
             prompt=prompt,
             system=self.system_prompt,
             temperature=0.0,
             response_format="json",
         )
-        self._dump_raw(raw_output, "attempt1")
-        success = self._try_write_from_output(raw_output)
-
-        if success:
+        self._dump_raw(raw, "attempt1")
+        if self._try_write_from_output(raw):
             print(f"[DEBUG] {self.name}: done (LLM success on first try)")
             return True
 
-        # Repair attempt
-        print(f"[DEBUG] {self.name}: first attempt failed, trying repair")
-        repair_prompt = prompt + "\n\nPREVIOUS OUTPUT WAS INVALID OR INCOMPLETE.\n" \
-            "You MUST generate the exact required file with correct path and full implementation.\n" \
-            "Fix all issues and output ONLY valid JSON now."
+        # Attempt 2: Repair
+        print(f"[DEBUG] {self.name}: first attempt failed → repair attempt")
+        repair_prompt = prompt + "\n\nPREVIOUS OUTPUT WAS INVALID OR MISSING CONTENT.\n" \
+                                "You MUST output complete, valid JSON with the full VehicleHalService.cpp implementation.\n" \
+                                "Fix all issues immediately. No explanations."
 
-        raw_output2 = call_llm(
+        raw2 = call_llm(
             prompt=repair_prompt,
             system=self.system_prompt,
             temperature=0.0,
             response_format="json",
         )
-        self._dump_raw(raw_output2, "attempt2")
-        success = self._try_write_from_output(raw_output2)
-
-        if success:
+        self._dump_raw(raw2, "attempt2")
+        if self._try_write_from_output(raw2):
             print(f"[DEBUG] {self.name}: done (LLM success after repair)")
             return True
 
         # Fallback
-        print(f"[WARN] {self.name}: LLM did not produce valid JSON. Using deterministic fallback (draft).")
+        print(f"[WARN] {self.name}: LLM failed → using deterministic fallback")
         self._write_fallback()
         return False
 
     def _try_write_from_output(self, text: str) -> bool:
+        if not text.strip():
+            return False
+
         data, err = parse_json_object(text.strip())
         report = {
             "parse_error": err,
@@ -137,36 +130,31 @@ NOW OUTPUT ONLY THE JSON:
 
         files = data["files"]
         report["files_found"] = len(files)
-        found_paths = []
 
         for item in files:
             if not isinstance(item, dict):
                 continue
             path = item.get("path", "").strip()
-            content = item.get("content", "")
+            content = item.get("content")
 
             if path != self.impl_cpp or not isinstance(content, str):
                 continue
 
-            if not content.endswith("\n"):
-                content += "\n"
-
+            content = content.rstrip() + "\n"  # Normalize
             self.writer.write(path, content)
-            found_paths.append(path)
-
-        if self.impl_cpp in found_paths:
+            report["paths"] = [path]
             report["missing_required"] = []
             self.report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             return True
-        else:
-            self.report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-            return False
+
+        self.report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        return False
 
     def _dump_raw(self, text: str, label: str) -> None:
         (self.raw_dir / f"VHAL_SERVICE_RAW_{label}.txt").write_text(text or "[EMPTY]", encoding="utf-8")
 
     def _write_fallback(self) -> None:
-        """Robust, generic, production-ready fallback implementation"""
+        """Production-ready, generic, thread-safe fallback implementation"""
         cpp_content = """// hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp
 #include <android-base/logging.h>
 #include <android/binder_interface_utils.h>
@@ -190,10 +178,7 @@ namespace {
 struct PropKey {
     int32_t propId;
     int32_t areaId;
-
-    bool operator==(const PropKey& o) const {
-        return propId == o.propId && areaId == o.areaId;
-    }
+    bool operator==(const PropKey& o) const { return propId == o.propId && areaId == o.areaId; }
 };
 
 struct PropKeyHash {
@@ -205,9 +190,7 @@ struct PropKeyHash {
 class VehicleHalServiceImpl : public BnIVehicle {
 public:
     ndk::ScopedAStatus get(int32_t propId, int32_t areaId, VehiclePropValue* _aidl_return) override {
-        if (!_aidl_return) {
-            return ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
-        }
+        if (!_aidl_return) return ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
 
         std::lock_guard<std::mutex> lock(mMutex);
         PropKey key{propId, areaId};
@@ -224,18 +207,14 @@ public:
 
     ndk::ScopedAStatus set(const VehiclePropValue& value) override {
         std::vector<std::shared_ptr<IVehicleCallback>> callbacksCopy;
-
         {
             std::lock_guard<std::mutex> lock(mMutex);
             PropKey key{value.prop, value.areaId};
             mProperties[key] = value;
             callbacksCopy = mCallbacks;
         }
-
         for (const auto& cb : callbacksCopy) {
-            if (cb) {
-                (void)cb->onPropertyEvent(value);
-            }
+            if (cb) (void)cb->onPropertyEvent(value);
         }
         return ndk::ScopedAStatus::ok();
     }
@@ -251,10 +230,7 @@ public:
     ndk::ScopedAStatus unregisterCallback(const std::shared_ptr<IVehicleCallback>& callback) override {
         if (callback) {
             std::lock_guard<std::mutex> lock(mMutex);
-            mCallbacks.erase(
-                std::remove(mCallbacks.begin(), mCallbacks.end(), callback),
-                mCallbacks.end()
-            );
+            mCallbacks.erase(std::remove(mCallbacks.begin(), mCallbacks.end(), callback), mCallbacks.end());
         }
         return ndk::ScopedAStatus::ok();
     }
@@ -281,7 +257,7 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    LOG(INFO) << "Vehicle HAL service registered successfully: " << instance;
+    LOG(INFO) << "Vehicle HAL service registered: " << instance;
     ABinderProcess_joinThreadPool();
     return EXIT_SUCCESS;
 }
@@ -291,10 +267,6 @@ int main(int argc, char** argv) {
 
 
 def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any]) -> bool:
-    """
-    Generates the C++ Vehicle HAL service implementation.
-    Returns True if LLM succeeded, False if fallback was used.
-    """
     if isinstance(plan_or_spec, str):
         plan_text = plan_or_spec
     elif isinstance(plan_or_spec, dict):
