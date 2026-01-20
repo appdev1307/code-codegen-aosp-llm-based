@@ -52,7 +52,7 @@ def main():
     yaml_spec, n = vss_to_yaml_spec(
         vss_json_path=vss_path,
         include_prefixes=None,
-        max_props=50,
+        max_props=None,
         vendor_namespace="vendor.vss",
         add_meta=False,
     )
