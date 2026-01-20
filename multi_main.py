@@ -111,6 +111,11 @@ def main():
     print("[PROMOTE] Promoting LLM drafts to final AOSP layout...")
     PromoteDraftAgent().run()
 
+    # Generate shared SELinux policy once for the entire HAL
+    print("[SELINUX] Generating shared vendor policy (combined)...")
+    from agents.selinux_agent import generate_selinux
+    generate_selinux(full_spec)  # Use the full original spec
+
     print("\n🎉 SUCCESS! Final files are now in:")
     print("   → AIDL: output/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/")
     print("   → C++:  output/hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp")
