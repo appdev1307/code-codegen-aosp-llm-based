@@ -4,8 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import time
 
-# Updated model - Llama 3.1 70B (excellent for coding + structured output)
-MODEL = "llama3.1:70b"          # Change this if you use a specific quant tag, e.g. "llama3.1:70b-instruct-q4_0"
+MODEL = "qwen2.5-coder:32b"          
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 TIMEOUT = 1200                  # Increased timeout for 70B model (can be slow on large prompts)
