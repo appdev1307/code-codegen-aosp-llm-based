@@ -1,4 +1,4 @@
-# main.py - Enhanced with LLM-powered modular generation
+# main.py - Enhanced with LLM-powered modular generation (FINAL FIXED VERSION)
 from pathlib import Path
 from vss_to_yaml import vss_to_yaml_spec
 from schemas.yaml_loader import load_hal_spec_from_yaml_text
@@ -12,7 +12,7 @@ class ModuleSpec:
     """Wrapper to feed module-specific data to ArchitectAgent"""
     def __init__(self, domain: str, properties: list):
         self.domain = domain.upper()
-        self.properties = properties  # List of full property dicts
+        self.properties = properties  # List of PropertySpec objects (not dicts!)
 
     def to_llm_spec(self):
         """Generate human-readable spec text for LLM agents (same format as original)"""
@@ -24,11 +24,24 @@ class ModuleSpec:
             ""
         ]
         for prop in self.properties:
+            # Safely extract values from PropertySpec object
+            prop_id = getattr(prop, "property_id", 
+                     getattr(prop, "prop_id", 
+                     getattr(prop, "id", 
+                     getattr(prop, "name", "UNKNOWN"))))
+            typ = getattr(prop, "type", "UNKNOWN")
+            access = getattr(prop, "access", "READ_WRITE")
+            areas = getattr(prop, "areas", "GLOBAL")
+            if isinstance(areas, list):
+                areas = ", ".join(areas)
+            elif not isinstance(areas, str):
+                areas = "GLOBAL"
+
             lines += [
-                f"- Property ID : {prop.get('Property ID', 'UNKNOWN')}",
-                f"  Type : {prop.get('Type', 'UNKNOWN')}",
-                f"  Access : {prop.get('Access', 'READ_WRITE')}",
-                f"  Areas : {prop.get('Areas', 'GLOBAL')}",
+                f"- Property ID : {prop_id}",
+                f"  Type : {typ}",
+                f"  Access : {access}",
+                f"  Areas : {areas}",
             ]
         return "\n".join(lines)
 
@@ -45,7 +58,7 @@ def main():
     yaml_spec, n = vss_to_yaml_spec(
         vss_json_path=vss_path,
         include_prefixes=None,
-        max_props=50,  # Remove or set to None for full dataset
+        max_props=50,  # Change to None for full run
         vendor_namespace="vendor.vss",
         add_meta=False,
     )
@@ -56,27 +69,40 @@ def main():
     # === Step 2: Load full spec object ===
     print("[2/4] Loading full HAL spec...")
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
-    all_properties = full_spec.properties  # Assuming your HalSpec has .properties list
+    all_properties = full_spec.properties  # List of PropertySpec objects
 
     # === Step 3: Let LLM intelligently group into modules ===
     print("[3/4] Running Module Planner (LLM analyzes full spec)...")
     try:
-        module_signal_map = plan_modules_from_spec(yaml_spec)  # Returns {"HVAC": [ids...], "BODY": ...}
+        module_signal_map = plan_modules_from_spec(yaml_spec)  # {"ADAS": ["VSS_VEHICLE_ADAS_...", ...], ...}
     except Exception as e:
         print(f"[WARN] Module planner failed: {e}")
-        print("[FALLBACK] Using single full run (may trigger LLM fallbacks)")
+        print("[FALLBACK] Running single full generation...")
         ensure_aosp_layout(full_spec)
         ArchitectAgent().run(full_spec)
         return
 
-    # Build lookup: Property ID → full property dict
-    prop_lookup = {prop["Property ID"]: prop for prop in all_properties}
+    # === Build safe lookup: Property ID string → PropertySpec object ===
+    def get_property_id(prop):
+        """Extract the string ID from a PropertySpec object using common attribute names"""
+        return getattr(prop, "property_id",
+               getattr(prop, "prop_id",
+               getattr(prop, "id",
+               getattr(prop, "name", None))))
+
+    prop_lookup = {}
+    for prop in all_properties:
+        pid = get_property_id(prop)
+        if pid and pid not in prop_lookup:
+            prop_lookup[pid] = prop
+
+    print(f"[DEBUG] Built property lookup with {len(prop_lookup)} entries")
 
     # === Step 4: Generate HAL per module ===
     print(f"[4/4] Generating HAL for {len(module_signal_map)} modules...")
     architect = ArchitectAgent()
 
-    # Ensure base AOSP layout once
+    # Ensure base AOSP layout once (shared across modules)
     ensure_aosp_layout(full_spec)
 
     for domain, signal_ids in module_signal_map.items():
@@ -84,10 +110,20 @@ def main():
             print(f"  → Skipping empty module: {domain}")
             continue
 
-        # Filter properties for this module
-        module_props = [prop_lookup[sid] for sid in signal_ids if sid in prop_lookup]
+        # Collect actual PropertySpec objects for this module
+        module_props = []
+        missing_count = 0
+        for sid in signal_ids:
+            if sid in prop_lookup:
+                module_props.append(prop_lookup[sid])
+            else:
+                missing_count += 1
+
+        if missing_count > 0:
+            print(f"  → Warning: {missing_count} signal(s) not found in spec for module {domain}")
+
         if not module_props:
-            print(f"  → No properties found for {domain}, skipping")
+            print(f"  → No valid properties for {domain}, skipping")
             continue
 
         print(f"\n{'='*70}")
@@ -103,9 +139,9 @@ def main():
             print(f"❌ Error generating {domain.upper()}: {e}")
 
     print("\n🎉 All modules completed!")
-    print("   → Check output/.llm_draft/latest/ for LLM drafts")
-    print("   → Check output/hardware/interfaces/... for final AOSP files")
-    print("   → Check output/MODULE_PLAN.json for the smart grouping")
+    print("   → Check output/.llm_draft/latest/ for latest LLM drafts")
+    print("   → Check output/hardware/interfaces/... for generated AOSP files")
+    print("   → Check output/MODULE_PLAN.json for the LLM's smart grouping")
 
 
 if __name__ == "__main__":
