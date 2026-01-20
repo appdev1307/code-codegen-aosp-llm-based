@@ -122,11 +122,20 @@ def main():
         except Exception as e:
             print(f"❌ Error generating {domain.upper()}: {e}")
 
+    print("\n🎉 All modules completed!")
+
+    # Promote the best drafts (from latest successful module)
+    from agents.promote_draft_agent import PromoteDraftAgent
+    PromoteDraftAgent().run()
+
+    print("   → Check output/.llm_draft/latest/ for raw LLM outputs")
+    print("   → Check output/hardware/interfaces/automotive/vehicle/ for FINAL AOSP-READY files")
+    print("   → Check output/MODULE_PLAN.json for the smart grouping")
+
     print("\n🎉 All modules completed successfully!")
     print("   → LLM drafts: output/.llm_draft/latest/")
     print("   → AOSP files: output/hardware/interfaces/...")
     print("   → Module plan: output/MODULE_PLAN.json")
-
 
 if __name__ == "__main__":
     main()
