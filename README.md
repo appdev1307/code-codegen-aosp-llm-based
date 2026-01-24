@@ -43,4 +43,25 @@ pip install -r requirements.txt
 #python main.py
 python multi_main.py
 
+# Testing
+repo init -u https://android.googlesource.com/platform/manifest -b android-15.0.0_r1
+repo sync -j8
+
+cp -r output/hardware/interfaces/automotive/vehicle aosp_root/hardware/interfaces/automotive/
+cp -r output/packages/apps/VssDynamicApp aosp_root/packages/apps/
+cp -r output/system/sepolicy/vendor/* aosp_root/system/sepolicy/vendor/
+
+# Build HAL
+source build/envsetup.sh
+lunch aosp_car_x86_64-userdebug
+mmm hardware/interfaces/automotive/vehicle/
+
+# Build App
+mmm packages/apps/VssDynamicApp/
+
+# Flash & Run
+make -j8
+emulator -selinux permissive  # or real AAOS device
+
+
 ```
