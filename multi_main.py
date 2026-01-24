@@ -71,15 +71,17 @@ def main():
         with open(labelled_path, "r", encoding="utf-8") as f:
             labelled_data = json.load(f)
 
-    # === Convert to YAML (limit to 50 signals) ===
-    print("\n[1/5] Converting to YAML spec (50 signals)...")
+    # === Limit to 50 signals for testing ===
+    print("\n[1/5] Preparing 50-signal dataset...")
+    limited_signals = dict(list(labelled_data.items())[:50])  # ← THIS WAS MISSING!
+    print(f"Selected {len(limited_signals)} signals for test run")
 
-    # Save limited signals to temp file
     limited_path = output_dir / "VSS_LIMITED_50.json"
     limited_path.write_text(json.dumps(limited_signals, indent=2, ensure_ascii=False))
 
+    # === Convert to YAML ===
     yaml_spec, n = vss_to_yaml_spec(
-        vss_json_path=str(limited_path),  # ← Use file path
+        vss_json_path=str(limited_path),
         include_prefixes=None,
         max_props=None,
         vendor_namespace="vendor.vss",
@@ -140,27 +142,21 @@ def main():
 
     # === Full-Stack Generation ===
     print("[5/5] Generating full-stack components...")
-
     print("  → Generating design documents...")
     DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
-
     print("  → Promoting drafts to final layout...")
     PromoteDraftAgent().run()
-
     print("  → Generating SELinux policy...")
     generate_selinux(full_spec)
-
     print("  → Generating build glue...")
     BuildGlueAgent().run()
-
     print("  → Generating Android app...")
     LLMAndroidAppAgent().run(module_signal_map, all_properties)
-
     print("  → Generating backend...")
     LLMBackendAgent().run(module_signal_map, all_properties)
 
     print("\n🎉 SUCCESS! Test run with 50 signals complete!")
-    print("    → Ready to scale: change limited_signals[:50] → full labelled_data")
+    print("    → Ready to scale: change [:50] to full labelled_data")
     print("    → All files in output/")
 
 
