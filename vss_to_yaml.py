@@ -1,6 +1,6 @@
 # FILE: vss_to_yaml.py
 # Deterministic VSS JSON -> YAML spec v1.1 (NO LLM)
-# Updated to support labelled dict input and normalized IDs
+# Fixed: Skips branch nodes, only includes true leaves with datatype
 
 import json
 import re
@@ -19,7 +19,7 @@ def vss_datatype_to_yaml_type(dt: Optional[str]) -> str:
         return "BOOLEAN"
     if dt.startswith(("int", "uint")):
         return "INT"
-    return "INT"  # Fallback — your loader doesn't support STRING
+    return "INT"  # Fallback
 
 
 def vss_type_to_access(vss_node: Dict[str, Any]) -> str:
@@ -41,7 +41,7 @@ def infer_module_from_paths(paths: List[str]) -> str:
         pl = p.lower()
         if "adas" in pl or "driver" in pl or "obstacle" in pl:
             votes["ADAS"] += 1
-        elif "hvac" in pl or "climate" in pl or "cabin" in pl and "temperature" in pl:
+        elif "hvac" in pl or "climate" in pl or ("cabin" in pl and "temperature" in pl):
             votes["HVAC"] += 1
         elif "body" in pl or "light" in pl or "door" in pl or "mirror" in pl:
             votes["BODY"] += 1
@@ -67,7 +67,7 @@ def vss_to_yaml_spec(
 ) -> Tuple[str, int]:
     """
     Convert VSS to YAML spec v1.1
-    Now supports direct dict input (for labelled/limited data)
+    Supports both raw tree and labelled flat dict
     """
     if vss_json is None:
         if vss_json_path is None:
@@ -77,28 +77,34 @@ def vss_to_yaml_spec(
     else:
         data = vss_json
 
-    # Handle both raw VSS tree and labelled flat dict
+    leaves = []
+
     if "Vehicle" in data:  # Raw VSS tree
         vehicle = data["Vehicle"]
         if not isinstance(vehicle, dict):
             raise ValueError('Invalid VSS: missing "Vehicle" object')
-        leaves = []
+
         def walk(node: Dict, prefix: str = "Vehicle"):
             for name, child in (node.get("children") or {}).items():
                 if not isinstance(child, dict):
                     continue
                 path = f"{prefix}.{name}"
-                if "datatype" in child:
+                # **CRITICAL FIX**: Only add if has datatype AND is not a branch
+                if "datatype" in child and child.get("type") != "branch":
                     leaves.append({"path": path, "node": child})
+                # Always recurse into children
                 if "children" in child:
                     walk(child, path)
+
         walk(vehicle)
+
     else:  # Labelled flat dict (normalized_id → enhanced signal)
-        leaves = []
         for norm_id, enhanced in data.items():
             node = enhanced if isinstance(enhanced, dict) else enhanced.get("node", {})
             path = enhanced.get("vss_path", norm_id.replace("VSS_", "").replace("_", "."))
-            leaves.append({"path": path, "node": node, "enhanced": enhanced})
+            # Skip if no datatype (should not happen in labelled data)
+            if "datatype" in node:
+                leaves.append({"path": path, "node": node, "enhanced": enhanced})
 
     # Filtering
     if include_prefixes:
@@ -115,7 +121,7 @@ def vss_to_yaml_spec(
         node = item.get("node", {}) or item.get("enhanced", {})
         path = item["path"]
 
-        # Use normalized_id if available (from labelling)
+        # Use normalized_id if available
         name = item.get("enhanced", {}).get("normalized_id", path_to_property_name(path))
 
         typ = vss_datatype_to_yaml_type(node.get("datatype"))
