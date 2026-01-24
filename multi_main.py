@@ -107,6 +107,12 @@ def main():
 
     print("\n🎉 All modules completed!")
 
+    from agents.design_doc_agent import DesignDocAgent
+
+    # Generate design documents first
+    print("[DESIGN] Generating architecture and UML diagrams...")
+    DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)  # or full_spec.to_llm_spec()
+
     # === THIS IS THE KEY: PROMOTE DRAFTS TO FINAL PATH ===
     print("[PROMOTE] Promoting LLM drafts to final AOSP layout...")
     PromoteDraftAgent().run()
@@ -118,6 +124,12 @@ def main():
 
     from agents.build_glue_agent import BuildGlueAgent
     BuildGlueAgent().run()
+
+    from agents.llm_android_app_agent import LLMAndroidAppAgent
+    from agents.llm_backend_agent import LLMBackendAgent
+
+    LLMAndroidAppAgent().run(module_signal_map, all_properties)
+    LLMBackendAgent().run(module_signal_map, all_properties)
 
     print("\n🎉 SUCCESS! Final files are now in:")
     print("   → AIDL: output/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/")
