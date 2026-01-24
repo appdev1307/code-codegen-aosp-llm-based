@@ -73,15 +73,17 @@ def main():
 
     # === Convert to YAML (limit to 50 signals) ===
     print("\n[1/5] Converting to YAML spec (50 signals)...")
-    # Take first 50 from labelled data
-    limited_signals = dict(list(labelled_data.items())[:50])
+
+    # Save limited signals to temp file
+    limited_path = output_dir / "VSS_LIMITED_50.json"
+    limited_path.write_text(json.dumps(limited_signals, indent=2, ensure_ascii=False))
 
     yaml_spec, n = vss_to_yaml_spec(
-        vss_json=limited_signals,  # Pass dict directly (modify function if needed)
+        vss_json_path=str(limited_path),  # ← Use file path
         include_prefixes=None,
-        max_props=None,  # Already limited
+        max_props=None,
         vendor_namespace="vendor.vss",
-        add_meta=True,   # Include rich labels
+        add_meta=True,
     )
 
     spec_path = output_dir / "SPEC_FROM_VSS.yaml"
