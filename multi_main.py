@@ -1,4 +1,4 @@
-# main.py - FINAL VERSION (50 signals test + optional labelling)
+# main.py - Generate separate HAL module for each LLM-identified domain (50 signals test)
 from pathlib import Path
 import json
 
@@ -55,26 +55,24 @@ def main():
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("🚀 Starting VSS → AAOS HAL Generation (Testing with 50 signals)")
+    print("🚀 Starting VSS → AAOS HAL Generation (50 signals, one module per domain)")
 
-    # === Optional: LLM Labelling (run once, then comment out) ===
+    # === Optional: LLM Labelling (run once) ===
     labelled_path = output_dir / "VSS_LABELLED.json"
     if not labelled_path.exists():
-        print("[LABELLING] Running LLM-assisted labelling (first-time only)...")
+        print("[LABELLING] Running LLM-assisted labelling...")
         labelling_agent = VSSLabellingAgent()
         labelled_data = labelling_agent.run(vss_path)
-        # Save for future runs
         labelled_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
-        print(f"[LABELLING] Saved labelled dataset to {labelled_path}")
     else:
-        print(f"[LABELLING] Using existing labelled dataset: {labelled_path}")
+        print(f"[LABELLING] Using existing labelled data: {labelled_path}")
         with open(labelled_path, "r", encoding="utf-8") as f:
             labelled_data = json.load(f)
 
-    # === Limit to 50 signals for testing ===
+    # === Limit to 50 signals ===
     print("\n[1/5] Preparing 50-signal dataset...")
-    limited_signals = dict(list(labelled_data.items())[:50])  # ← THIS WAS MISSING!
-    print(f"Selected {len(limited_signals)} signals for test run")
+    limited_signals = dict(list(labelled_data.items())[:50])
+    print(f"Using {len(limited_signals)} signals")
 
     limited_path = output_dir / "VSS_LIMITED_50.json"
     limited_path.write_text(json.dumps(limited_signals, indent=2, ensure_ascii=False))
@@ -92,20 +90,21 @@ def main():
     spec_path.write_text(yaml_spec, encoding="utf-8")
     print(f"[DEBUG] Wrote {spec_path} with {n} properties")
 
-    # === Load and proceed ===
-    print("[2/5] Loading full HAL spec...")
+    # === Load spec ===
+    print("[2/5] Loading HAL spec...")
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
     all_properties = full_spec.properties
 
+    # === LLM Module Planning ===
     print("[3/5] Running Module Planner...")
     try:
         module_signal_map = plan_modules_from_spec(yaml_spec)
+        print(f"LLM identified {len(module_signal_map)} modules: {', '.join(module_signal_map.keys())}")
     except Exception as e:
         print(f"[FALLBACK] Module planner failed: {e}")
-        ensure_aosp_layout(full_spec)
-        ArchitectAgent().run(full_spec)
         return
 
+    # === Property lookup ===
     def get_property_id(prop):
         return getattr(prop, "property_id",
                getattr(prop, "prop_id",
@@ -113,17 +112,16 @@ def main():
                getattr(prop, "name", None))))
 
     prop_lookup = {get_property_id(p): p for p in all_properties if get_property_id(p)}
-    print(f"[DEBUG] Property lookup: {len(prop_lookup)} entries")
 
-    print(f"[4/5] Generating {len(module_signal_map)} modules...")
+    # === Generate ONE HAL MODULE PER DOMAIN ===
+    print(f"[4/5] Generating {len(module_signal_map)} separate HAL modules...")
     architect = ArchitectAgent()
-    ensure_aosp_layout(full_spec)
 
     for domain, signal_ids in module_signal_map.items():
         if not signal_ids:
             continue
-        module_props = [prop_lookup.get(sid) for sid in signal_ids]
-        module_props = [p for p in module_props if p]
+
+        module_props = [prop_lookup.get(sid) for sid in signal_ids if prop_lookup.get(sid)]
         if not module_props:
             continue
 
@@ -134,30 +132,25 @@ def main():
         module_spec = ModuleSpec(domain=domain, properties=module_props)
         try:
             architect.run(module_spec)
-            print(f"✅ {domain.upper()} generated!")
+            print(f"✅ {domain.upper()} module generated!")
         except Exception as e:
             print(f"❌ {domain.upper()}: {e}")
 
-    print("\n🎉 All HAL modules completed!")
+    print("\n🎉 All modules generated separately!")
 
-    # === Full-Stack Generation ===
-    print("[5/5] Generating full-stack components...")
-    print("  → Generating design documents...")
+    # === Full-Stack ===
+    print("[5/5] Generating supporting components...")
     DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
-    print("  → Promoting drafts to final layout...")
-    PromoteDraftAgent().run()
-    print("  → Generating SELinux policy...")
+    PromoteDraftAgent().run()  # Promotes last module — or enhance for all
     generate_selinux(full_spec)
-    print("  → Generating build glue...")
     BuildGlueAgent().run()
-    print("  → Generating Android app...")
     LLMAndroidAppAgent().run(module_signal_map, all_properties)
-    print("  → Generating backend...")
     LLMBackendAgent().run(module_signal_map, all_properties)
 
-    print("\n🎉 SUCCESS! Test run with 50 signals complete!")
-    print("    → Ready to scale: change [:50] to full labelled_data")
-    print("    → All files in output/")
+    print("\n🎉 SUCCESS! 50-signal multi-module run complete!")
+    print("    → Each module has its own drafts in .llm_draft/latest/")
+    print("    → Final promoted files from last module")
+    print("    → To merge all: future enhancement possible")
 
 
 if __name__ == "__main__":
