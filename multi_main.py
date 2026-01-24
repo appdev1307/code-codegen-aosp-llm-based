@@ -1,10 +1,18 @@
-# main.py - FINAL WORKING VERSION (with correct promotion)
+# main.py - FINAL VERSION (50 signals test + optional labelling)
 from pathlib import Path
+import json
+
 from vss_to_yaml import vss_to_yaml_spec
 from schemas.yaml_loader import load_hal_spec_from_yaml_text
 from agents.architect_agent import ArchitectAgent
 from agents.module_planner_agent import plan_modules_from_spec
 from agents.promote_draft_agent import PromoteDraftAgent
+from agents.design_doc_agent import DesignDocAgent
+from agents.selinux_agent import generate_selinux
+from agents.build_glue_agent import BuildGlueAgent
+from agents.llm_android_app_agent import LLMAndroidAppAgent
+from agents.llm_backend_agent import LLMBackendAgent
+from agents.vss_labelling_agent import VSSLabellingAgent
 from tools.aosp_layout import ensure_aosp_layout
 
 
@@ -32,6 +40,7 @@ class ModuleSpec:
             access = getattr(prop, "access", "READ_WRITE")
             areas = getattr(prop, "areas", "GLOBAL")
             areas_str = ", ".join(areas) if isinstance(areas, (list, tuple)) and areas else str(areas)
+
             lines += [
                 f"- Property ID : {prop_id}",
                 f"  Type : {typ}",
@@ -46,25 +55,45 @@ def main():
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("🚀 Starting VSS → AAOS HAL Generation (Modular + LLM-Smart)")
+    print("🚀 Starting VSS → AAOS HAL Generation (Testing with 50 signals)")
 
-    print("[1/4] Converting VSS to YAML spec...")
+    # === Optional: LLM Labelling (run once, then comment out) ===
+    labelled_path = output_dir / "VSS_LABELLED.json"
+    if not labelled_path.exists():
+        print("[LABELLING] Running LLM-assisted labelling (first-time only)...")
+        labelling_agent = VSSLabellingAgent()
+        labelled_data = labelling_agent.run(vss_path)
+        # Save for future runs
+        labelled_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
+        print(f"[LABELLING] Saved labelled dataset to {labelled_path}")
+    else:
+        print(f"[LABELLING] Using existing labelled dataset: {labelled_path}")
+        with open(labelled_path, "r", encoding="utf-8") as f:
+            labelled_data = json.load(f)
+
+    # === Convert to YAML (limit to 50 signals) ===
+    print("\n[1/5] Converting to YAML spec (50 signals)...")
+    # Take first 50 from labelled data
+    limited_signals = dict(list(labelled_data.items())[:50])
+
     yaml_spec, n = vss_to_yaml_spec(
-        vss_json_path=vss_path,
+        vss_json=limited_signals,  # Pass dict directly (modify function if needed)
         include_prefixes=None,
-        max_props=50,
+        max_props=None,  # Already limited
         vendor_namespace="vendor.vss",
-        add_meta=False,
+        add_meta=True,   # Include rich labels
     )
+
     spec_path = output_dir / "SPEC_FROM_VSS.yaml"
     spec_path.write_text(yaml_spec, encoding="utf-8")
     print(f"[DEBUG] Wrote {spec_path} with {n} properties")
 
-    print("[2/4] Loading full HAL spec...")
+    # === Load and proceed ===
+    print("[2/5] Loading full HAL spec...")
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
     all_properties = full_spec.properties
 
-    print("[3/4] Running Module Planner...")
+    print("[3/5] Running Module Planner...")
     try:
         module_signal_map = plan_modules_from_spec(yaml_spec)
     except Exception as e:
@@ -82,7 +111,7 @@ def main():
     prop_lookup = {get_property_id(p): p for p in all_properties if get_property_id(p)}
     print(f"[DEBUG] Property lookup: {len(prop_lookup)} entries")
 
-    print(f"[4/4] Generating {len(module_signal_map)} modules...")
+    print(f"[4/5] Generating {len(module_signal_map)} modules...")
     architect = ArchitectAgent()
     ensure_aosp_layout(full_spec)
 
@@ -94,9 +123,9 @@ def main():
         if not module_props:
             continue
 
-        print(f"\n{'='*70}")
+        print(f"\n{'='*80}")
         print(f"GENERATING MODULE: {domain.upper()} ({len(module_props)} properties)")
-        print(f"{'='*70}")
+        print(f"{'='*80}")
 
         module_spec = ModuleSpec(domain=domain, properties=module_props)
         try:
@@ -105,37 +134,32 @@ def main():
         except Exception as e:
             print(f"❌ {domain.upper()}: {e}")
 
-    print("\n🎉 All modules completed!")
+    print("\n🎉 All HAL modules completed!")
 
-    from agents.design_doc_agent import DesignDocAgent
+    # === Full-Stack Generation ===
+    print("[5/5] Generating full-stack components...")
 
-    # Generate design documents first
-    print("[DESIGN] Generating architecture and UML diagrams...")
-    DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)  # or full_spec.to_llm_spec()
+    print("  → Generating design documents...")
+    DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
 
-    # === THIS IS THE KEY: PROMOTE DRAFTS TO FINAL PATH ===
-    print("[PROMOTE] Promoting LLM drafts to final AOSP layout...")
+    print("  → Promoting drafts to final layout...")
     PromoteDraftAgent().run()
 
-    # Generate shared SELinux policy once for the entire HAL
-    print("[SELINUX] Generating shared vendor policy (combined)...")
-    from agents.selinux_agent import generate_selinux
-    generate_selinux(full_spec)  # Use the full original spec
+    print("  → Generating SELinux policy...")
+    generate_selinux(full_spec)
 
-    from agents.build_glue_agent import BuildGlueAgent
+    print("  → Generating build glue...")
     BuildGlueAgent().run()
 
-    from agents.llm_android_app_agent import LLMAndroidAppAgent
-    from agents.llm_backend_agent import LLMBackendAgent
-
+    print("  → Generating Android app...")
     LLMAndroidAppAgent().run(module_signal_map, all_properties)
+
+    print("  → Generating backend...")
     LLMBackendAgent().run(module_signal_map, all_properties)
 
-    print("\n🎉 SUCCESS! Final files are now in:")
-    print("   → AIDL: output/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/")
-    print("   → C++:  output/hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp")
-    print("   → Plan: output/MODULE_PLAN.json")
-    print("   → Drafts: output/.llm_draft/latest/ (for debugging)")
+    print("\n🎉 SUCCESS! Test run with 50 signals complete!")
+    print("    → Ready to scale: change limited_signals[:50] → full labelled_data")
+    print("    → All files in output/")
 
 
 if __name__ == "__main__":
