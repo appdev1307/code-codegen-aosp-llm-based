@@ -1,7 +1,6 @@
 # FILE: vss_to_yaml.py
 # Deterministic VSS JSON -> YAML spec v1.1 (NO LLM)
-# Fixed: Skips branch nodes, only includes true leaves with datatype
-
+# Supports raw VSS tree and labelled flat dict
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,7 +8,7 @@ import yaml
 
 
 def vss_datatype_to_yaml_type(dt: Optional[str]) -> str:
-    """Map VSS datatype to supported YAML types (INT|FLOAT|BOOLEAN only)"""
+    """Map VSS datatype to supported YAML types"""
     if not dt:
         return "INT"
     dt = str(dt).lower()
@@ -36,19 +35,21 @@ def path_to_property_name(vss_path: str) -> str:
 
 def infer_module_from_paths(paths: List[str]) -> str:
     """Simple heuristic for module name"""
-    votes = {"HVAC": 0, "ADAS": 0, "BODY": 0, "CABIN": 0, "POWERTRAIN": 0, "CHASSIS": 0}
+    votes = {"HVAC": 0, "ADAS": 0, "BODY": 0, "CABIN": 0, "POWERTRAIN": 0, "CHASSIS": 0, "INFOTAINMENT": 0, "OTHER": 0}
     for p in paths:
         pl = p.lower()
-        if "adas" in pl or "driver" in pl or "obstacle" in pl:
+        if "adas" in pl or "obstacle" in pl or "driver" in pl or "lane" in pl:
             votes["ADAS"] += 1
-        elif "hvac" in pl or "climate" in pl or ("cabin" in pl and "temperature" in pl):
+        elif "hvac" in pl or "climate" in pl or "fan" in pl or "temperature" in pl:
             votes["HVAC"] += 1
-        elif "body" in pl or "light" in pl or "door" in pl or "mirror" in pl:
+        elif "body" in pl or "light" in pl or "door" in pl or "mirror" in pl or "window" in pl:
             votes["BODY"] += 1
-        elif "powertrain" in pl or "battery" in pl or "engine" in pl:
+        elif "powertrain" in pl or "battery" in pl or "engine" in pl or "transmission" in pl:
             votes["POWERTRAIN"] += 1
-        elif "chassis" in pl or "brake" in pl or "steering" in pl:
+        elif "chassis" in pl or "brake" in pl or "steering" in pl or "suspension" in pl:
             votes["CHASSIS"] += 1
+        elif "infotainment" in pl or "audio" in pl or "navigation" in pl or "display" in pl:
+            votes["INFOTAINMENT"] += 1
         else:
             votes["CABIN"] += 1
     return max(votes, key=votes.get) if paths else "HVAC"
@@ -67,7 +68,9 @@ def vss_to_yaml_spec(
 ) -> Tuple[str, int]:
     """
     Convert VSS to YAML spec v1.1
-    Supports both raw tree and labelled flat dict
+    Supports:
+      - Raw VSS tree (with "Vehicle" root and "children")
+      - Labelled flat dict (normalized_id → enhanced signal)
     """
     if vss_json is None:
         if vss_json_path is None:
@@ -79,7 +82,8 @@ def vss_to_yaml_spec(
 
     leaves = []
 
-    if "Vehicle" in data:  # Raw VSS tree
+    # Case 1: Raw VSS tree
+    if "Vehicle" in data:
         vehicle = data["Vehicle"]
         if not isinstance(vehicle, dict):
             raise ValueError('Invalid VSS: missing "Vehicle" object')
@@ -89,27 +93,25 @@ def vss_to_yaml_spec(
                 if not isinstance(child, dict):
                     continue
                 path = f"{prefix}.{name}"
-                # **CRITICAL FIX**: Only add if has datatype AND is not a branch
                 if "datatype" in child and child.get("type") != "branch":
                     leaves.append({"path": path, "node": child})
-                # Always recurse into children
                 if "children" in child:
                     walk(child, path)
 
         walk(vehicle)
 
-    else:  # Labelled flat dict (normalized_id → enhanced signal)
+    # Case 2: Labelled flat dict
+    else:
         for norm_id, enhanced in data.items():
+            # enhanced is the full enriched signal
             node = enhanced if isinstance(enhanced, dict) else enhanced.get("node", {})
             path = enhanced.get("vss_path", norm_id.replace("VSS_", "").replace("_", "."))
-            # Skip if no datatype (should not happen in labelled data)
             if "datatype" in node:
                 leaves.append({"path": path, "node": node, "enhanced": enhanced})
 
     # Filtering
     if include_prefixes:
         leaves = [l for l in leaves if any(l["path"].startswith(p) for p in include_prefixes)]
-
     if max_props is not None:
         leaves = leaves[:max_props]
 
@@ -120,10 +122,7 @@ def vss_to_yaml_spec(
     for item in leaves:
         node = item.get("node", {}) or item.get("enhanced", {})
         path = item["path"]
-
-        # Use normalized_id if available
         name = item.get("enhanced", {}).get("normalized_id", path_to_property_name(path))
-
         typ = vss_datatype_to_yaml_type(node.get("datatype"))
         access = vss_type_to_access(node)
 
@@ -138,14 +137,14 @@ def vss_to_yaml_spec(
                 "vendor_namespace": vendor_namespace,
             },
             "sdv": {
-                "updatable_behavior": access in ("WRITE", "READ_WRITE"),
+                "updatable_behavior": "READ_WRITE" in access,
                 "cloud_control": {"allowed": False, "mode": "disabled"},
                 "telemetry": {"publish": True, "rate_limit_hz": 1},
             },
         }
 
         if add_meta:
-            labels = node.get("labels", {})
+            labels = node.get("labels", {}) if isinstance(node, dict) else {}
             p_obj["meta"] = {
                 "vss_path": path,
                 "vss_datatype": node.get("datatype"),
@@ -154,6 +153,7 @@ def vss_to_yaml_spec(
                 "domain": labels.get("domain", module),
                 "ui_widget": labels.get("ui_widget"),
                 "safety_level": labels.get("safety_level"),
+                "aosp_standard": labels.get("aosp_standard", False),
             }
 
         props.append(p_obj)

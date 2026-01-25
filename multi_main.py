@@ -1,4 +1,4 @@
-# main.py - 50-SIGNAL TEST ONLY (No labelling, fast run, same 32B model) - FIXED
+# main.py - 50-SIGNAL TEST with LLM Labelling on ONLY 50 (fast + rich metadata)
 from pathlib import Path
 import json
 
@@ -12,10 +12,11 @@ from agents.selinux_agent import generate_selinux
 from agents.build_glue_agent import BuildGlueAgent
 from agents.llm_android_app_agent import LLMAndroidAppAgent
 from agents.llm_backend_agent import LLMBackendAgent
+from agents.vss_labelling_agent import VSSLabellingAgent
 from tools.aosp_layout import ensure_aosp_layout
 
 
-# Helper to flatten VSS (same as in labelling agent)
+# Helper to flatten VSS
 def flatten_vss(vss_data, current_path=""):
     flat = {}
     for key, value in vss_data.items():
@@ -66,7 +67,7 @@ def main():
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("🚀 Starting VSS → AAOS HAL Generation (50 signals test — fast mode)")
+    print("🚀 Starting VSS → AAOS HAL Generation (50 labelled signals test — fast + rich metadata)")
 
     # Load and flatten raw VSS
     with open(vss_path, "r", encoding="utf-8") as f:
@@ -75,27 +76,26 @@ def main():
     leaf_signals = flatten_vss(raw_vss)
     print(f"[DATA] Found {len(leaf_signals)} total leaf signals")
 
-    # Limit to first 50
-    limited_signals = dict(list(leaf_signals.items())[:50])
-    print(f"[TEST] Using only 50 signals for fast testing")
+    # Take only first 50 for labelling
+    signals_to_label = dict(list(leaf_signals.items())[:50])
+    print(f"[LABELLING] Labelling only 50 signals for fast test (rich metadata)")
 
-    # === FIX: Save to temp file to ensure vss_to_yaml_spec processes all 50 ===
-    temp_vss_path = output_dir / "TEMP_50_SIGNALS.json"
-    temp_vss_path.write_text(json.dumps(limited_signals, indent=2, ensure_ascii=False))
-    print(f"[DEBUG] Saved 50 signals to {temp_vss_path}")
+    # Run LLM labelling on ONLY 50
+    labelling_agent = VSSLabellingAgent()
+    labelled_data = labelling_agent.run_on_dict(signals_to_label)  # We'll add this method below
 
-    # Convert to YAML using file path (reliable)
+    # Convert labelled 50 to YAML
     yaml_spec, n = vss_to_yaml_spec(
-        vss_json_path=str(temp_vss_path),
+        vss_json=labelled_data,
         include_prefixes=None,
         max_props=None,
         vendor_namespace="vendor.vss",
-        add_meta=False,
+        add_meta=True,  # Include rich labels
     )
 
     spec_path = output_dir / "SPEC_FROM_VSS.yaml"
     spec_path.write_text(yaml_spec, encoding="utf-8")
-    print(f"[DEBUG] Wrote {spec_path} with {n} properties")
+    print(f"[DEBUG] Wrote {spec_path} with {n} labelled properties")
 
     # Load spec
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
@@ -146,9 +146,9 @@ def main():
     LLMAndroidAppAgent().run(module_signal_map, all_properties)
     LLMBackendAgent().run(module_signal_map, all_properties)
 
-    print("\n🎉 50-signal test run complete!")
-    print("    → All 50 signals preserved and used")
-    print("    → Ready for full run: remove temp file + [:50]")
+    print("\n🎉 50-labelled-signal test run complete!")
+    print("    → Rich labels (domain, ui_widget, safety) included")
+    print("    → Ready for full run: remove [:50] limit")
 
 
 if __name__ == "__main__":
