@@ -43,6 +43,9 @@ pip install -r requirements.txt
 #python main.py
 python multi_main.py
 
+# Download output from colab
+!!zip -r /content/code-codegen-aosp-llm-based.zip /content/code-codegen-aosp-llm-based/output
+
 # Testing
 repo init -u https://android.googlesource.com/platform/manifest -b android-15.0.0_r1
 repo sync -j8
