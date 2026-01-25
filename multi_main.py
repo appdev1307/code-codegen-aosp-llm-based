@@ -1,4 +1,4 @@
-# main.py - 50-Signal Test with LLM Labelling & Multi-Module HAL Generation
+# main.py - 50-SIGNAL TEST ONLY (No labelling, fast run, same 32B model)
 from pathlib import Path
 import json
 
@@ -12,8 +12,19 @@ from agents.selinux_agent import generate_selinux
 from agents.build_glue_agent import BuildGlueAgent
 from agents.llm_android_app_agent import LLMAndroidAppAgent
 from agents.llm_backend_agent import LLMBackendAgent
-from agents.vss_labelling_agent import VSSLabellingAgent
 from tools.aosp_layout import ensure_aosp_layout
+
+
+# Helper to flatten VSS (same as in labelling agent)
+def flatten_vss(vss_data, current_path=""):
+    flat = {}
+    for key, value in vss_data.items():
+        full_path = f"{current_path}.{key}" if current_path else key
+        if "datatype" in value and value.get("type") != "branch":
+            flat[full_path] = value
+        elif isinstance(value, dict):
+            flat.update(flatten_vss(value, full_path))
+    return flat
 
 
 class ModuleSpec:
@@ -55,58 +66,42 @@ def main():
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("🚀 Starting VSS → AAOS HAL Generation (50 signals, one module per domain)")
+    print("🚀 Starting VSS → AAOS HAL Generation (50 signals test — fast mode)")
 
-    # === Step 1: LLM Labelling (run once) ===
-    labelled_path = output_dir / "VSS_LABELLED.json"
-    if not labelled_path.exists():
-        print("[LABELLING] Running LLM-assisted labelling (first time only)...")
-        labelling_agent = VSSLabellingAgent()
-        labelled_data = labelling_agent.run(vss_path)
-    else:
-        print(f"[LABELLING] Loading existing labelled dataset: {labelled_path}")
-        with open(labelled_path, "r", encoding="utf-8") as f:
-            labelled_data = json.load(f)
+    # Load and flatten raw VSS
+    with open(vss_path, "r", encoding="utf-8") as f:
+        raw_vss = json.load(f)
 
-    # === Step 2: Limit to 50 signals ===
-    print("\n[1/5] Preparing 50-signal test dataset...")
-    limited_signals = dict(list(labelled_data.items())[:50])
-    print(f"Selected {len(limited_signals)} signals for testing")
+    leaf_signals = flatten_vss(raw_vss)
+    print(f"[DATA] Found {len(leaf_signals)} total leaf signals")
 
-    limited_path = output_dir / "VSS_50_SIGNALS.json"
-    limited_path.write_text(json.dumps(limited_signals, indent=2, ensure_ascii=False))
+    # Limit to first 50
+    limited_signals = dict(list(leaf_signals.items())[:50])
+    print(f"[TEST] Using only 50 signals for fast testing")
 
-    # === Step 3: Convert to YAML spec ===
-    print("[2/5] Converting to YAML spec...")
+    # Convert to YAML
     yaml_spec, n = vss_to_yaml_spec(
-        vss_json_path=str(limited_path),
+        vss_json=limited_signals,
         include_prefixes=None,
         max_props=None,
         vendor_namespace="vendor.vss",
-        add_meta=True,
+        add_meta=False,  # No labels needed for test
     )
 
     spec_path = output_dir / "SPEC_FROM_VSS.yaml"
     spec_path.write_text(yaml_spec, encoding="utf-8")
     print(f"[DEBUG] Wrote {spec_path} with {n} properties")
 
-    # === Step 4: Load spec ===
-    print("[3/5] Loading HAL spec...")
+    # Load spec
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
     all_properties = full_spec.properties
 
-    # === Step 5: LLM Module Planning ===
-    print("[4/5] Running Module Planner...")
-    try:
-        module_signal_map = plan_modules_from_spec(yaml_spec)
-        print(f"LLM identified {len(module_signal_map)} modules: {', '.join(module_signal_map.keys())}")
-    except Exception as e:
-        print(f"[FALLBACK] Module planner failed: {e}")
-        ensure_aosp_layout(full_spec)
-        ArchitectAgent().run(full_spec)
-        return
+    # Module planning
+    print("\n[MODULE PLANNER] Running...")
+    module_signal_map = plan_modules_from_spec(yaml_spec)
+    print(f"LLM identified {len(module_signal_map)} modules")
 
-    # === Property lookup ===
+    # Property lookup
     def get_property_id(prop):
         return getattr(prop, "property_id",
                getattr(prop, "prop_id",
@@ -115,59 +110,39 @@ def main():
 
     prop_lookup = {get_property_id(p): p for p in all_properties if get_property_id(p)}
 
-    # === Generate ONE HAL MODULE PER DOMAIN ===
-    print(f"[5/5] Generating {len(module_signal_map)} separate HAL modules...")
+    # Generate modules
+    print(f"\n[GENERATION] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
-    ensure_aosp_layout(full_spec)  # Shared base layout
+    ensure_aosp_layout(full_spec)
 
     for domain, signal_ids in module_signal_map.items():
         if not signal_ids:
             continue
-
         module_props = [prop_lookup.get(sid) for sid in signal_ids if prop_lookup.get(sid)]
-        module_props = [p for p in module_props if p]
-
         if not module_props:
             continue
 
-        print(f"\n{'='*80}")
-        print(f"GENERATING MODULE: {domain.upper()} ({len(module_props)} properties)")
-        print(f"{'='*80}")
-
+        print(f"\nGENERATING MODULE: {domain.upper()} ({len(module_props)} properties)")
         module_spec = ModuleSpec(domain=domain, properties=module_props)
         try:
             architect.run(module_spec)
-            print(f"✅ {domain.upper()} module generated successfully!")
+            print(f"✅ {domain.upper()} generated!")
         except Exception as e:
-            print(f"❌ {domain.upper()} generation failed: {e}")
+            print(f"❌ {domain.upper()}: {e}")
 
-    print("\n🎉 All HAL modules completed!")
+    print("\n🎉 HAL generation complete!")
 
-    # === Final Supporting Components ===
-    print("\nGenerating full-stack supporting components...")
-
-    print("  → Design documents & UML...")
+    # Final stack
+    print("\nGenerating supporting components...")
     DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
-
-    print("  → Promoting drafts to final layout...")
-    PromoteDraftAgent().run()  # Will merge all (if you applied merge fix)
-
-    print("  → Shared SELinux policy...")
+    PromoteDraftAgent().run()
     generate_selinux(full_spec)
-
-    print("  → AOSP build glue...")
     BuildGlueAgent().run()
-
-    print("  → Dynamic Android Car App...")
     LLMAndroidAppAgent().run(module_signal_map, all_properties)
-
-    print("  → Telemetry backend...")
     LLMBackendAgent().run(module_signal_map, all_properties)
 
-    print("\n🎉 SUCCESS! 50-signal multi-module run complete!")
-    print("    → Modules: ADAS, HVAC, BODY, etc.")
-    print("    → Full HAL, App, Backend, Design Docs generated")
-    print("    → Ready to scale: remove [:50] limit for full dataset")
+    print("\n🎉 50-signal test run complete!")
+    print("    → Ready for full run: change [:50] to full leaf_signals")
 
 
 if __name__ == "__main__":
