@@ -1,4 +1,4 @@
-# main.py - 50-SIGNAL TEST ONLY (No labelling, fast run, same 32B model)
+# main.py - 50-SIGNAL TEST ONLY (No labelling, fast run, same 32B model) - FIXED
 from pathlib import Path
 import json
 
@@ -79,13 +79,18 @@ def main():
     limited_signals = dict(list(leaf_signals.items())[:50])
     print(f"[TEST] Using only 50 signals for fast testing")
 
-    # Convert to YAML
+    # === FIX: Save to temp file to ensure vss_to_yaml_spec processes all 50 ===
+    temp_vss_path = output_dir / "TEMP_50_SIGNALS.json"
+    temp_vss_path.write_text(json.dumps(limited_signals, indent=2, ensure_ascii=False))
+    print(f"[DEBUG] Saved 50 signals to {temp_vss_path}")
+
+    # Convert to YAML using file path (reliable)
     yaml_spec, n = vss_to_yaml_spec(
-        vss_json=limited_signals,
+        vss_json_path=str(temp_vss_path),
         include_prefixes=None,
         max_props=None,
         vendor_namespace="vendor.vss",
-        add_meta=False,  # No labels needed for test
+        add_meta=False,
     )
 
     spec_path = output_dir / "SPEC_FROM_VSS.yaml"
@@ -142,7 +147,8 @@ def main():
     LLMBackendAgent().run(module_signal_map, all_properties)
 
     print("\n🎉 50-signal test run complete!")
-    print("    → Ready for full run: change [:50] to full leaf_signals")
+    print("    → All 50 signals preserved and used")
+    print("    → Ready for full run: remove temp file + [:50]")
 
 
 if __name__ == "__main__":
