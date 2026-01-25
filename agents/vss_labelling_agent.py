@@ -1,8 +1,10 @@
-# agents/vss_labelling_agent.py - FIXED VERSION
+# agents/vss_labelling_agent.py - With tqdm progress bar (clean & professional)
 from pathlib import Path
 import json
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
+from tqdm import tqdm  # <-- Added for progress bar
+
 
 def flatten_vss(vss_data, current_path=""):
     """Recursively flatten VSS tree to only leaf signals (properties)"""
@@ -14,6 +16,7 @@ def flatten_vss(vss_data, current_path=""):
         elif isinstance(value, dict):  # Branch — recurse
             flat.update(flatten_vss(value, full_path))
     return flat
+
 
 class VSSLabellingAgent:
     def __init__(self, output_root="output"):
@@ -28,24 +31,24 @@ class VSSLabellingAgent:
 
         # Flatten to only leaf signals
         leaf_signals = flatten_vss(raw_vss)
-        print(f"[LABELLING] Extracted {len(leaf_signals)} leaf signals from VSS tree")
+        total = len(leaf_signals)
+        print(f"[LABELLING] Found {total} leaf signals — labelling in progress...")
 
         labelled_data = {}
 
-        total = len(leaf_signals)
-        for idx, (path, signal) in enumerate(leaf_signals.items(), 1):
-            print(f"[LABELLING] Processing {idx}/{total}: {path}")
-
+        # Beautiful progress bar with tqdm
+        for path, signal in tqdm(leaf_signals.items(),
+                                 desc="Labelling VSS signals",
+                                 unit="signal",
+                                 ncols=100,
+                                 bar_format="{l_bar}{bar} | {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"):
             prompt = f"""
 You are an expert automotive signal analyst.
-
 Label this VSS leaf signal:
-
 Path: {path}
 Datatype: {signal.get("datatype", "unknown")}
 Type: {signal.get("type", "unknown")}
 Description: {signal.get("description", "none")}
-
 Output ONLY valid JSON:
 {{
   "domain": "ADAS|BODY|HVAC|CABIN|POWERTRAIN|CHASSIS|INFOTAINMENT|OTHER",
@@ -57,7 +60,6 @@ Output ONLY valid JSON:
   "ui_unit": string or null,
   "aosp_standard": true|false
 }}
-
 Choose realistic values.
 """
 
@@ -65,7 +67,7 @@ Choose realistic values.
 
             try:
                 labels = json.loads(raw.strip().removeprefix("```json").removesuffix("```").strip())
-            except:
+            except Exception:
                 labels = {
                     "domain": "OTHER",
                     "safety_level": "Low",
@@ -83,7 +85,8 @@ Choose realistic values.
 
             labelled_data[enhanced["normalized_id"]] = enhanced
 
+        # Save result
         self.labelled_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
-        print(f"[LABELLING] Complete! {len(labelled_data)} labelled leaf signals saved")
+        print(f"\n[LABELLING] Complete! {len(labelled_data)} signals labelled and saved to {self.labelled_path}")
 
         return labelled_data
