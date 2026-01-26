@@ -17,7 +17,7 @@ from tools.aosp_layout import ensure_aosp_layout
 
 
 # === CONFIGURATION ===
-CACHE_MODE = "drive"          # "drive" = Google Drive (Colab) | "local" = local folder (your PC)
+CACHE_MODE = "local"          # "drive" = Google Drive (Colab) | "local" = local folder (your PC)
 TEST_SIGNAL_COUNT = 50        # Number of signals for test (set to None for full run)
 # =======================
 
@@ -60,7 +60,7 @@ def main():
         drive.mount('/content/drive')
         cache_dir = Path("/content/drive/MyDrive/vss_hal_cache")
     else:  # local
-        cache_dir = output_dir / "cache"
+        cache_dir = '../cache-llm'
 
     cache_dir.mkdir(parents=True, exist_ok=True)
 
