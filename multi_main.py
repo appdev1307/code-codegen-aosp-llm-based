@@ -1,4 +1,4 @@
-# main.py - With CACHE_MODE switch: "drive" (Colab) or "local" (your PC)
+# main.py - With CACHE_MODE switch: "drive" (Colab) or "local" (your PC) - FIXED
 from pathlib import Path
 import json
 
@@ -17,7 +17,7 @@ from tools.aosp_layout import ensure_aosp_layout
 
 
 # === CONFIGURATION ===
-CACHE_MODE = "local"          # "drive" = Google Drive (Colab) | "local" = local folder (your PC)
+CACHE_MODE = "local"          # "drive" = Google Drive (Colab) | "local" = local folder
 TEST_SIGNAL_COUNT = 50        # Number of signals for test (set to None for full run)
 # =======================
 
@@ -42,7 +42,7 @@ class ModuleSpec:
         self.vendor = "AOSP"
 
     def to_llm_spec(self):
-        # ... (giữ nguyên như cũ) ...
+        # (keep your existing implementation)
         pass
 
 
@@ -60,7 +60,7 @@ def main():
         drive.mount('/content/drive')
         cache_dir = Path("/content/drive/MyDrive/vss_hal_cache")
     else:  # local
-        cache_dir = Path('../cache-llm')  # Fixed: Path object
+        cache_dir = Path('../cache-llm')  # Fixed: Path object, not string
 
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -110,7 +110,7 @@ def main():
     spec_path.write_text(yaml_spec, encoding="utf-8")
     print(f"[DEBUG] Wrote {spec_path} with {n} labelled properties")
 
-    # === Rest of pipeline (unchanged) ===
+    # === Rest of pipeline ===
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
     all_properties = full_spec.properties
 
@@ -118,9 +118,47 @@ def main():
     module_signal_map = plan_modules_from_spec(yaml_spec)
     print(f"LLM identified {len(module_signal_map)} modules")
 
-    # ... (property lookup, generation, promotion, full stack — giữ nguyên như cũ) ...
+    # Property lookup
+    def get_property_id(prop):
+        return getattr(prop, "property_id",
+               getattr(prop, "prop_id",
+               getattr(prop, "id",
+               getattr(prop, "name", None))))
 
-    print("\n🎉 Run complete!")
+    prop_lookup = {get_property_id(p): p for p in all_properties if get_property_id(p)}
+
+    # Generate modules
+    print(f"\n[GENERATION] Generating {len(module_signal_map)} HAL modules...")
+    architect = ArchitectAgent()
+    ensure_aosp_layout(full_spec)
+
+    for domain, signal_ids in module_signal_map.items():
+        if not signal_ids:
+            continue
+        module_props = [prop_lookup.get(sid) for sid in signal_ids if prop_lookup.get(sid)]
+        if not module_props:
+            continue
+
+        print(f"\nGENERATING MODULE: {domain.upper()} ({len(module_props)} properties)")
+        module_spec = ModuleSpec(domain=domain, properties=module_props)
+        try:
+            architect.run(module_spec)
+            print(f"✅ {domain.upper()} generated!")
+        except Exception as e:
+            print(f"❌ {domain.upper()}: {e}")
+
+    print("\n🎉 HAL generation complete!")
+
+    # Final stack
+    print("\nGenerating supporting components...")
+    DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
+    PromoteDraftAgent().run()
+    generate_selinux(full_spec)
+    BuildGlueAgent().run()
+    LLMAndroidAppAgent().run(module_signal_map, all_properties)
+    LLMBackendAgent().run(module_signal_map, all_properties)
+
+    print("\nRun complete!")
     if TEST_SIGNAL_COUNT is not None:
         print(f"    → Test mode with {TEST_SIGNAL_COUNT} signals")
         print("    → For full run: set TEST_SIGNAL_COUNT = None")
