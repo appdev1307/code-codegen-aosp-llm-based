@@ -1,6 +1,7 @@
 # FILE: vss_to_yaml.py
 # Deterministic VSS JSON -> YAML spec v1.1 (NO LLM)
 # Supports raw VSS tree and labelled flat dict
+
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,7 +36,10 @@ def path_to_property_name(vss_path: str) -> str:
 
 def infer_module_from_paths(paths: List[str]) -> str:
     """Simple heuristic for module name"""
-    votes = {"HVAC": 0, "ADAS": 0, "BODY": 0, "CABIN": 0, "POWERTRAIN": 0, "CHASSIS": 0, "INFOTAINMENT": 0, "OTHER": 0}
+    votes = {
+        "HVAC": 0, "ADAS": 0, "BODY": 0, "CABIN": 0,
+        "POWERTRAIN": 0, "CHASSIS": 0, "INFOTAINMENT": 0, "OTHER": 0
+    }
     for p in paths:
         pl = p.lower()
         if "adas" in pl or "obstacle" in pl or "driver" in pl or "lane" in pl:
@@ -103,7 +107,6 @@ def vss_to_yaml_spec(
     # Case 2: Labelled flat dict
     else:
         for norm_id, enhanced in data.items():
-            # enhanced is the full enriched signal
             node = enhanced if isinstance(enhanced, dict) else enhanced.get("node", {})
             path = enhanced.get("vss_path", norm_id.replace("VSS_", "").replace("_", "."))
             if "datatype" in node:
