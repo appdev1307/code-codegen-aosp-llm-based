@@ -60,7 +60,7 @@ def main():
         drive.mount('/content/drive')
         cache_dir = Path("/content/drive/MyDrive/vss_hal_cache")
     else:  # local
-        cache_dir = '../cache-llm'
+        cache_dir = Path('../cache-llm')  # Fixed: Path object
 
     cache_dir.mkdir(parents=True, exist_ok=True)
 
