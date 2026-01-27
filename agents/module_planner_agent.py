@@ -1,8 +1,9 @@
-# agents/module_planner_agent.py - FIXED property extraction
-
+# FILE: agents/module_planner_agent.py - FIXED property extraction and save path
 import yaml
 import json
+from pathlib import Path
 from llm_client import call_llm
+
 
 def extract_properties_from_yaml(yaml_text: str):
     """Extract all property names from YAML spec — reliable"""
@@ -14,6 +15,7 @@ def extract_properties_from_yaml(yaml_text: str):
         if name:
             property_names.append(str(name))
     return property_names
+
 
 def plan_modules_from_spec(yaml_spec: str):
     print("[MODULE PLANNER] Analyzing full spec and grouping into modules...")
@@ -30,7 +32,6 @@ def plan_modules_from_spec(yaml_spec: str):
 
     prompt = f"""
 You are an expert automotive software architect.
-
 Group the following Vehicle HAL properties into meaningful modules (domains).
 
 Properties ({len(property_names)} total):
@@ -62,16 +63,24 @@ Output ONLY valid JSON:
         plan = json.loads(raw.strip().removeprefix("```json").removesuffix("```").strip())
     except Exception as e:
         print(f"[MODULE PLANNER] JSON parse failed: {e}")
-        plan = {"modules": {"OTHER": property_names}, "summary": {"total_properties": len(property_names), "module_count": 1, "largest_module": "OTHER"}}
+        plan = {
+            "modules": {"OTHER": property_names},
+            "summary": {
+                "total_properties": len(property_names),
+                "module_count": 1,
+                "largest_module": "OTHER"
+            }
+        }
 
-    # Save plan
-    import pathlib
-    pathlib.Path("output").mkdir(exist_ok=True)
-    with open("output/MODULE_PLAN.json", "w", encoding="utf-8") as f:
-        json.dump(plan, f, indent=2)
+    # Save PLAN.json inside output/
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    plan_path = output_dir / "MODULE_PLAN.json"
+    plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False))
+    print(f"[MODULE PLANNER] Wrote {plan_path}")
 
-    print(f"[MODULE PLANNER] Found {len(plan['modules'])} modules")
-    print(f"[MODULE PLANNER] Summary: {plan['summary']['total_properties']} signals → {plan['summary']['module_count']} modules")
-    print("[MODULE PLANNER] Wrote output/MODULE_PLAN.json")
+    print(f"[MODULE PLANNER] Found {len(plan.get('modules', {}))} modules")
+    summary = plan.get("summary", {})
+    print(f"[MODULE PLANNER] Summary: {summary.get('total_properties', 0)} signals → {summary.get('module_count', 0)} modules")
 
-    return plan["modules"]
+    return plan.get("modules", {})
