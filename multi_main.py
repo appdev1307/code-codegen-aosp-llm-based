@@ -1,4 +1,4 @@
-# main.py - Fixed to work with ArchitectAgent per-module run
+# main.py - With debug prints for ArchitectAgent run
 from pathlib import Path
 import json
 
@@ -146,17 +146,22 @@ def main():
 
     prop_lookup = {get_property_id(p): p for p in all_properties if get_property_id(p)}
 
-    # Generate modules — call ArchitectAgent per module
+    # Generate modules — call ArchitectAgent per module with debug
     print(f"\n[GENERATION] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
-
-    ensure_aosp_layout(full_spec)  # Create layout once
+    ensure_aosp_layout(full_spec)
 
     for domain, signal_ids in module_signal_map.items():
+        print(f"[DEBUG] Processing domain: {domain} with {len(signal_ids)} signal IDs")
         if not signal_ids:
+            print("[DEBUG] No signal_ids — skip")
             continue
+
         module_props = [prop_lookup.get(sid) for sid in signal_ids if prop_lookup.get(sid)]
+        print(f"[DEBUG] Resolved {len(module_props)} valid properties")
+
         if not module_props:
+            print("[DEBUG] No valid properties — skip module")
             continue
 
         print(f"\nGENERATING MODULE: {domain.upper()} ({len(module_props)} properties)")
@@ -179,11 +184,4 @@ def main():
     LLMBackendAgent().run(module_signal_map, all_properties)
 
     print("\nRun complete!")
-    if TEST_SIGNAL_COUNT is not None:
-        print(f"    → Test mode with {TEST_SIGNAL_COUNT} signals")
-        print("    → For full run: set TEST_SIGNAL_COUNT = None")
-    print(f"    → Cache mode: {CACHE_MODE.upper()}")
-
-
-if __name__ == "__main__":
-    main()
+    if TEST_SIGNAL_COUNT is not
