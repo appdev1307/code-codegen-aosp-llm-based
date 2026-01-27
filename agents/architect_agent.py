@@ -11,6 +11,10 @@ from agents.selinux_agent import generate_selinux
 
 
 class ArchitectAgent:
+    def __init__(self, output_root="output"):
+        self.output_root = Path(output_root)
+        self.output_root.mkdir(parents=True, exist_ok=True)
+
     def run(self, spec):
         print("[ARCHITECT] ================================")
         print("[ARCHITECT] AAOS HAL Architect Agent START")
@@ -18,57 +22,56 @@ class ArchitectAgent:
 
         raw_domain = getattr(spec, "domain", None)
         domain = (raw_domain or "").strip().upper() if isinstance(raw_domain, str) else "UNKNOWN"
-        print(f"[ARCHITECT] Domain(raw)={raw_domain} normalized={domain}")
+        print(f"[ARCHITECT] Domain: {domain}")
 
         try:
             spec_text = spec.to_llm_spec()
         except Exception as e:
-            spec_text = f"[ARCHITECT] WARNING: spec.to_llm_spec() failed: {e}"
-        print("[ARCHITECT] Input HAL specification:")
+            spec_text = f"[ERROR] spec.to_llm_spec() failed: {e}"
+
+        print("[ARCHITECT] Input spec for this module:")
         print(spec_text)
 
-        # 0) PLAN (LLM intent-only)
-        print("[ARCHITECT] Step 0: Generate HAL plan (LLM intent-only, chunked)")
+        # Step 0: Generate and save PLAN.json
+        print("[ARCHITECT] Step 0: Generating module plan...")
         plan_agent = PlanAgent()
         plan = plan_agent.run(spec)
-        Path("output").mkdir(parents=True, exist_ok=True)
-        plan_path = Path("output/PLAN.json")
+
+        plan_path = self.output_root / "PLAN.json"
         plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
-        print("[ARCHITECT] Wrote output/PLAN.json")
+        print(f"[ARCHITECT] Saved plan to {plan_path}")
 
-        # Pass compact PLAN to downstream LLM agents
-        plan_text = json.dumps(plan, separators=(",", ":"))  # compact for token savings
+        plan_text = json.dumps(plan, separators=(",", ":"))
 
-        # 1) AIDL (LLM draft)
-        print("[ARCHITECT] Step 1: Generate VHAL AIDL (LLM draft)")
+        # Step 1: Generate AIDL
+        print("[ARCHITECT] Step 1: Generating AIDL interface...")
         aidl_success = generate_vhal_aidl(plan_text)
-        print("[AIDL] Generated successfully!" if aidl_success else "[WARN] AIDL used fallback")
+        print("[AIDL] Success" if aidl_success else "[AIDL] Used fallback")
 
-        # 2) C++ service (LLM draft)
-        print("[ARCHITECT] Step 2: Generate VHAL C++ service (LLM draft)")
+        # Step 2: Generate C++ service
+        print("[ARCHITECT] Step 2: Generating C++ VehicleHalService...")
         service_success = generate_vhal_service(plan_text)
-        print("[VHAL SERVICE] Generated successfully!" if service_success else "[WARN] VHAL Service used fallback")
+        print("[VHAL SERVICE] Success" if service_success else "[VHAL SERVICE] Used fallback")
 
-        # 3) Build glue
-        print("[ARCHITECT] Step 3: Generate build glue (Soong + init rc + VINTF)")
+        # Step 3: Build glue
+        print("[ARCHITECT] Step 3: Generating build files (Android.bp, rc, VINTF)...")
         generate_vhal_aidl_bp()
         generate_vhal_service_build_glue()
-        print("[BUILD] Glue generated")
+        print("[BUILD] Build glue generated")
 
-        # 4) Framework service generation
-        print(f"[ARCHITECT] Step 4: Generate framework service (domain={domain})")
-        # Currently HVAC-only, but easy to extend
+        # Step 4: Car service (HVAC only for now)
+        print(f"[ARCHITECT] Step 4: Framework service (domain={domain})")
         if domain == "HVAC":
             generate_car_service(spec)
-            print("[CAR SERVICE] Generated CarHvacService.java")
+            print("[CAR SERVICE] CarHvacService.java generated")
         else:
-            print(f"[ARCHITECT] Skipping framework service generation (only HVAC supported for now)")
+            print("[ARCHITECT] Skipping Car service (only HVAC supported)")
 
-        # 5) SELinux
-        print("[ARCHITECT] Step 5: Generate SELinux policy")
+        # Step 5: SELinux
+        print("[ARCHITECT] Step 5: Generating SELinux policy...")
         generate_selinux(spec)
         print("[SELINUX] Policy generated")
 
         print("[ARCHITECT] ================================")
-        print("[ARCHITECT] HAL GENERATION COMPLETED ✅")
+        print("[ARCHITECT] Module generation COMPLETE")
         print("[ARCHITECT] ================================")
