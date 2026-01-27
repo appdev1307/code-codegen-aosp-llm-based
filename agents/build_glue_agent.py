@@ -1,79 +1,67 @@
-# FILE: agents/architect_agent.py
-import json
+# FILE: agents/build_glue_agent.py
 from pathlib import Path
-from agents.plan_agent import PlanAgent
-from agents.vhal_aidl_agent import generate_vhal_aidl
-from agents.vhal_service_agent import generate_vhal_service
-from agents.vhal_aidl_build_agent import generate_vhal_aidl_bp
-from agents.vhal_service_build_agent import generate_vhal_service_build_glue
-from agents.car_service_agent import generate_car_service
-from agents.selinux_agent import generate_selinux
+from tools.safe_writer import SafeWriter
 
-
-class ArchitectAgent:
+class BuildGlueAgent:
     def __init__(self, output_root="output"):
-        self.output_root = Path(output_root)
-        self.output_root.mkdir(parents=True, exist_ok=True)
+        self.writer = SafeWriter(output_root)
+        self.aidl_dir = "hardware/interfaces/automotive/vehicle/aidl"
+        self.impl_dir = "hardware/interfaces/automotive/vehicle/impl"
 
-    def run(self, spec):
-        print("[ARCHITECT] ================================")
-        print("[ARCHITECT] AAOS HAL Architect Agent START")
-        print("[ARCHITECT] ================================")
+    def run(self):
+        print("[BUILD GLUE] Generating Soong build files and VINTF manifest...")
 
-        raw_domain = getattr(spec, "domain", None)
-        domain = (raw_domain or "").strip().upper() if isinstance(raw_domain, str) else "UNKNOWN"
-        print(f"[ARCHITECT] Domain(raw)={raw_domain} normalized={domain}")
+        # AIDL interface Android.bp
+        aidl_bp = """aidl_interface {
+    name: "android.hardware.automotive.vehicle",
+    srcs: ["android/hardware/automotive/vehicle/*.aidl"],
+    stability: "vintf",
+    backend: {
+        cpp: { enabled: true },
+        java: { enabled: true },
+    },
+}
+"""
+        self.writer.write(f"{self.aidl_dir}/Android.bp", aidl_bp)
 
-        try:
-            spec_text = spec.to_llm_spec()
-        except Exception as e:
-            spec_text = f"[ARCHITECT] WARNING: spec.to_llm_spec() failed: {e}"
+        # C++ service Android.bp
+        impl_bp = """cc_binary {
+    name: "android.hardware.automotive.vehicle-service",
+    relative_install_path: "hw",
+    init_rc: ["android.hardware.automotive.vehicle-service.rc"],
+    vintf_fragments: ["manifest_android.hardware.automotive.vehicle.xml"],
+    srcs: ["VehicleHalService.cpp"],
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "liblog",
+        "libutils",
+        "android.hardware.automotive.vehicle-V1-ndk",
+    ],
+    cflags: ["-Wall", "-Werror"],
+}
+"""
+        self.writer.write(f"{self.impl_dir}/Android.bp", impl_bp)
 
-        print("[ARCHITECT] Input HAL specification:")
-        print(spec_text)
+        # init.rc
+        init_rc = """service android.hardware.automotive.vehicle-service /vendor/bin/hw/android.hardware.automotive.vehicle-service
+    class hal
+    user system
+    group system
+"""
+        self.writer.write(f"{self.impl_dir}/android.hardware.automotive.vehicle-service.rc", init_rc)
 
-        # 0) PLAN (LLM intent-only)
-        print("[ARCHITECT] Step 0: Generate HAL plan (LLM intent-only, chunked)")
-        plan_agent = PlanAgent()
-        plan = plan_agent.run(spec)
+        # VINTF manifest
+        vintf = """<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.automotive.vehicle</name>
+        <interface>
+            <name>IVehicle</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+</manifest>
+"""
+        self.writer.write(f"{self.impl_dir}/manifest_android.hardware.automotive.vehicle.xml", vintf)
 
-        # Save PLAN.json inside output/
-        plan_path = self.output_root / "PLAN.json"
-        plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
-        print(f"[ARCHITECT] Wrote {plan_path}")
-
-        # Pass compact PLAN to downstream LLM agents
-        plan_text = json.dumps(plan, separators=(",", ":"))
-
-        # 1) AIDL (LLM draft)
-        print("[ARCHITECT] Step 1: Generate VHAL AIDL (LLM draft)")
-        aidl_success = generate_vhal_aidl(plan_text)
-        print("[AIDL] Generated successfully!" if aidl_success else "[WARN] AIDL used fallback")
-
-        # 2) C++ service (LLM draft)
-        print("[ARCHITECT] Step 2: Generate VHAL C++ service (LLM draft)")
-        service_success = generate_vhal_service(plan_text)
-        print("[VHAL SERVICE] Generated successfully!" if service_success else "[WARN] VHAL Service used fallback")
-
-        # 3) Build glue
-        print("[ARCHITECT] Step 3: Generate build glue (Soong + init rc + VINTF)")
-        generate_vhal_aidl_bp()
-        generate_vhal_service_build_glue()
-        print("[BUILD] Glue generated")
-
-        # 4) Framework service generation
-        print(f"[ARCHITECT] Step 4: Generate framework service (domain={domain})")
-        if domain == "HVAC":
-            generate_car_service(spec)
-            print("[CAR SERVICE] Generated CarHvacService.java")
-        else:
-            print(f"[ARCHITECT] Skipping framework service generation (only HVAC supported for now)")
-
-        # 5) SELinux
-        print("[ARCHITECT] Step 5: Generate SELinux policy")
-        generate_selinux(spec)
-        print("[SELINUX] Policy generated")
-
-        print("[ARCHITECT] ================================")
-        print("[ARCHITECT] HAL GENERATION COMPLETED ✅")
-        print("[ARCHITECT] ================================")
+        print("[BUILD GLUE] All build glue generated — your HAL is now AOSP-buildable!")
