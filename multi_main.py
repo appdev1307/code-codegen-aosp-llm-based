@@ -1,4 +1,4 @@
-# main.py - With CACHE_MODE switch: "drive" (Colab) or "local" (your PC) - FINAL FIXED
+# main.py - Fixed to work with ArchitectAgent per-module run
 from pathlib import Path
 import json
 
@@ -82,7 +82,7 @@ def main():
         drive.mount('/content/drive')
         cache_dir = Path("/content/drive/MyDrive/vss_hal_cache")
     else:  # local
-        cache_dir = Path('../cache-llm')  # Correct Path object
+        cache_dir = Path('../cache-llm')
 
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -97,14 +97,12 @@ def main():
         print(f"[CACHE] Loaded {len(labelled_data)} labelled signals")
     else:
         print("[LABELLING] Cache not found — running LLM labelling...")
-
         with open(vss_path, "r", encoding="utf-8") as f:
             raw_vss = json.load(f)
 
         leaf_signals = flatten_vss(raw_vss)
         print(f"[DATA] Found {len(leaf_signals)} leaf signals")
 
-        # Apply test limit
         if TEST_SIGNAL_COUNT is not None:
             signals_to_label = dict(list(leaf_signals.items())[:TEST_SIGNAL_COUNT])
             print(f"[TEST] Labelling only {TEST_SIGNAL_COUNT} signals")
@@ -115,7 +113,6 @@ def main():
         labelling_agent = VSSLabellingAgent()
         labelled_data = labelling_agent.run_on_dict(signals_to_label)
 
-        # Save cache
         labelled_cache_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
         print(f"[CACHE] Saved labelled data to {CACHE_MODE} cache: {labelled_cache_path}")
 
@@ -149,10 +146,11 @@ def main():
 
     prop_lookup = {get_property_id(p): p for p in all_properties if get_property_id(p)}
 
-    # Generate modules
+    # Generate modules — call ArchitectAgent per module
     print(f"\n[GENERATION] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
-    ensure_aosp_layout(full_spec)
+
+    ensure_aosp_layout(full_spec)  # Create layout once
 
     for domain, signal_ids in module_signal_map.items():
         if not signal_ids:
@@ -167,11 +165,11 @@ def main():
             architect.run(module_spec)
             print(f"✅ {domain.upper()} generated!")
         except Exception as e:
-            print(f"❌ {domain.upper()}: {e}")
+            print(f"❌ {domain.upper()}: generation failed — {e}")
 
     print("\n🎉 HAL generation complete!")
 
-    # Final stack
+    # Final supporting components
     print("\nGenerating supporting components...")
     DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
     PromoteDraftAgent().run()
