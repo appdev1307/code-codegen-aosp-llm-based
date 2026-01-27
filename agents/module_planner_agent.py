@@ -1,86 +1,80 @@
-# FILE: agents/module_planner_agent.py - FIXED property extraction and save path
-import yaml
+# agents/module_planner_agent.py
 import json
 from pathlib import Path
 from llm_client import call_llm
+from tools.json_contract import parse_json_object
 
+class ModulePlannerAgent:
+    def __init__(self):
+        self.system_prompt = (
+            "You are an expert Vehicle Signal Specification (VSS) and Android Automotive OS architect.\n"
+            "Your job is to group vehicle signals into logical, coherent modules suitable for modular Vehicle HAL generation.\n"
+            "Output ONLY valid JSON. No explanations, no markdown."
+        )
 
-def extract_properties_from_yaml(yaml_text: str):
-    """Extract all property names from YAML spec — reliable"""
-    spec = yaml.safe_load(yaml_text)
-    props = spec.get("properties", [])
-    property_names = []
-    for p in props:
-        name = p.get("name") or p.get("Property ID")
-        if name:
-            property_names.append(str(name))
-    return property_names
+    def build_prompt(self, spec_text: str) -> str:
+        return f"""
+Analyze the full VSS-based vehicle specification below and group the properties into logical modules.
 
+RULES:
+- Group by functional domain (e.g., HVAC, ADAS, Body, Cabin, Powertrain, Chassis, Infotainment, etc.)
+- Use meaningful, uppercase module names (e.g., HVAC, BODY, CABIN, ADAS)
+- Put ambiguous or miscellaneous signals in "OTHER"
+- Aim for 20–80 signals per module (ideal for HAL generation)
+- Do NOT split too finely (avoid 100+ tiny modules)
 
-def plan_modules_from_spec(yaml_spec: str):
-    print("[MODULE PLANNER] Analyzing full spec and grouping into modules...")
-
-    property_names = extract_properties_from_yaml(yaml_spec)
-    print(f"[MODULE PLANNER] Extracted {len(property_names)} properties from spec")
-
-    if not property_names:
-        print("[MODULE PLANNER] No properties found — aborting")
-        return {}
-
-    # Build prompt with ALL properties
-    prop_list = "\n".join([f"- {name}" for name in property_names])
-
-    prompt = f"""
-You are an expert automotive software architect.
-Group the following Vehicle HAL properties into meaningful modules (domains).
-
-Properties ({len(property_names)} total):
-{prop_list}
-
-Rules:
-- Common domains: ADAS, HVAC, BODY, CABIN, POWERTRAIN, CHASSIS, INFOTAINMENT, OBSTACLE_DETECTION, OTHER
-- Group related properties together
-- One module per domain
-- If unsure, use OTHER
-
-Output ONLY valid JSON:
+OUTPUT FORMAT (STRICT JSON ONLY):
 {{
   "modules": {{
-    "DOMAIN_NAME": ["PROPERTY_NAME_1", "PROPERTY_NAME_2", ...],
-    ...
+    "MODULE_NAME": [
+      "VSS_VEHICLE_ADAS_CRUISECONTROL_SPEEDSET",
+      "VSS_VEHICLE_ADAS_ABS_ISENABLED",
+      ...
+    ],
+    "OTHER": [...]
   }},
   "summary": {{
-    "total_properties": {len(property_names)},
-    "module_count": number_of_modules,
-    "largest_module": "DOMAIN_WITH_MOST_PROPERTIES"
+    "total_properties": 200,
+    "module_count": 6,
+    "largest_module": "BODY"
   }}
 }}
-"""
 
-    raw = call_llm(prompt=prompt, temperature=0.0, response_format="json")
+FULL SPEC:
+{spec_text}
 
-    try:
-        plan = json.loads(raw.strip().removeprefix("```json").removesuffix("```").strip())
-    except Exception as e:
-        print(f"[MODULE PLANNER] JSON parse failed: {e}")
-        plan = {
-            "modules": {"OTHER": property_names},
-            "summary": {
-                "total_properties": len(property_names),
-                "module_count": 1,
-                "largest_module": "OTHER"
-            }
-        }
+OUTPUT ONLY THE JSON NOW:
+""".strip()
 
-    # Save PLAN.json inside output/
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
-    plan_path = output_dir / "MODULE_PLAN.json"
-    plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False))
-    print(f"[MODULE PLANNER] Wrote {plan_path}")
+    def run(self, spec_text: str) -> dict:
+        print("[MODULE PLANNER] Analyzing full spec and grouping into modules...")
 
-    print(f"[MODULE PLANNER] Found {len(plan.get('modules', {}))} modules")
-    summary = plan.get("summary", {})
-    print(f"[MODULE PLANNER] Summary: {summary.get('total_properties', 0)} signals → {summary.get('module_count', 0)} modules")
+        prompt = self.build_prompt(spec_text)
+        raw = call_llm(
+            prompt=prompt,
+            system=self.system_prompt,
+            temperature=0.0,
+            response_format="json"
+        )
 
-    return plan.get("modules", {})
+        data, err = parse_json_object(raw.strip())
+        if not data or "modules" not in data:
+            raise ValueError(f"Module planner failed to return valid JSON: {err or 'No modules key'}")
+
+        plan = data["modules"]
+        summary = data.get("summary", {})
+
+        print(f"[MODULE PLANNER] Found {len(plan)} modules: {', '.join(plan.keys())}")
+        if summary:
+            print(f"[MODULE PLANNER] Summary: {summary.get('total_properties')} signals → {summary.get('module_count')} modules")
+
+        # Save plan
+        out_path = Path("output/MODULE_PLAN.json")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"[MODULE PLANNER] Wrote {out_path}")
+
+        return plan  # { "HVAC": [...ids], "BODY": [...], ... }
+
+def plan_modules_from_spec(spec_text: str) -> dict:
+    return ModulePlannerAgent().run(spec_text)

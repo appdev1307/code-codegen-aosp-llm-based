@@ -1,4 +1,4 @@
-# main.py - Fixed to work with ArchitectAgent per-module run
+# main.py - Generate separate HAL module for each LLM-identified domain (50 signals test)
 from pathlib import Path
 import json
 
@@ -14,24 +14,6 @@ from agents.llm_android_app_agent import LLMAndroidAppAgent
 from agents.llm_backend_agent import LLMBackendAgent
 from agents.vss_labelling_agent import VSSLabellingAgent
 from tools.aosp_layout import ensure_aosp_layout
-
-
-# === CONFIGURATION ===
-CACHE_MODE = "local"          # "drive" = Google Drive (Colab) | "local" = local folder
-TEST_SIGNAL_COUNT = 50        # Number of signals for test (set to None for full run)
-# =======================
-
-
-# Helper to flatten VSS
-def flatten_vss(vss_data, current_path=""):
-    flat = {}
-    for key, value in vss_data.items():
-        full_path = f"{current_path}.{key}" if current_path else key
-        if "datatype" in value and value.get("type") != "branch":
-            flat[full_path] = value
-        elif isinstance(value, dict):
-            flat.update(flatten_vss(value, full_path))
-    return flat
 
 
 class ModuleSpec:
@@ -73,52 +55,31 @@ def main():
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    mode_desc = "full dataset" if TEST_SIGNAL_COUNT is None else f"{TEST_SIGNAL_COUNT}-signal test"
-    print(f"🚀 Starting VSS → AAOS HAL Generation ({mode_desc}) — Cache: {CACHE_MODE.upper()}")
+    print("🚀 Starting VSS → AAOS HAL Generation (50 signals, one module per domain)")
 
-    # === Setup cache path ===
-    if CACHE_MODE == "drive":
-        from google.colab import drive
-        drive.mount('/content/drive')
-        cache_dir = Path("/content/drive/MyDrive/vss_hal_cache")
-    else:  # local
-        cache_dir = Path('../cache-llm')
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    suffix = "" if TEST_SIGNAL_COUNT is None else f"_{TEST_SIGNAL_COUNT}"
-    labelled_cache_path = cache_dir / f"VSS_LABELLED{suffix}.json"
-
-    # === Load or generate labelled data ===
-    if labelled_cache_path.exists():
-        print(f"[CACHE] Loading labelled data from {CACHE_MODE} cache: {labelled_cache_path}")
-        with open(labelled_cache_path, "r", encoding="utf-8") as f:
-            labelled_data = json.load(f)
-        print(f"[CACHE] Loaded {len(labelled_data)} labelled signals")
-    else:
-        print("[LABELLING] Cache not found — running LLM labelling...")
-        with open(vss_path, "r", encoding="utf-8") as f:
-            raw_vss = json.load(f)
-
-        leaf_signals = flatten_vss(raw_vss)
-        print(f"[DATA] Found {len(leaf_signals)} leaf signals")
-
-        if TEST_SIGNAL_COUNT is not None:
-            signals_to_label = dict(list(leaf_signals.items())[:TEST_SIGNAL_COUNT])
-            print(f"[TEST] Labelling only {TEST_SIGNAL_COUNT} signals")
-        else:
-            signals_to_label = leaf_signals
-            print("[FULL] Labelling all signals")
-
+    # === Optional: LLM Labelling (run once) ===
+    labelled_path = output_dir / "VSS_LABELLED.json"
+    if not labelled_path.exists():
+        print("[LABELLING] Running LLM-assisted labelling...")
         labelling_agent = VSSLabellingAgent()
-        labelled_data = labelling_agent.run_on_dict(signals_to_label)
+        labelled_data = labelling_agent.run(vss_path)
+        labelled_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
+    else:
+        print(f"[LABELLING] Using existing labelled data: {labelled_path}")
+        with open(labelled_path, "r", encoding="utf-8") as f:
+            labelled_data = json.load(f)
 
-        labelled_cache_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
-        print(f"[CACHE] Saved labelled data to {CACHE_MODE} cache: {labelled_cache_path}")
+    # === Limit to 50 signals ===
+    print("\n[1/5] Preparing 50-signal dataset...")
+    limited_signals = dict(list(labelled_data.items())[:50])
+    print(f"Using {len(limited_signals)} signals")
+
+    limited_path = output_dir / "VSS_LIMITED_50.json"
+    limited_path.write_text(json.dumps(limited_signals, indent=2, ensure_ascii=False))
 
     # === Convert to YAML ===
     yaml_spec, n = vss_to_yaml_spec(
-        vss_json=labelled_data,
+        vss_json_path=str(limited_path),
         include_prefixes=None,
         max_props=None,
         vendor_namespace="vendor.vss",
@@ -127,17 +88,23 @@ def main():
 
     spec_path = output_dir / "SPEC_FROM_VSS.yaml"
     spec_path.write_text(yaml_spec, encoding="utf-8")
-    print(f"[DEBUG] Wrote {spec_path} with {n} labelled properties")
+    print(f"[DEBUG] Wrote {spec_path} with {n} properties")
 
-    # === Rest of pipeline ===
+    # === Load spec ===
+    print("[2/5] Loading HAL spec...")
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
     all_properties = full_spec.properties
 
-    print("\n[MODULE PLANNER] Running...")
-    module_signal_map = plan_modules_from_spec(yaml_spec)
-    print(f"LLM identified {len(module_signal_map)} modules")
+    # === LLM Module Planning ===
+    print("[3/5] Running Module Planner...")
+    try:
+        module_signal_map = plan_modules_from_spec(yaml_spec)
+        print(f"LLM identified {len(module_signal_map)} modules: {', '.join(module_signal_map.keys())}")
+    except Exception as e:
+        print(f"[FALLBACK] Module planner failed: {e}")
+        return
 
-    # Property lookup
+    # === Property lookup ===
     def get_property_id(prop):
         return getattr(prop, "property_id",
                getattr(prop, "prop_id",
@@ -146,45 +113,44 @@ def main():
 
     prop_lookup = {get_property_id(p): p for p in all_properties if get_property_id(p)}
 
-    # Generate modules — call ArchitectAgent per module
-    print(f"\n[GENERATION] Generating {len(module_signal_map)} HAL modules...")
+    # === Generate ONE HAL MODULE PER DOMAIN ===
+    print(f"[4/5] Generating {len(module_signal_map)} separate HAL modules...")
     architect = ArchitectAgent()
 
-    ensure_aosp_layout(full_spec)  # Create layout once
-
     for domain, signal_ids in module_signal_map.items():
-        print(f"[DEBUG] Processing domain: {domain}, signal_ids count: {len(signal_ids)}")
         if not signal_ids:
             continue
+
         module_props = [prop_lookup.get(sid) for sid in signal_ids if prop_lookup.get(sid)]
-        print(f"[DEBUG] Found {len(module_props)} valid properties out of {len(signal_ids)}")
         if not module_props:
             continue
 
-        print(f"\nGENERATING MODULE: {domain.upper()} ({len(module_props)} properties)")
+        print(f"\n{'='*80}")
+        print(f"GENERATING MODULE: {domain.upper()} ({len(module_props)} properties)")
+        print(f"{'='*80}")
+
         module_spec = ModuleSpec(domain=domain, properties=module_props)
         try:
             architect.run(module_spec)
-            print(f"✅ {domain.upper()} generated!")
+            print(f"✅ {domain.upper()} module generated!")
         except Exception as e:
-            print(f"❌ {domain.upper()}: generation failed — {e}")
+            print(f"❌ {domain.upper()}: {e}")
 
-    print("\n🎉 HAL generation complete!")
+    print("\n🎉 All modules generated separately!")
 
-    # Final supporting components
-    print("\nGenerating supporting components...")
+    # === Full-Stack ===
+    print("[5/5] Generating supporting components...")
     DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
-    PromoteDraftAgent().run()
+    PromoteDraftAgent().run()  # Promotes last module — or enhance for all
     generate_selinux(full_spec)
     BuildGlueAgent().run()
     LLMAndroidAppAgent().run(module_signal_map, all_properties)
     LLMBackendAgent().run(module_signal_map, all_properties)
 
-    print("\nRun complete!")
-    if TEST_SIGNAL_COUNT is not None:
-        print(f"    → Test mode with {TEST_SIGNAL_COUNT} signals")
-        print("    → For full run: set TEST_SIGNAL_COUNT = None")
-    print(f"    → Cache mode: {CACHE_MODE.upper()}")
+    print("\n🎉 SUCCESS! 50-signal multi-module run complete!")
+    print("    → Each module has its own drafts in .llm_draft/latest/")
+    print("    → Final promoted files from last module")
+    print("    → To merge all: future enhancement possible")
 
 
 if __name__ == "__main__":
