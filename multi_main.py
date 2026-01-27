@@ -1,4 +1,4 @@
-# main.py - With CACHE_MODE switch: "drive" (Colab) or "local" (your PC) - FIXED
+# main.py - With CACHE_MODE switch: "drive" (Colab) or "local" (your PC) - FINAL FIXED
 from pathlib import Path
 import json
 
@@ -42,8 +42,30 @@ class ModuleSpec:
         self.vendor = "AOSP"
 
     def to_llm_spec(self):
-        # (keep your existing implementation)
-        pass
+        lines = [
+            f"HAL Domain: {self.domain}",
+            f"AOSP Level: {self.aosp_level}",
+            f"Vendor : {self.vendor}",
+            f"Properties: {len(self.properties)}",
+            ""
+        ]
+        for prop in self.properties:
+            prop_id = getattr(prop, "property_id",
+                     getattr(prop, "prop_id",
+                     getattr(prop, "id",
+                     getattr(prop, "name", "UNKNOWN"))))
+            typ = getattr(prop, "type", "UNKNOWN")
+            access = getattr(prop, "access", "READ_WRITE")
+            areas = getattr(prop, "areas", "GLOBAL")
+            areas_str = ", ".join(areas) if isinstance(areas, (list, tuple)) and areas else str(areas)
+
+            lines += [
+                f"- Property ID : {prop_id}",
+                f"  Type : {typ}",
+                f"  Access : {access}",
+                f"  Areas : {areas_str}",
+            ]
+        return "\n".join(lines)
 
 
 def main():
@@ -60,7 +82,7 @@ def main():
         drive.mount('/content/drive')
         cache_dir = Path("/content/drive/MyDrive/vss_hal_cache")
     else:  # local
-        cache_dir = Path('../cache-llm')  # Fixed: Path object, not string
+        cache_dir = Path('../cache-llm')  # Correct Path object
 
     cache_dir.mkdir(parents=True, exist_ok=True)
 
