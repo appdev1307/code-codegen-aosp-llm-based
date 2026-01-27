@@ -9,69 +9,48 @@ from agents.vhal_service_build_agent import generate_vhal_service_build_glue
 from agents.car_service_agent import generate_car_service
 from agents.selinux_agent import generate_selinux
 
-
 class ArchitectAgent:
     def __init__(self, output_root="output"):
         self.output_root = Path(output_root)
         self.output_root.mkdir(parents=True, exist_ok=True)
 
     def run(self, spec):
-        print("[ARCHITECT] ================================")
-        print("[ARCHITECT] AAOS HAL Architect Agent START")
-        print("[ARCHITECT] ================================")
+        print("[ARCHITECT] Starting generation for module")
 
-        raw_domain = getattr(spec, "domain", None)
-        domain = (raw_domain or "").strip().upper() if isinstance(raw_domain, str) else "UNKNOWN"
+        domain = (getattr(spec, "domain", "") or "UNKNOWN").strip().upper()
         print(f"[ARCHITECT] Domain: {domain}")
 
-        try:
-            spec_text = spec.to_llm_spec()
-        except Exception as e:
-            spec_text = f"[ERROR] spec.to_llm_spec() failed: {e}"
-
-        print("[ARCHITECT] Input spec for this module:")
-        print(spec_text)
-
-        # Step 0: Generate and save PLAN.json
-        print("[ARCHITECT] Step 0: Generating module plan...")
+        # Generate plan
         plan_agent = PlanAgent()
         plan = plan_agent.run(spec)
 
+        # Save PLAN.json inside output
         plan_path = self.output_root / "PLAN.json"
-        plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
-        print(f"[ARCHITECT] Saved plan to {plan_path}")
+        plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False))
+        print(f"[ARCHITECT] Saved PLAN.json to {plan_path}")
 
         plan_text = json.dumps(plan, separators=(",", ":"))
 
-        # Step 1: Generate AIDL
-        print("[ARCHITECT] Step 1: Generating AIDL interface...")
-        aidl_success = generate_vhal_aidl(plan_text)
-        print("[AIDL] Success" if aidl_success else "[AIDL] Used fallback")
+        # Generate AIDL
+        print("[ARCHITECT] Generating AIDL...")
+        generate_vhal_aidl(plan_text)
 
-        # Step 2: Generate C++ service
-        print("[ARCHITECT] Step 2: Generating C++ VehicleHalService...")
-        service_success = generate_vhal_service(plan_text)
-        print("[VHAL SERVICE] Success" if service_success else "[VHAL SERVICE] Used fallback")
+        # Generate C++ service
+        print("[ARCHITECT] Generating C++ service...")
+        generate_vhal_service(plan_text)
 
-        # Step 3: Build glue
-        print("[ARCHITECT] Step 3: Generating build files (Android.bp, rc, VINTF)...")
+        # Build glue
+        print("[ARCHITECT] Generating build glue...")
         generate_vhal_aidl_bp()
         generate_vhal_service_build_glue()
-        print("[BUILD] Build glue generated")
 
-        # Step 4: Car service (HVAC only for now)
-        print(f"[ARCHITECT] Step 4: Framework service (domain={domain})")
+        # Car service (if HVAC)
         if domain == "HVAC":
+            print("[ARCHITECT] Generating CarHvacService...")
             generate_car_service(spec)
-            print("[CAR SERVICE] CarHvacService.java generated")
-        else:
-            print("[ARCHITECT] Skipping Car service (only HVAC supported)")
 
-        # Step 5: SELinux
-        print("[ARCHITECT] Step 5: Generating SELinux policy...")
+        # SELinux
+        print("[ARCHITECT] Generating SELinux...")
         generate_selinux(spec)
-        print("[SELINUX] Policy generated")
 
-        print("[ARCHITECT] ================================")
-        print("[ARCHITECT] Module generation COMPLETE")
-        print("[ARCHITECT] ================================")
+        print("[ARCHITECT] Module generation complete")
