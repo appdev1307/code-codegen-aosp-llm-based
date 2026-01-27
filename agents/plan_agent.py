@@ -81,7 +81,7 @@ RETURN JSON NOW.
 """.strip()
 
     def run(self, spec: HalSpec) -> Dict[str, Any]:
-        print(f"[DEBUG] {selfa name}: start", flush=True)
+        print(f"[DEBUG] {self.name}: start", flush=True)
 
         spec_ids = [(getattr(p, "id", "") or "").strip() for p in spec.properties]
         spec_ids = [x for x in spec_ids if x]  # preserve order
