@@ -1,8 +1,6 @@
 # main.py - Generate separate HAL module for each LLM-identified domain (N signals test)
-
 from pathlib import Path
 import json
-
 from vss_to_yaml import vss_to_yaml_spec
 from schemas.yaml_loader import load_hal_spec_from_yaml_text
 from agents.architect_agent import ArchitectAgent
@@ -16,13 +14,12 @@ from agents.llm_backend_agent import LLMBackendAgent
 from agents.vss_labelling_agent import VSSLabellingAgent, flatten_vss
 from tools.aosp_layout import ensure_aosp_layout
 
-
 # ────────────────────────────────────────────────
 # Configurable parameters
 # ────────────────────────────────────────────────
-TEST_SIGNAL_COUNT = 50                  # ← change here to test with different sizes
-VSS_PATH          = "./dataset/vss.json"
-VENDOR_NAMESPACE  = "vendor.vss"
+TEST_SIGNAL_COUNT = 50          # ← change here to test with different sizes
+VSS_PATH = "./dataset/vss.json"
+VENDOR_NAMESPACE = "vendor.vss"
 
 # Persistent cache folder — only for input-like files
 PERSISTENT_CACHE_DIR = Path("/content/vss_temp")
@@ -30,9 +27,8 @@ PERSISTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # All generated outputs stay inside project
 OUTPUT_DIR = Path("output")
+
 # ────────────────────────────────────────────────
-
-
 class ModuleSpec:
     def __init__(self, domain: str, properties: list):
         self.domain = domain.upper()
@@ -50,19 +46,13 @@ class ModuleSpec:
             ""
         ]
         for prop in self.properties:
-            prop_id = (
-                getattr(prop, "property_id", None) or
-                getattr(prop, "prop_id", None) or
-                getattr(prop, "id", None) or
-                getattr(prop, "name", "UNKNOWN")
-            )
+            name = getattr(prop, "name", "UNKNOWN")
             typ = getattr(prop, "type", "UNKNOWN")
             access = getattr(prop, "access", "READ_WRITE")
-            areas = getattr(prop, "areas", "GLOBAL")
+            areas = getattr(prop, "areas", ["GLOBAL"])
             areas_str = ", ".join(areas) if isinstance(areas, (list, tuple)) else str(areas)
-
             lines += [
-                f"- Property ID: {prop_id}",
+                f"- Name: {name}",
                 f"  Type: {typ}",
                 f"  Access: {access}",
                 f"  Areas: {areas_str}",
@@ -70,22 +60,19 @@ class ModuleSpec:
             ]
         return "\n".join(lines)
 
-
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Starting VSS → AAOS HAL Generation ({TEST_SIGNAL_COUNT} signals test)")
-    print(f"  Persistent cache: {PERSISTENT_CACHE_DIR}")
-    print(f"  Project output  : {OUTPUT_DIR.resolve()}\n")
+    print(f" Persistent cache: {PERSISTENT_CACHE_DIR}")
+    print(f" Project output : {OUTPUT_DIR.resolve()}\n")
 
     # 1. Load VSS → flatten to leaf signals → select first N leaves
     print(f"[PREP] Loading and flattening {VSS_PATH} ...")
     try:
         with open(VSS_PATH, "r", encoding="utf-8") as f:
             raw_vss = json.load(f)
-
         all_leaves = flatten_vss(raw_vss)
-        print(f"  Flattened to {len(all_leaves)} leaf signals")
-
+        print(f" Flattened to {len(all_leaves)} leaf signals")
     except Exception as e:
         print(f"Cannot load or flatten {VSS_PATH}: {e}")
         return
@@ -106,18 +93,17 @@ def main():
         json.dumps(selected_signals, indent=2, ensure_ascii=False),
         encoding="utf-8"
     )
-    print(f"  Wrote selected flat subset → {limited_path}")
+    print(f" Wrote selected flat subset → {limited_path}")
 
     # 2. Label the selected subset — with cache invalidation
     labelled_path = PERSISTENT_CACHE_DIR / f"VSS_LABELLED_{TEST_SIGNAL_COUNT}.json"
-
     need_labelling = True
     if labelled_path.exists():
         if labelled_path.stat().st_mtime >= limited_path.stat().st_mtime:
             print(f"[LABELLING] Using valid cached labelled data: {labelled_path}")
             with open(labelled_path, "r", encoding="utf-8") as f:
                 labelled_data = json.load(f)
-            print(f"  Loaded {len(labelled_data)} labelled signals from cache")
+            print(f" Loaded {len(labelled_data)} labelled signals from cache")
             need_labelling = False
         else:
             print("[LABELLING] Cache outdated → re-labelling")
@@ -126,7 +112,6 @@ def main():
         print("[LABELLING] Labelling the selected subset (fast mode)...")
         labelling_agent = VSSLabellingAgent()
         labelled_data = labelling_agent.run_on_dict(selected_signals)
-
         labelled_path.write_text(
             json.dumps(labelled_data, indent=2, ensure_ascii=False),
             encoding="utf-8"
@@ -146,103 +131,90 @@ def main():
         vendor_namespace=VENDOR_NAMESPACE,
         add_meta=True,
     )
-
     spec_path = OUTPUT_DIR / f"SPEC_FROM_VSS_{TEST_SIGNAL_COUNT}.yaml"
     spec_path.write_text(yaml_spec, encoding="utf-8")
-    print(f"  Wrote {spec_path} with {prop_count} properties")
+    print(f" Wrote {spec_path} with {prop_count} properties")
 
     # 4. Load spec
-    print("[2/5] Loading HAL spec...")
+    print("[LOAD] Loading HAL spec...")
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
-    all_properties = full_spec.properties
+
+    # Create stable name → property lookup (this is the core of Fix 1)
+    properties_by_name = {}
+    for p in full_spec.properties:
+        name = getattr(p, "name", None)
+        if name:
+            properties_by_name[name] = p
+
+    print(f"[LOAD] Loaded {len(properties_by_name)} properties by name")
 
     # 5. Module planning
-    print("[3/5] Running Module Planner...")
+    print("[PLAN] Running Module Planner...")
     try:
         module_signal_map = plan_modules_from_spec(yaml_spec)
         total = sum(len(v) for v in module_signal_map.values())
-        print(f"  → {len(module_signal_map)} modules, {total} signals total")
-        print("  Modules:", ", ".join(module_signal_map.keys()) or "(none)")
+        print(f" → {len(module_signal_map)} modules, {total} signals total")
+        print(" Modules:", ", ".join(sorted(module_signal_map.keys())) or "(none)")
     except Exception as e:
         print(f"[ERROR] Planner failed: {e}")
         return
 
-    # 6. Generate modules
-    print(f"[4/5] Generating {len(module_signal_map)} HAL modules...")
+    # 6. Generate modules using name-based lookup
+    print(f"[GEN] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
-
-    # ────────────────────────────────────────────────
-    # FIXED: Aggressive normalization to match planner IDs
-    # ────────────────────────────────────────────────
-    prop_lookup = {}
-    for p in all_properties:
-        raw_id = (
-            getattr(p, "property_id", None) or
-            getattr(p, "prop_id", None) or
-            getattr(p, "id", None) or
-            getattr(p, "name", None)
-        )
-        if raw_id:
-            # Normalize exactly like planner: upper + dot → underscore
-            norm_id = raw_id.upper().replace(".", "_")
-            # Remove common prefix added by planner (VEHICLE_CHILDREN_)
-            norm_id = norm_id.removeprefix("VEHICLE_CHILDREN_")
-            prop_lookup[norm_id] = p
-
-    print(f"  Property lookup built with {len(prop_lookup)} normalized keys")
-    if len(prop_lookup) > 0:
-        print(f"  First 5 lookup keys: {list(prop_lookup.keys())[:5]}")
-
     generated_count = 0
-    for domain, signal_ids in module_signal_map.items():
-        if not signal_ids:
+
+    for domain, signal_names in module_signal_map.items():
+        if not signal_names:
             continue
 
-        # Debug: show planner IDs and matching
-        print(f"  Planner IDs for {domain} (first 3): {signal_ids[:3]}")
-
         module_props = []
-        matched_count = 0
-        for sid in signal_ids:
-            # Remove prefix from planner ID too (for consistency)
-            norm_sid = sid.removeprefix("VEHICLE_CHILDREN_")
-            if norm_sid in prop_lookup:
-                module_props.append(prop_lookup[norm_sid])
-                matched_count += 1
+        matched = 0
+        missing = []
 
-        print(f"  Matched {matched_count} / {len(signal_ids)} IDs for {domain}")
+        for name in signal_names:
+            prop = properties_by_name.get(name)
+            if prop:
+                module_props.append(prop)
+                matched += 1
+            else:
+                missing.append(name)
+
+        print(f"  {domain}: matched {matched}/{len(signal_names)} properties")
+        if missing:
+            print(f"    Missing in loaded spec: {missing[:5]}{'...' if len(missing)>5 else ''}")
 
         if not module_props:
             print(f"  Skipping {domain} — no matching properties")
             continue
 
         print(f"\n{'='*60}")
-        print(f"  MODULE: {domain.upper()} ({len(module_props)} props)")
+        print(f" MODULE: {domain.upper()} ({len(module_props)} props)")
         print(f"{'='*60}")
 
         module_spec = ModuleSpec(domain=domain, properties=module_props)
+
         try:
             architect.run(module_spec)
-            print("  → OK")
+            print(" → OK")
             generated_count += 1
         except Exception as e:
-            print(f"  → FAILED: {e}")
+            print(f" → FAILED: {e}")
 
     print(f"\nAll HAL module drafts generated ({generated_count} modules processed)")
 
     # 7. Supporting components
-    print("[5/5] Generating supporting components...")
-    DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
+    print("[SUPPORT] Generating supporting components...")
+    DesignDocAgent().run(module_signal_map, full_spec.properties, yaml_spec)
     PromoteDraftAgent().run()
     generate_selinux(full_spec)
     BuildGlueAgent().run()
-    LLMAndroidAppAgent().run(module_signal_map, all_properties)
-    LLMBackendAgent().run(module_signal_map, all_properties)
+    LLMAndroidAppAgent().run(module_signal_map, full_spec.properties)
+    LLMBackendAgent().run(module_signal_map, full_spec.properties)
 
     print("\nFinished.")
-    print(f"  → Cached input files: {PERSISTENT_CACHE_DIR}")
-    print(f"  → All generated outputs: {OUTPUT_DIR.resolve()}")
-
+    print(f" → Cached input files: {PERSISTENT_CACHE_DIR}")
+    print(f" → All generated outputs: {OUTPUT_DIR.resolve()}")
 
 if __name__ == "__main__":
     main()
