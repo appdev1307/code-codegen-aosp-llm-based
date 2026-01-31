@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml  # PyYAML
 
-from schemas.hal_spec import HalSpec, PropertySpec, Domain, PropType, Access
+from hal_spec import HalSpec, PropertySpec, Domain, PropType, Access
 
 # ----------------------------
 # LLM output cleanup helpers
@@ -18,7 +18,8 @@ def _extract_yaml_text(text: str) -> str:
     Extract clean YAML content from LLM output, preferring:
     1. Content inside ```yaml ... ``` fences
     2. First YAML document if --- present
-    3. Heuristic filtering of YAML-looking lines (stops at first non-YAML prose)
+    3. Return as-is if it looks like clean YAML (no heuristic filtering needed)
+    4. Heuristic filtering of YAML-looking lines (stops at first non-YAML prose)
     """
     if not text:
         return ""
@@ -35,7 +36,18 @@ def _extract_yaml_text(text: str) -> str:
         idx = s.find("---")
         return s[idx:].strip()
 
-    # 3. Heuristic: keep only YAML-ish lines, stop at prose
+    # 3. If it starts with YAML structure markers, assume it's clean YAML
+    # (this avoids overly aggressive heuristic filtering)
+    first_line = s.split('\n', 1)[0].strip()
+    if first_line and (
+        ':' in first_line or  # YAML key-value
+        first_line.startswith('-') or  # YAML list
+        first_line.startswith('#')  # YAML comment
+    ):
+        # Looks like clean YAML, return as-is
+        return s
+
+    # 4. Heuristic: keep only YAML-ish lines, stop at prose
     lines = s.splitlines()
     kept: List[str] = []
     started = False
