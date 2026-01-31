@@ -26,7 +26,7 @@ VENDOR_NAMESPACE  = "vendor.vss"
 
 # Persistent cache → only input-like files (limited + labelled)
 # Survives when you delete/re-clone the whole project folder
-PERSISTENT_CACHE_DIR = Path.home() / "vss_temp"
+PERSISTENT_CACHE_DIR = "../vss_temp"
 PERSISTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # All generated outputs (YAML spec, drafts, promoted files, docs, glue, selinux, app/backend ...)
