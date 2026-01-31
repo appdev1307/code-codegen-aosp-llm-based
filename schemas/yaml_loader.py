@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml  # PyYAML
 
-from hal_spec import HalSpec, PropertySpec, Domain, PropType, Access
+from schemas.hal_spec import HalSpec, PropertySpec, Domain, PropType, Access
 
 # ----------------------------
 # LLM output cleanup helpers
