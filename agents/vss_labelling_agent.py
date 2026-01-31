@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from llm_client import call_llm
+from tools.safe_writer import SafeWriter   # ← Added missing import
 
 def flatten_vss(vss_data, current_path=""):
     """Recursively flatten VSS tree to only leaf signals (properties)"""
@@ -61,14 +62,14 @@ Output format: JSON array of objects (same order as input signals):
         """Label a batch of signals asynchronously"""
         async with semaphore:
             prompt = self._build_batch_prompt(batch)
-            raw = call_llm(prompt=prompt, temperature=0.0, response_format="json")
             try:
+                raw = call_llm(prompt=prompt, temperature=0.0, response_format="json")
                 raw_clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
                 labels_list = json.loads(raw_clean)
                 if not isinstance(labels_list, list) or len(labels_list) != len(batch):
-                    raise ValueError("Invalid batch response length")
+                    raise ValueError(f"Invalid batch response length: expected {len(batch)}, got {len(labels_list)}")
             except Exception as e:
-                print(f"[WARNING] Batch labelling failed: {e}. Using defaults.")
+                print(f"[WARNING] Batch labelling failed: {e}. Using defaults for batch.")
                 labels_list = [{
                     "domain": "OTHER",
                     "safety_level": "Low",
@@ -109,7 +110,15 @@ Output format: JSON array of objects (same order as input signals):
 
         # Run async loop
         loop = asyncio.get_event_loop()
-        results = loop.run_until_complete(run_all())
+        try:
+            results = loop.run_until_complete(run_all())
+        except Exception as e:
+            print(f"[ERROR] Async labelling loop failed: {e}. Falling back to sequential.")
+            results = []
+            for batch in batches:
+                # Fallback sync
+                res = asyncio.run(self._label_batch_async(batch, asyncio.Semaphore(1)))
+                results.append(res)
 
         # Process results
         pbar = tqdm(total=n, desc="Labelling signals", unit="signal", ncols=100)
