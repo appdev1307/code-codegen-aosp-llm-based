@@ -3,7 +3,7 @@ import json
 import asyncio
 from tqdm import tqdm
 from llm_client import call_llm
-from tools.safe_writer import SafeWriter  # fixed missing import
+from tools.safe_writer import SafeWriter  # fixed: added missing import
 
 def flatten_vss(vss_data, current_path=""):
     """Recursively flatten VSS tree to only leaf signals (properties)"""
@@ -54,7 +54,7 @@ For each signal return this structure:
 }}
 
 Response must be ONLY:
-[{{"domain": "...", ...}}, ... ]   // exactly {len(batch)} items
+[{{"domain": "...", ...}}, ... ]  // exactly {len(batch)} items
 """
         return prompt
 
@@ -81,7 +81,7 @@ Response must be ONLY:
                     if len(parsed) != len(batch):
                         raise ValueError(f"Expected {len(batch)} items, got {len(parsed)}")
 
-                    # Validate minimal structure
+                    # Basic structure validation
                     required = {"domain", "safety_level", "ui_widget", "aosp_standard"}
                     for item in parsed:
                         if not isinstance(item, dict) or not required.issubset(item):
