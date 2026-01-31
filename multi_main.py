@@ -16,15 +16,13 @@ from tools.aosp_layout import ensure_aosp_layout
 # ────────────────────────────────────────────────
 # Configurable parameters
 # ────────────────────────────────────────────────
-TEST_SIGNAL_COUNT = 50          # ← change here to test with different sizes
+TEST_SIGNAL_COUNT = 50
 VSS_PATH = "./dataset/vss.json"
 VENDOR_NAMESPACE = "vendor.vss"
 
-# Persistent cache folder — only for input-like files
 PERSISTENT_CACHE_DIR = Path("/content/vss_temp")
 PERSISTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# All generated outputs stay inside project
 OUTPUT_DIR = Path("output")
 
 # ────────────────────────────────────────────────
@@ -36,7 +34,6 @@ class ModuleSpec:
         self.vendor = "AOSP"
 
     def to_llm_spec(self):
-        """Format module specification into LLM-friendly text"""
         lines = [
             f"HAL Domain: {self.domain}",
             f"AOSP Level: {self.aosp_level}",
@@ -135,26 +132,36 @@ def main():
     spec_path.write_text(yaml_spec, encoding="utf-8")
     print(f" Wrote {spec_path} with {prop_count} properties")
 
-    # 4. Load spec
+    # 4. Load spec + forced debug
     print("[LOAD] Loading HAL spec...")
-    full_spec = load_hal_spec_from_yaml_text(yaml_spec)
+    try:
+        full_spec = load_hal_spec_from_yaml_text(yaml_spec)
+        print(f"[LOAD] Success — domain: {full_spec.domain}, {len(full_spec.properties)} properties")
+    except Exception as e:
+        print(f"[LOAD ERROR] Failed: {e}")
+        return
 
-    # Stable lookup: exact name → property (no normalization, no stripping)
+    # Build lookup with debug
     properties_by_name = {}
-    for p in full_spec.properties:
+    for idx, p in enumerate(full_spec.properties):
         name = getattr(p, "name", None)
-        if name:
-            if name in properties_by_name:
-                print(f"[WARNING] Duplicate property name detected: {name}")
-            properties_by_name[name] = p
+        if name is None:
+            print(f"[WARNING] Property #{idx} missing 'name': {p}")
+            continue
+        if name in properties_by_name:
+            print(f"[WARNING] Duplicate name: {name}")
+        properties_by_name[name] = p
 
-    print(f"[LOAD] Loaded {len(properties_by_name)} unique properties by exact name")
+    print(f"[LOAD] Built lookup with {len(properties_by_name)} unique names")
 
-    # Debug: show sample loaded names
-    if properties_by_name:
-        print("Sample loaded property names (first 5):")
-        for name in list(properties_by_name.keys())[:5]:
+    # Always print loaded names (even if empty)
+    print("Sample loaded property names (first 5 or less):")
+    loaded_names = list(properties_by_name.keys())
+    if loaded_names:
+        for name in loaded_names[:5]:
             print(f"  → {name}")
+    else:
+        print("  (no properties loaded — check YAML or loader)")
 
     # 5. Module planning
     print("[PLAN] Running Module Planner...")
@@ -167,7 +174,7 @@ def main():
         print(f"[ERROR] Planner failed: {e}")
         return
 
-    # Debug: show sample planner names
+    # Debug: planner names
     print("Sample planner property names (first module):")
     if module_signal_map:
         first_module = next(iter(module_signal_map))
@@ -177,7 +184,7 @@ def main():
         if len(names) > 5:
             print(f"  ... +{len(names)-5} more")
 
-    # 6. Generate modules using exact name matching
+    # 6. Generate modules (exact match)
     print(f"[GEN] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
     generated_count = 0
@@ -224,7 +231,7 @@ def main():
 
     print(f"\nAll HAL module drafts generated ({generated_count} modules processed)")
     print(f"Overall match rate: {total_matched}/{total_planned} properties "
-          f"({total_matched/total_planned*100:.1f}%)")
+          f"({total_matched/total_planned*100:.1f}%) if total_planned > 0 else 'N/A'")
 
     # 7. Supporting components
     print("[SUPPORT] Generating supporting components...")
