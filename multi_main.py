@@ -1,4 +1,3 @@
-# main.py - Generate separate HAL module for each LLM-identified domain (N signals test)
 from pathlib import Path
 import json
 from vss_to_yaml import vss_to_yaml_spec
@@ -140,22 +139,22 @@ def main():
     print("[LOAD] Loading HAL spec...")
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
 
-    # Stable name → property lookup (exact match, no stripping!)
+    # Stable lookup: exact name → property (no normalization, no stripping)
     properties_by_name = {}
     for p in full_spec.properties:
         name = getattr(p, "name", None)
         if name:
             if name in properties_by_name:
-                print(f"[WARNING] Duplicate property name: {name}")
+                print(f"[WARNING] Duplicate property name detected: {name}")
             properties_by_name[name] = p
 
     print(f"[LOAD] Loaded {len(properties_by_name)} unique properties by exact name")
 
-    # Debug: show first few loaded names
+    # Debug: show sample loaded names
     if properties_by_name:
-        print("First 3 loaded property names:")
-        for name in list(properties_by_name.keys())[:3]:
-            print(f"  - {name}")
+        print("Sample loaded property names (first 5):")
+        for name in list(properties_by_name)[:5]:
+            print(f"  → {name}")
 
     # 5. Module planning
     print("[PLAN] Running Module Planner...")
@@ -168,36 +167,43 @@ def main():
         print(f"[ERROR] Planner failed: {e}")
         return
 
-    # Debug: show first few planner names per module
-    print("Planner first few property names per module:")
-    for domain, names in sorted(module_signal_map.items()):
-        first_few = names[:3] if names else []
-        print(f"  {domain}: {len(names)} props → {', '.join(first_few)}")
+    # Debug: show sample planner names
+    print("Sample planner property names (first module):")
+    if module_signal_map:
+        first_module = next(iter(module_signal_map))
+        names = module_signal_map[first_module]
+        for name in names[:5]:
+            print(f"  → {name}")
+        if len(names) > 5:
+            print(f"  ... +{len(names)-5} more")
 
-    # 6. Generate modules using exact name-based lookup
+    # 6. Generate modules using exact name matching
     print(f"[GEN] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
     generated_count = 0
+    total_planned = 0
+    total_matched = 0
 
     for domain, signal_names in module_signal_map.items():
+        total_planned += len(signal_names)
         if not signal_names:
             continue
 
         module_props = []
-        matched = 0
         missing = []
 
         for name in signal_names:
             prop = properties_by_name.get(name)
             if prop:
                 module_props.append(prop)
-                matched += 1
+                total_matched += 1
             else:
                 missing.append(name)
 
+        matched = len(module_props)
         print(f"  {domain}: matched {matched}/{len(signal_names)} properties")
         if missing:
-            print(f"    Missing in loaded spec: {missing[:5]}{'...' if len(missing)>5 else ''}")
+            print(f"    Missing ({len(missing)}): {missing[:5]}{'...' if len(missing)>5 else ''}")
 
         if not module_props:
             print(f"  Skipping {domain} — no matching properties")
@@ -217,6 +223,7 @@ def main():
             print(f" → FAILED: {e}")
 
     print(f"\nAll HAL module drafts generated ({generated_count} modules processed)")
+    print(f"Overall match rate: {total_matched}/{total_planned} properties ({total_matched/total_planned*100:.1f}%)")
 
     # 7. Supporting components
     print("[SUPPORT] Generating supporting components...")
