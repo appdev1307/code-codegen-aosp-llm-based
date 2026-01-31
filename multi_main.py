@@ -172,7 +172,7 @@ def main():
     architect = ArchitectAgent()
 
     # ────────────────────────────────────────────────
-    # FIXED: Normalize property IDs to match planner style (upper + underscore)
+    # FIXED: Aggressive normalization to match planner IDs
     # ────────────────────────────────────────────────
     prop_lookup = {}
     for p in all_properties:
@@ -183,28 +183,34 @@ def main():
             getattr(p, "name", None)
         )
         if raw_id:
-            # Convert Vehicle.ADAS.ABS.IsEnabled → VEHICLE_ADAS_ABS_ISENABLED
+            # Normalize exactly like planner: upper + dot → underscore
             norm_id = raw_id.upper().replace(".", "_")
+            # Remove common prefix added by planner (VEHICLE_CHILDREN_)
+            norm_id = norm_id.removeprefix("VEHICLE_CHILDREN_")
             prop_lookup[norm_id] = p
 
     print(f"  Property lookup built with {len(prop_lookup)} normalized keys")
+    if len(prop_lookup) > 0:
+        print(f"  First 5 lookup keys: {list(prop_lookup.keys())[:5]}")
 
     generated_count = 0
     for domain, signal_ids in module_signal_map.items():
         if not signal_ids:
             continue
 
-        # Debug: show first few IDs from planner
+        # Debug: show planner IDs and matching
         print(f"  Planner IDs for {domain} (first 3): {signal_ids[:3]}")
 
         module_props = []
-        matched_ids = []
+        matched_count = 0
         for sid in signal_ids:
-            if sid in prop_lookup:
-                module_props.append(prop_lookup[sid])
-                matched_ids.append(sid)
+            # Remove prefix from planner ID too (for consistency)
+            norm_sid = sid.removeprefix("VEHICLE_CHILDREN_")
+            if norm_sid in prop_lookup:
+                module_props.append(prop_lookup[norm_sid])
+                matched_count += 1
 
-        print(f"  Matched {len(matched_ids)} / {len(signal_ids)} IDs for {domain}")
+        print(f"  Matched {matched_count} / {len(signal_ids)} IDs for {domain}")
 
         if not module_props:
             print(f"  Skipping {domain} — no matching properties")
