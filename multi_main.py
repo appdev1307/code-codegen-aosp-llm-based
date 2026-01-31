@@ -50,7 +50,6 @@ class ModuleSpec:
             ""
         ]
         for prop in self.properties:
-            # Try different possible property ID fields (very common in VSS/AAOS code)
             prop_id = (
                 getattr(prop, "property_id", None) or
                 getattr(prop, "prop_id", None) or
@@ -172,21 +171,43 @@ def main():
     print(f"[4/5] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
 
+    # ────────────────────────────────────────────────
+    # FIXED: Normalize property IDs to match planner style (upper + underscore)
+    # ────────────────────────────────────────────────
     prop_lookup = {}
     for p in all_properties:
-        pid = (getattr(p, "property_id", None) or
-               getattr(p, "prop_id", None) or
-               getattr(p, "id", None) or
-               getattr(p, "name", None))
-        if pid:
-            prop_lookup[pid] = p
+        raw_id = (
+            getattr(p, "property_id", None) or
+            getattr(p, "prop_id", None) or
+            getattr(p, "id", None) or
+            getattr(p, "name", None)
+        )
+        if raw_id:
+            # Convert Vehicle.ADAS.ABS.IsEnabled → VEHICLE_ADAS_ABS_ISENABLED
+            norm_id = raw_id.upper().replace(".", "_")
+            prop_lookup[norm_id] = p
+
+    print(f"  Property lookup built with {len(prop_lookup)} normalized keys")
 
     generated_count = 0
     for domain, signal_ids in module_signal_map.items():
         if not signal_ids:
             continue
-        module_props = [prop_lookup.get(sid) for sid in signal_ids if sid in prop_lookup]
+
+        # Debug: show first few IDs from planner
+        print(f"  Planner IDs for {domain} (first 3): {signal_ids[:3]}")
+
+        module_props = []
+        matched_ids = []
+        for sid in signal_ids:
+            if sid in prop_lookup:
+                module_props.append(prop_lookup[sid])
+                matched_ids.append(sid)
+
+        print(f"  Matched {len(matched_ids)} / {len(signal_ids)} IDs for {domain}")
+
         if not module_props:
+            print(f"  Skipping {domain} — no matching properties")
             continue
 
         print(f"\n{'='*60}")
