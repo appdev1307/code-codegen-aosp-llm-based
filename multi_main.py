@@ -1,4 +1,5 @@
-# main.py - Generate separate HAL module for each LLM-identified domain (50 signals test)
+# main.py - Generate separate HAL module for each LLM-identified domain (N signals test)
+
 from pathlib import Path
 import json
 
@@ -16,141 +17,130 @@ from agents.vss_labelling_agent import VSSLabellingAgent
 from tools.aosp_layout import ensure_aosp_layout
 
 
-class ModuleSpec:
-    def __init__(self, domain: str, properties: list):
-        self.domain = domain.upper()
-        self.properties = properties
-        self.aosp_level = 14
-        self.vendor = "AOSP"
+# ────────────────────────────────────────────────
+#  Configurable parameters
+# ────────────────────────────────────────────────
+TEST_SIGNAL_COUNT = 50                  # ← change here to test with different sizes
+VSS_PATH          = "./dataset/vss.json"
+VENDOR_NAMESPACE  = "vendor.vss"
 
-    def to_llm_spec(self):
-        lines = [
-            f"HAL Domain: {self.domain}",
-            f"AOSP Level: {self.aosp_level}",
-            f"Vendor : {self.vendor}",
-            f"Properties: {len(self.properties)}",
-            ""
-        ]
-        for prop in self.properties:
-            prop_id = getattr(prop, "property_id",
-                     getattr(prop, "prop_id",
-                     getattr(prop, "id",
-                     getattr(prop, "name", "UNKNOWN"))))
-            typ = getattr(prop, "type", "UNKNOWN")
-            access = getattr(prop, "access", "READ_WRITE")
-            areas = getattr(prop, "areas", "GLOBAL")
-            areas_str = ", ".join(areas) if isinstance(areas, (list, tuple)) and areas else str(areas)
+# Persistent cache → only input-like files (limited + labelled)
+# Survives when you delete/re-clone the whole project folder
+PERSISTENT_CACHE_DIR = Path.home() / "vss_temp"
+PERSISTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-            lines += [
-                f"- Property ID : {prop_id}",
-                f"  Type : {typ}",
-                f"  Access : {access}",
-                f"  Areas : {areas_str}",
-            ]
-        return "\n".join(lines)
+# All generated outputs (YAML spec, drafts, promoted files, docs, glue, selinux, app/backend ...)
+# go here → inside the project → deleted when re-cloning repo
+OUTPUT_DIR = Path("output")
+# ────────────────────────────────────────────────
 
 
 def main():
-    vss_path = "./dataset/vss.json"
-    output_dir = Path("output")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Starting VSS → AAOS HAL Generation ({TEST_SIGNAL_COUNT} signals test)")
+    print(f"  Persistent cache (limited + labelled only): {PERSISTENT_CACHE_DIR}")
+    print(f"  All generated files:                     {OUTPUT_DIR.resolve()}\n")
 
-    print("🚀 Starting VSS → AAOS HAL Generation (50 signals, one module per domain)")
+    # 1. Select first N signals
+    print(f"[PREP] Selecting first {TEST_SIGNAL_COUNT} signals from {VSS_PATH}")
+    try:
+        with open(VSS_PATH, "r", encoding="utf-8") as f:
+            full_vss = json.load(f)
+    except Exception as e:
+        print(f"Cannot read {VSS_PATH}: {e}")
+        return
 
-    # === Optional: LLM Labelling (run once) ===
-    labelled_path = output_dir / "VSS_LABELLED.json"
-    if not labelled_path.exists():
-        print("[LABELLING] Running LLM-assisted labelling...")
-        labelling_agent = VSSLabellingAgent()
-        labelled_data = labelling_agent.run(vss_path)
-        labelled_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
+    if len(full_vss) < TEST_SIGNAL_COUNT:
+        print(f"Warning: only {len(full_vss)} signals available")
+        selected_signals = full_vss
     else:
-        print(f"[LABELLING] Using existing labelled data: {labelled_path}")
+        keys = sorted(full_vss.keys())
+        selected_keys = keys[:TEST_SIGNAL_COUNT]
+        selected_signals = {k: full_vss[k] for k in selected_keys}
+
+    limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
+    limited_path.write_text(json.dumps(selected_signals, indent=2, ensure_ascii=False))
+    print(f"  → Wrote limited subset → {limited_path}")
+
+    # 2. Label only the selected subset → saved outside project
+    labelled_path = PERSISTENT_CACHE_DIR / f"VSS_LABELLED_{TEST_SIGNAL_COUNT}.json"
+
+    if labelled_path.exists():
+        print(f"[LABELLING] Using existing: {labelled_path}")
         with open(labelled_path, "r", encoding="utf-8") as f:
             labelled_data = json.load(f)
+    else:
+        print("[LABELLING] Labelling selected subset ...")
+        labelling_agent = VSSLabellingAgent()
+        labelled_data = labelling_agent.run(str(limited_path))
+        labelled_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
+        print(f"[LABELLING] Saved → {labelled_path}")
 
-    # === Limit to 50 signals ===
-    print("\n[1/5] Preparing 50-signal dataset...")
-    limited_signals = dict(list(labelled_data.items())[:50])
-    print(f"Using {len(limited_signals)} signals")
-
-    limited_path = output_dir / "VSS_LIMITED_50.json"
-    limited_path.write_text(json.dumps(limited_signals, indent=2, ensure_ascii=False))
-
-    # === Convert to YAML ===
-    yaml_spec, n = vss_to_yaml_spec(
+    # 3. Convert to YAML → saved inside project/output
+    print("\n[YAML] Converting to HAL spec ...")
+    yaml_spec, prop_count = vss_to_yaml_spec(
         vss_json_path=str(limited_path),
         include_prefixes=None,
         max_props=None,
-        vendor_namespace="vendor.vss",
+        vendor_namespace=VENDOR_NAMESPACE,
         add_meta=True,
     )
 
-    spec_path = output_dir / "SPEC_FROM_VSS.yaml"
+    spec_path = OUTPUT_DIR / f"SPEC_FROM_VSS_{TEST_SIGNAL_COUNT}.yaml"
     spec_path.write_text(yaml_spec, encoding="utf-8")
-    print(f"[DEBUG] Wrote {spec_path} with {n} properties")
+    print(f"  → Wrote {spec_path} ({prop_count} properties)")
 
-    # === Load spec ===
-    print("[2/5] Loading HAL spec...")
+    # 4. Load spec
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
     all_properties = full_spec.properties
 
-    # === LLM Module Planning ===
+    # 5. Module planning
     print("[3/5] Running Module Planner...")
     try:
         module_signal_map = plan_modules_from_spec(yaml_spec)
-        print(f"LLM identified {len(module_signal_map)} modules: {', '.join(module_signal_map.keys())}")
+        total = sum(len(v) for v in module_signal_map.values())
+        print(f"  → {len(module_signal_map)} modules, {total} signals total")
     except Exception as e:
-        print(f"[FALLBACK] Module planner failed: {e}")
+        print(f"[ERROR] Planner failed: {e}")
         return
 
-    # === Property lookup ===
-    def get_property_id(prop):
-        return getattr(prop, "property_id",
-               getattr(prop, "prop_id",
-               getattr(prop, "id",
-               getattr(prop, "name", None))))
-
-    prop_lookup = {get_property_id(p): p for p in all_properties if get_property_id(p)}
-
-    # === Generate ONE HAL MODULE PER DOMAIN ===
-    print(f"[4/5] Generating {len(module_signal_map)} separate HAL modules...")
+    # 6. Generate modules → drafts go to project/.llm_draft/latest/
+    print(f"[4/5] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
 
+    prop_lookup = {p.property_id or p.prop_id or p.id or p.name: p 
+                   for p in all_properties if p.property_id or p.prop_id or p.id or p.name}
+
     for domain, signal_ids in module_signal_map.items():
-        if not signal_ids:
-            continue
+        if not signal_ids: continue
+        module_props = [prop_lookup.get(sid) for sid in signal_ids if sid in prop_lookup]
+        if not module_props: continue
 
-        module_props = [prop_lookup.get(sid) for sid in signal_ids if prop_lookup.get(sid)]
-        if not module_props:
-            continue
-
-        print(f"\n{'='*80}")
-        print(f"GENERATING MODULE: {domain.upper()} ({len(module_props)} properties)")
-        print(f"{'='*80}")
+        print(f"\n{'='*60}")
+        print(f"  MODULE: {domain.upper()} ({len(module_props)} props)")
+        print(f"{'='*60}")
 
         module_spec = ModuleSpec(domain=domain, properties=module_props)
         try:
             architect.run(module_spec)
-            print(f"✅ {domain.upper()} module generated!")
+            print(f"  → OK")
         except Exception as e:
-            print(f"❌ {domain.upper()}: {e}")
+            print(f"  → FAILED: {e}")
 
-    print("\n🎉 All modules generated separately!")
+    print("\nAll HAL module drafts generated (inside project/.llm_draft/)")
 
-    # === Full-Stack ===
+    # 7. All other generated artifacts → also inside project / output
     print("[5/5] Generating supporting components...")
-    DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
-    PromoteDraftAgent().run()  # Promotes last module — or enhance for all
-    generate_selinux(full_spec)
-    BuildGlueAgent().run()
-    LLMAndroidAppAgent().run(module_signal_map, all_properties)
-    LLMBackendAgent().run(module_signal_map, all_properties)
+    DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)           # → output/
+    PromoteDraftAgent().run()                                                    # → promoted files in project
+    generate_selinux(full_spec)                                                  # → SELinux files in project
+    BuildGlueAgent().run()                                                       # → glue code in project
+    LLMAndroidAppAgent().run(module_signal_map, all_properties)                  # → app drafts in project
+    LLMBackendAgent().run(module_signal_map, all_properties)                     # → backend drafts in project
 
-    print("\n🎉 SUCCESS! 50-signal multi-module run complete!")
-    print("    → Each module has its own drafts in .llm_draft/latest/")
-    print("    → Final promoted files from last module")
-    print("    → To merge all: future enhancement possible")
+    print("\nFinished.")
+    print(f"  → Labelled & limited files → {PERSISTENT_CACHE_DIR}")
+    print(f"  → Design docs, app/backend drafts, .llm_draft/, promoted files, glue, selinux → {OUTPUT_DIR.resolve()}")
 
 
 if __name__ == "__main__":
