@@ -42,7 +42,7 @@ class ModuleSpec:
             ""
         ]
         for prop in self.properties:
-            name = getattr(prop, "id", "UNKNOWN")  # ← changed to .id
+            name = getattr(prop, "id", "UNKNOWN")
             typ = getattr(prop, "type", "UNKNOWN")
             access = getattr(prop, "access", "READ_WRITE")
             areas = getattr(prop, "areas", ["GLOBAL"])
@@ -144,7 +144,7 @@ def main():
     # Build lookup with debug — use .id instead of .name
     properties_by_id = {}
     for idx, p in enumerate(full_spec.properties):
-        name = getattr(p, "id", None)  # ← changed to .id
+        name = getattr(p, "id", None)
         if name is None:
             print(f"[WARNING] Property #{idx} missing 'id': {p}")
             continue
@@ -164,7 +164,7 @@ def main():
         print("  (no properties loaded — check YAML or loader)")
 
     # 5. Module planning
-    print("[PLAN] Running Module Planner...")
+    print("\n[PLAN] Running Module Planner...")
     try:
         module_signal_map = plan_modules_from_spec(yaml_spec)
         total = sum(len(v) for v in module_signal_map.values())
@@ -174,8 +174,19 @@ def main():
         print(f"[ERROR] Planner failed: {e}")
         return
 
+    # Debug: Check for name format mismatch (AFTER creating module_signal_map)
+    print("\n[DEBUG] Checking for name format mismatch:")
+    if module_signal_map and properties_by_id:
+        first_module = next(iter(module_signal_map))
+        planner_name = module_signal_map[first_module][0] if module_signal_map[first_module] else None
+        loader_name = list(properties_by_id.keys())[0]
+        
+        print(f"  Planner format: {planner_name}")
+        print(f"  Loader format:  {loader_name}")
+        print(f"  Match: {planner_name == loader_name}")
+
     # Debug: planner names
-    print("Sample planner property names (first module):")
+    print("\nSample planner property names (first module):")
     if module_signal_map:
         first_module = next(iter(module_signal_map))
         names = module_signal_map[first_module]
@@ -185,7 +196,7 @@ def main():
             print(f"  ... +{len(names)-5} more")
 
     # 6. Generate modules using .id matching
-    print(f"[GEN] Generating {len(module_signal_map)} HAL modules...")
+    print(f"\n[GEN] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
     generated_count = 0
     total_planned = 0
