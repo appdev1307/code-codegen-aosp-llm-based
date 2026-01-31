@@ -60,6 +60,7 @@ class ModuleSpec:
             ]
         return "\n".join(lines)
 
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Starting VSS → AAOS HAL Generation ({TEST_SIGNAL_COUNT} signals test)")
@@ -139,14 +140,22 @@ def main():
     print("[LOAD] Loading HAL spec...")
     full_spec = load_hal_spec_from_yaml_text(yaml_spec)
 
-    # Create stable name → property lookup (this is the core of Fix 1)
+    # Stable name → property lookup (exact match, no stripping!)
     properties_by_name = {}
     for p in full_spec.properties:
         name = getattr(p, "name", None)
         if name:
+            if name in properties_by_name:
+                print(f"[WARNING] Duplicate property name: {name}")
             properties_by_name[name] = p
 
-    print(f"[LOAD] Loaded {len(properties_by_name)} properties by name")
+    print(f"[LOAD] Loaded {len(properties_by_name)} unique properties by exact name")
+
+    # Debug: show first few loaded names
+    if properties_by_name:
+        print("First 3 loaded property names:")
+        for name in list(properties_by_name.keys())[:3]:
+            print(f"  - {name}")
 
     # 5. Module planning
     print("[PLAN] Running Module Planner...")
@@ -159,7 +168,13 @@ def main():
         print(f"[ERROR] Planner failed: {e}")
         return
 
-    # 6. Generate modules using name-based lookup
+    # Debug: show first few planner names per module
+    print("Planner first few property names per module:")
+    for domain, names in sorted(module_signal_map.items()):
+        first_few = names[:3] if names else []
+        print(f"  {domain}: {len(names)} props → {', '.join(first_few)}")
+
+    # 6. Generate modules using exact name-based lookup
     print(f"[GEN] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
     generated_count = 0
@@ -215,6 +230,7 @@ def main():
     print("\nFinished.")
     print(f" → Cached input files: {PERSISTENT_CACHE_DIR}")
     print(f" → All generated outputs: {OUTPUT_DIR.resolve()}")
+
 
 if __name__ == "__main__":
     main()
