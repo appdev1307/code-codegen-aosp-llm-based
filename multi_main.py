@@ -25,7 +25,7 @@ VSS_PATH          = "./dataset/vss.json"
 VENDOR_NAMESPACE  = "vendor.vss"
 
 # Persistent cache folder — only for input-like files
-PERSISTENT_CACHE_DIR = Path.home() / "vss_temp"
+PERSISTENT_CACHE_DIR = Path("../vss_temp")
 PERSISTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # All generated outputs stay inside project
