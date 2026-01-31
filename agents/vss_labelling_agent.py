@@ -1,10 +1,9 @@
 from pathlib import Path
 import json
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from llm_client import call_llm
-from tools.safe_writer import SafeWriter   # ← Added missing import
+from tools.safe_writer import SafeWriter  # fixed missing import
 
 def flatten_vss(vss_data, current_path=""):
     """Recursively flatten VSS tree to only leaf signals (properties)"""
@@ -24,7 +23,6 @@ class VSSLabellingAgent:
         self.labelled_path = Path(output_root) / "VSS_LABELLED.json"
 
     def _build_batch_prompt(self, batch: list) -> str:
-        """Build a single prompt for multiple signals"""
         lines = []
         for idx, (path, signal) in enumerate(batch, 1):
             lines.append(f"Signal {idx}:")
@@ -36,12 +34,14 @@ class VSSLabellingAgent:
 
         prompt = f"""
 You are an expert automotive signal analyst.
-Label the following {len(batch)} VSS leaf signals. Output ONLY valid JSON array with one object per signal.
+Label the following {len(batch)} VSS leaf signals.
+Output ONLY a valid JSON array with EXACTLY {len(batch)} objects, in the same order as the signals listed.
+No explanations, no fences (```), no extra text outside the array.
 
 Signals:
 {'\n'.join(lines)}
 
-For each signal, return:
+For each signal return this structure:
 {{
   "domain": "ADAS|BODY|HVAC|CABIN|POWERTRAIN|CHASSIS|INFOTAINMENT|OTHER",
   "safety_level": "Critical|High|Medium|Low",
@@ -53,33 +53,56 @@ For each signal, return:
   "aosp_standard": true|false
 }}
 
-Output format: JSON array of objects (same order as input signals):
-[{{"domain": "...", ...}}, ...]
+Response must be ONLY:
+[{{"domain": "...", ...}}, ... ]   // exactly {len(batch)} items
 """
         return prompt
 
     async def _label_batch_async(self, batch: list, semaphore: asyncio.Semaphore):
-        """Label a batch of signals asynchronously"""
         async with semaphore:
             prompt = self._build_batch_prompt(batch)
-            try:
-                raw = call_llm(prompt=prompt, temperature=0.0, response_format="json")
-                raw_clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
-                labels_list = json.loads(raw_clean)
-                if not isinstance(labels_list, list) or len(labels_list) != len(batch):
-                    raise ValueError(f"Invalid batch response length: expected {len(batch)}, got {len(labels_list)}")
-            except Exception as e:
-                print(f"[WARNING] Batch labelling failed: {e}. Using defaults for batch.")
-                labels_list = [{
-                    "domain": "OTHER",
-                    "safety_level": "Low",
-                    "ui_widget": "Text",
-                    "ui_range_min": None,
-                    "ui_range_max": None,
-                    "ui_step": None,
-                    "ui_unit": None,
-                    "aosp_standard": False
-                }] * len(batch)
+            for attempt in range(2):
+                try:
+                    raw = call_llm(prompt=prompt, temperature=0.0, response_format="json")
+                    raw_clean = raw.strip()
+                    # Clean common LLM wrappers
+                    if raw_clean.startswith("```json"):
+                        raw_clean = raw_clean.split("```json", 1)[1].strip()
+                    if raw_clean.endswith("```"):
+                        raw_clean = raw_clean.rsplit("```", 1)[0].strip()
+                    parsed = json.loads(raw_clean)
+
+                    # Accept single object → convert to list
+                    if isinstance(parsed, dict):
+                        parsed = [parsed]
+
+                    if not isinstance(parsed, list):
+                        raise ValueError("Response is not a list or dict")
+                    if len(parsed) != len(batch):
+                        raise ValueError(f"Expected {len(batch)} items, got {len(parsed)}")
+
+                    # Validate minimal structure
+                    required = {"domain", "safety_level", "ui_widget", "aosp_standard"}
+                    for item in parsed:
+                        if not isinstance(item, dict) or not required.issubset(item):
+                            raise ValueError("Invalid item structure")
+
+                    labels_list = parsed
+                    break
+                except Exception as e:
+                    print(f"[WARNING] Batch attempt {attempt+1}/2 failed: {e}")
+                    if attempt == 1:
+                        print("[WARNING] All retries failed — using defaults for batch")
+                        labels_list = [{
+                            "domain": "OTHER",
+                            "safety_level": "Low",
+                            "ui_widget": "Text",
+                            "ui_range_min": None,
+                            "ui_range_max": None,
+                            "ui_step": None,
+                            "ui_unit": None,
+                            "aosp_standard": False
+                        }] * len(batch)
 
             results = []
             for (path, signal), labels in zip(batch, labels_list):
@@ -90,13 +113,11 @@ Output format: JSON array of objects (same order as input signals):
             return results
 
     def run_on_dict(self, signal_dict: dict):
-        """Fast labelling with batching + async concurrency"""
         n = len(signal_dict)
         print(f"[LABELLING] Labelling {n} pre-selected signals (batched + async)...")
 
-        # Configurable
-        batch_size = 8          # tune: 5–10 depending on token limit & provider
-        max_concurrent = 5      # avoid hitting rate limits (adjust per provider)
+        batch_size = 8
+        max_concurrent = 5
 
         items = list(signal_dict.items())
         batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
@@ -108,19 +129,9 @@ Output format: JSON array of objects (same order as input signals):
             tasks = [self._label_batch_async(batch, semaphore) for batch in batches]
             return await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Run async loop
         loop = asyncio.get_event_loop()
-        try:
-            results = loop.run_until_complete(run_all())
-        except Exception as e:
-            print(f"[ERROR] Async labelling loop failed: {e}. Falling back to sequential.")
-            results = []
-            for batch in batches:
-                # Fallback sync
-                res = asyncio.run(self._label_batch_async(batch, asyncio.Semaphore(1)))
-                results.append(res)
+        results = loop.run_until_complete(run_all())
 
-        # Process results
         pbar = tqdm(total=n, desc="Labelling signals", unit="signal", ncols=100)
         for batch_result in results:
             if isinstance(batch_result, Exception):
@@ -134,7 +145,6 @@ Output format: JSON array of objects (same order as input signals):
         print(f"[LABELLING] Done! {len(labelled_data)} labelled signals ready")
         return labelled_data
 
-    # Keep original single-signal method for compatibility
     def _label_single_signal(self, path: str, signal: dict) -> dict:
         prompt = f"""
 You are an expert automotive signal analyst.
@@ -157,9 +167,8 @@ Output ONLY valid JSON:
 """
         raw = call_llm(prompt=prompt, temperature=0.0, response_format="json")
         try:
-            labels = json.loads(
-                raw.strip().removeprefix("```json").removesuffix("```").strip()
-            )
+            raw_clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
+            labels = json.loads(raw_clean)
         except Exception:
             labels = {
                 "domain": "OTHER",
@@ -177,7 +186,6 @@ Output ONLY valid JSON:
         return enhanced
 
     def run(self, vss_json_path: str, max_signals: int = None):
-        """Label from file path — optional max_signals limit for testing"""
         print("[LABELLING] Starting LLM-assisted labelling from file...")
         with open(vss_json_path, "r", encoding="utf-8") as f:
             raw_vss = json.load(f)
@@ -190,7 +198,6 @@ Output ONLY valid JSON:
             leaf_signals = {p: leaf_signals[p] for p in selected_paths}
             print(f"[LABELLING] Limited to first {len(leaf_signals)} signals for testing")
 
-        # Use the batched method
         labelled_data = self.run_on_dict(leaf_signals)
         self.labelled_path = Path(vss_json_path).parent / f"VSS_LABELLED_{len(labelled_data)}.json"
         self.labelled_path.write_text(
