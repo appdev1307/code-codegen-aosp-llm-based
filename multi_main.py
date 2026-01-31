@@ -13,7 +13,7 @@ from agents.selinux_agent import generate_selinux
 from agents.build_glue_agent import BuildGlueAgent
 from agents.llm_android_app_agent import LLMAndroidAppAgent
 from agents.llm_backend_agent import LLMBackendAgent
-from agents.vss_labelling_agent import VSSLabellingAgent
+from agents.vss_labelling_agent import VSSLabellingAgent, flatten_vss  # ← added flatten_vss
 from tools.aosp_layout import ensure_aosp_layout
 
 
@@ -47,31 +47,38 @@ def main():
     print(f"  Persistent cache: {PERSISTENT_CACHE_DIR}")
     print(f"  Project output  : {OUTPUT_DIR.resolve()}\n")
 
-    # 1. Select first N signals
-    print(f"[PREP] Selecting first {TEST_SIGNAL_COUNT} signals from {VSS_PATH}")
+    # 1. Load VSS → flatten to leaf signals → select first N leaves
+    print(f"[PREP] Loading and flattening {VSS_PATH} ...")
     try:
         with open(VSS_PATH, "r", encoding="utf-8") as f:
-            full_vss = json.load(f)
+            raw_vss = json.load(f)
+
+        # Flatten the entire tree to leaf signals (path → value)
+        all_leaves = flatten_vss(raw_vss)
+        print(f"  Flattened to {len(all_leaves)} leaf signals")
+
     except Exception as e:
-        print(f"Cannot read {VSS_PATH}: {e}")
+        print(f"Cannot load or flatten {VSS_PATH}: {e}")
         return
 
-    if len(full_vss) < TEST_SIGNAL_COUNT:
-        print(f"Warning: only {len(full_vss)} signals available (requested {TEST_SIGNAL_COUNT})")
-        selected_signals = full_vss
+    if len(all_leaves) < TEST_SIGNAL_COUNT:
+        print(f"Warning: only {len(all_leaves)} leaf signals available (requested {TEST_SIGNAL_COUNT})")
+        selected_signals = all_leaves
     else:
-        keys = sorted(full_vss.keys())
-        selected_keys = keys[:TEST_SIGNAL_COUNT]
-        selected_signals = {k: full_vss[k] for k in selected_keys}
+        # Stable selection: sort by path, take first N
+        sorted_paths = sorted(all_leaves.keys())
+        selected_paths = sorted_paths[:TEST_SIGNAL_COUNT]
+        selected_signals = {path: all_leaves[path] for path in selected_paths}
 
-    print(f"Selected {len(selected_signals)} signals")
+    print(f"Selected {len(selected_signals)} leaf signals for labelling & processing")
 
+    # Write selected flat subset (useful for debugging / fallback)
     limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
     limited_path.write_text(
         json.dumps(selected_signals, indent=2, ensure_ascii=False),
         encoding="utf-8"
     )
-    print(f"  Wrote raw limited subset → {limited_path}")
+    print(f"  Wrote selected flat subset → {limited_path}")
 
     # 2. Label the selected subset (fast dict mode)
     labelled_path = PERSISTENT_CACHE_DIR / f"VSS_LABELLED_{TEST_SIGNAL_COUNT}.json"
@@ -100,7 +107,7 @@ def main():
     # 3. Convert **labelled** data to YAML
     print("\n[YAML] Converting **labelled** subset to HAL YAML spec...")
     yaml_spec, prop_count = vss_to_yaml_spec(
-        vss_json_path=str(labelled_path),           # ← FIXED: use labelled, not raw
+        vss_json_path=str(labelled_path),           # ← uses the labelled flat file
         include_prefixes=None,
         max_props=None,
         vendor_namespace=VENDOR_NAMESPACE,

@@ -60,8 +60,8 @@ Output **only** the JSON object now. Nothing else.
                 prompt=prompt,
                 system=self.system_prompt,
                 temperature=0.0,
-                max_tokens=4000,          # ← added safety margin
                 response_format="json"
+                # max_tokens removed — your call_llm does not support it
             )
         except Exception as e:
             raise RuntimeError(f"LLM call failed: {e}")
@@ -86,7 +86,7 @@ Output **only** the JSON object now. Nothing else.
             print(f"[MODULE PLANNER] Summary: {summary.get('total_properties')} signals → "
                   f"{summary.get('module_count')} modules (largest: {summary.get('largest_module')})")
 
-        # Save plan (still in project/output)
+        # Save plan
         out_path = Path("output/MODULE_PLAN.json")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
