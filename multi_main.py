@@ -40,6 +40,37 @@ class ModuleSpec:
         self.aosp_level = 14
         self.vendor = "AOSP"
 
+    def to_llm_spec(self):
+        """Format module specification into LLM-friendly text"""
+        lines = [
+            f"HAL Domain: {self.domain}",
+            f"AOSP Level: {self.aosp_level}",
+            f"Vendor: {self.vendor}",
+            f"Properties: {len(self.properties)}",
+            ""
+        ]
+        for prop in self.properties:
+            # Try different possible property ID fields (very common in VSS/AAOS code)
+            prop_id = (
+                getattr(prop, "property_id", None) or
+                getattr(prop, "prop_id", None) or
+                getattr(prop, "id", None) or
+                getattr(prop, "name", "UNKNOWN")
+            )
+            typ = getattr(prop, "type", "UNKNOWN")
+            access = getattr(prop, "access", "READ_WRITE")
+            areas = getattr(prop, "areas", "GLOBAL")
+            areas_str = ", ".join(areas) if isinstance(areas, (list, tuple)) else str(areas)
+
+            lines += [
+                f"- Property ID: {prop_id}",
+                f"  Type: {typ}",
+                f"  Access: {access}",
+                f"  Areas: {areas_str}",
+                ""
+            ]
+        return "\n".join(lines)
+
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -83,7 +114,6 @@ def main():
 
     need_labelling = True
     if labelled_path.exists():
-        # Check if cache is still valid (newer than the limited file)
         if labelled_path.stat().st_mtime >= limited_path.stat().st_mtime:
             print(f"[LABELLING] Using valid cached labelled data: {labelled_path}")
             with open(labelled_path, "r", encoding="utf-8") as f:
@@ -91,14 +121,13 @@ def main():
             print(f"  Loaded {len(labelled_data)} labelled signals from cache")
             need_labelling = False
         else:
-            print("[LABELLING] Cache outdated (limited file is newer) → re-labelling")
+            print("[LABELLING] Cache outdated → re-labelling")
 
     if need_labelling:
         print("[LABELLING] Labelling the selected subset (fast mode)...")
         labelling_agent = VSSLabellingAgent()
         labelled_data = labelling_agent.run_on_dict(selected_signals)
 
-        # Save labelled version
         labelled_path.write_text(
             json.dumps(labelled_data, indent=2, ensure_ascii=False),
             encoding="utf-8"
