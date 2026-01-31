@@ -13,7 +13,7 @@ from agents.selinux_agent import generate_selinux
 from agents.build_glue_agent import BuildGlueAgent
 from agents.llm_android_app_agent import LLMAndroidAppAgent
 from agents.llm_backend_agent import LLMBackendAgent
-from agents.vss_labelling_agent import VSSLabellingAgent, flatten_vss  # ← added flatten_vss
+from agents.vss_labelling_agent import VSSLabellingAgent, flatten_vss
 from tools.aosp_layout import ensure_aosp_layout
 
 
@@ -24,8 +24,8 @@ TEST_SIGNAL_COUNT = 50                  # ← change here to test with different
 VSS_PATH          = "./dataset/vss.json"
 VENDOR_NAMESPACE  = "vendor.vss"
 
-# Persistent cache folder — only for input-like files (limited subset + labels)
-PERSISTENT_CACHE_DIR = Path.home() / "vss_temp"  # recommended for Colab & local
+# Persistent cache folder — only for input-like files
+PERSISTENT_CACHE_DIR = Path.home() / "vss_temp"
 PERSISTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # All generated outputs stay inside project
@@ -53,7 +53,6 @@ def main():
         with open(VSS_PATH, "r", encoding="utf-8") as f:
             raw_vss = json.load(f)
 
-        # Flatten the entire tree to leaf signals (path → value)
         all_leaves = flatten_vss(raw_vss)
         print(f"  Flattened to {len(all_leaves)} leaf signals")
 
@@ -65,14 +64,13 @@ def main():
         print(f"Warning: only {len(all_leaves)} leaf signals available (requested {TEST_SIGNAL_COUNT})")
         selected_signals = all_leaves
     else:
-        # Stable selection: sort by path, take first N
         sorted_paths = sorted(all_leaves.keys())
         selected_paths = sorted_paths[:TEST_SIGNAL_COUNT]
         selected_signals = {path: all_leaves[path] for path in selected_paths}
 
     print(f"Selected {len(selected_signals)} leaf signals for labelling & processing")
 
-    # Write selected flat subset (useful for debugging / fallback)
+    # Write selected flat subset
     limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
     limited_path.write_text(
         json.dumps(selected_signals, indent=2, ensure_ascii=False),
@@ -80,15 +78,22 @@ def main():
     )
     print(f"  Wrote selected flat subset → {limited_path}")
 
-    # 2. Label the selected subset (fast dict mode)
+    # 2. Label the selected subset — with cache invalidation
     labelled_path = PERSISTENT_CACHE_DIR / f"VSS_LABELLED_{TEST_SIGNAL_COUNT}.json"
 
+    need_labelling = True
     if labelled_path.exists():
-        print(f"[LABELLING] Using cached labelled data: {labelled_path}")
-        with open(labelled_path, "r", encoding="utf-8") as f:
-            labelled_data = json.load(f)
-        print(f"  Loaded {len(labelled_data)} labelled signals from cache")
-    else:
+        # Check if cache is still valid (newer than the limited file)
+        if labelled_path.stat().st_mtime >= limited_path.stat().st_mtime:
+            print(f"[LABELLING] Using valid cached labelled data: {labelled_path}")
+            with open(labelled_path, "r", encoding="utf-8") as f:
+                labelled_data = json.load(f)
+            print(f"  Loaded {len(labelled_data)} labelled signals from cache")
+            need_labelling = False
+        else:
+            print("[LABELLING] Cache outdated (limited file is newer) → re-labelling")
+
+    if need_labelling:
         print("[LABELLING] Labelling the selected subset (fast mode)...")
         labelling_agent = VSSLabellingAgent()
         labelled_data = labelling_agent.run_on_dict(selected_signals)
@@ -98,16 +103,16 @@ def main():
             json.dumps(labelled_data, indent=2, ensure_ascii=False),
             encoding="utf-8"
         )
-        print(f"[LABELLING] Saved labelled data → {labelled_path}")
+        print(f"[LABELLING] Saved fresh labelled data → {labelled_path}")
 
     if len(labelled_data) != len(selected_signals):
         print(f"[WARNING] Labelling returned {len(labelled_data)} items "
-              f"(expected {len(selected_signals)})")
+              f"(expected {len(selected_signals)}) — continuing anyway")
 
     # 3. Convert **labelled** data to YAML
     print("\n[YAML] Converting **labelled** subset to HAL YAML spec...")
     yaml_spec, prop_count = vss_to_yaml_spec(
-        vss_json_path=str(labelled_path),           # ← uses the labelled flat file
+        vss_json_path=str(labelled_path),
         include_prefixes=None,
         max_props=None,
         vendor_namespace=VENDOR_NAMESPACE,
@@ -129,7 +134,7 @@ def main():
         module_signal_map = plan_modules_from_spec(yaml_spec)
         total = sum(len(v) for v in module_signal_map.values())
         print(f"  → {len(module_signal_map)} modules, {total} signals total")
-        print("  Modules:", ", ".join(module_signal_map.keys()))
+        print("  Modules:", ", ".join(module_signal_map.keys()) or "(none)")
     except Exception as e:
         print(f"[ERROR] Planner failed: {e}")
         return
@@ -147,6 +152,7 @@ def main():
         if pid:
             prop_lookup[pid] = p
 
+    generated_count = 0
     for domain, signal_ids in module_signal_map.items():
         if not signal_ids:
             continue
@@ -162,12 +168,13 @@ def main():
         try:
             architect.run(module_spec)
             print("  → OK")
+            generated_count += 1
         except Exception as e:
             print(f"  → FAILED: {e}")
 
-    print("\nAll HAL module drafts generated (inside project/.llm_draft/)")
+    print(f"\nAll HAL module drafts generated ({generated_count} modules processed)")
 
-    # 7. Supporting components (all inside project)
+    # 7. Supporting components
     print("[5/5] Generating supporting components...")
     DesignDocAgent().run(module_signal_map, all_properties, yaml_spec)
     PromoteDraftAgent().run()
