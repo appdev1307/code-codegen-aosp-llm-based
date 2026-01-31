@@ -42,7 +42,7 @@ class ModuleSpec:
             ""
         ]
         for prop in self.properties:
-            name = getattr(prop, "name", "UNKNOWN")
+            name = getattr(prop, "id", "UNKNOWN")  # ← changed to .id
             typ = getattr(prop, "type", "UNKNOWN")
             access = getattr(prop, "access", "READ_WRITE")
             areas = getattr(prop, "areas", ["GLOBAL"])
@@ -141,24 +141,24 @@ def main():
         print(f"[LOAD ERROR] Failed: {e}")
         return
 
-    # Build lookup with debug
-    properties_by_name = {}
+    # Build lookup with debug — use .id instead of .name
+    properties_by_id = {}
     for idx, p in enumerate(full_spec.properties):
-        name = getattr(p, "name", None)
+        name = getattr(p, "id", None)  # ← changed to .id
         if name is None:
-            print(f"[WARNING] Property #{idx} missing 'name': {p}")
+            print(f"[WARNING] Property #{idx} missing 'id': {p}")
             continue
-        if name in properties_by_name:
-            print(f"[WARNING] Duplicate name: {name}")
-        properties_by_name[name] = p
+        if name in properties_by_id:
+            print(f"[WARNING] Duplicate id: {name}")
+        properties_by_id[name] = p
 
-    print(f"[LOAD] Built lookup with {len(properties_by_name)} unique names")
+    print(f"[LOAD] Built lookup with {len(properties_by_id)} unique ids")
 
     # Always print loaded names (even if empty)
-    print("Sample loaded property names (first 5 or less):")
-    loaded_names = list(properties_by_name.keys())
-    if loaded_names:
-        for name in loaded_names[:5]:
+    print("Sample loaded property ids (first 5 or less):")
+    loaded_ids = list(properties_by_id.keys())
+    if loaded_ids:
+        for name in loaded_ids[:5]:
             print(f"  → {name}")
     else:
         print("  (no properties loaded — check YAML or loader)")
@@ -184,7 +184,7 @@ def main():
         if len(names) > 5:
             print(f"  ... +{len(names)-5} more")
 
-    # 6. Generate modules (exact match)
+    # 6. Generate modules using .id matching
     print(f"[GEN] Generating {len(module_signal_map)} HAL modules...")
     architect = ArchitectAgent()
     generated_count = 0
@@ -200,7 +200,7 @@ def main():
         missing = []
 
         for name in signal_names:
-            prop = properties_by_name.get(name)
+            prop = properties_by_id.get(name)
             if prop:
                 module_props.append(prop)
                 total_matched += 1
@@ -231,7 +231,7 @@ def main():
 
     print(f"\nAll HAL module drafts generated ({generated_count} modules processed)")
     print(f"Overall match rate: {total_matched}/{total_planned} properties "
-          f"({total_matched/total_planned*100:.1f}%) if total_planned > 0 else 'N/A'")
+          f"({total_matched/total_planned*100:.1f}%)" if total_planned > 0 else "N/A")
 
     # 7. Supporting components
     print("[SUPPORT] Generating supporting components...")
