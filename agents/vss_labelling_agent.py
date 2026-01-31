@@ -15,7 +15,123 @@ def flatten_vss(vss_data, current_path=""):
         full_path = f"{current_path}.{key}" if current_path else key
         if "datatype" in value and value.get("type") != "branch":  # Leaf signal
             flat[full_path] = value
+        elif isinstance(value, dict):  # Branch — recurse# FILE: agents/vss_labelling_agent.py
+# Supports fast labelling of small subsets (e.g. 50 signals)
+from pathlib import Path
+import json
+from llm_client import call_llm
+from tools.safe_writer import SafeWriter
+from tqdm import tqdm
+
+
+def flatten_vss(vss_data, current_path=""):
+    """Recursively flatten VSS tree to only leaf signals (properties)"""
+    flat = {}
+    for key, value in vss_data.items():
+        full_path = f"{current_path}.{key}" if current_path else key
+        if "datatype" in value and value.get("type") != "branch":  # Leaf signal
+            flat[full_path] = value
         elif isinstance(value, dict):  # Branch — recurse
+            flat.update(flatten_vss(value, full_path))
+    return flat
+
+
+class VSSLabellingAgent:
+    def __init__(self, output_root="output"):
+        self.writer = SafeWriter(output_root)
+        self.labelled_path = Path(output_root) / "VSS_LABELLED.json"
+
+    def _label_single_signal(self, path: str, signal: dict) -> dict:
+        """Label one signal — shared logic between modes"""
+        prompt = f"""
+You are an expert automotive signal analyst.
+Label this VSS leaf signal:
+Path: {path}
+Datatype: {signal.get("datatype", "unknown")}
+Type: {signal.get("type", "unknown")}
+Description: {signal.get("description", "none")}
+Output ONLY valid JSON:
+{{
+  "domain": "ADAS|BODY|HVAC|CABIN|POWERTRAIN|CHASSIS|INFOTAINMENT|OTHER",
+  "safety_level": "Critical|High|Medium|Low",
+  "ui_widget": "Switch|Slider|Text|Gauge|Button|None",
+  "ui_range_min": number or null,
+  "ui_range_max": number or null,
+  "ui_step": number or null,
+  "ui_unit": string or null,
+  "aosp_standard": true|false
+}}
+Choose realistic values based on typical automotive usage.
+"""
+        raw = call_llm(prompt=prompt, temperature=0.0, response_format="json")
+
+        try:
+            labels = json.loads(raw.strip().removeprefix("```json").removesuffix("```").strip())
+        except Exception:
+            labels = {
+                "domain": "OTHER",
+                "safety_level": "Low",
+                "ui_widget": "Text",
+                "ui_range_min": None,
+                "ui_range_max": None,
+                "ui_step": None,
+                "ui_unit": None,
+                "aosp_standard": False
+            }
+
+        enhanced = signal.copy()
+        enhanced["labels"] = labels
+        enhanced["normalized_id"] = path.upper().replace(".", "_")
+        return enhanced
+
+    def run(self, vss_json_path: str, max_signals: int = None):
+        """
+        Label from file path — optional max_signals limit for testing
+        Example: agent.run("path/to/vss.json", max_signals=50)
+        """
+        print("[LABELLING] Starting LLM-assisted labelling...")
+        with open(vss_json_path, "r", encoding="utf-8") as f:
+            raw_vss = json.load(f)
+
+        leaf_signals = flatten_vss(raw_vss)
+        total_available = len(leaf_signals)
+        print(f"[LABELLING] Found {total_available} leaf signals in file")
+
+        if max_signals is not None and max_signals < total_available:
+            # Take first N (stable order)
+            sorted_paths = sorted(leaf_signals.keys())
+            selected_paths = sorted_paths[:max_signals]
+            leaf_signals = {p: leaf_signals[p] for p in selected_paths}
+            print(f"[LABELLING] Limited to first {len(leaf_signals)} signals for testing")
+
+        labelled_data = {}
+        with tqdm(total=len(leaf_signals), desc="Labelling signals", unit="signal",
+                  ncols=100, bar_format="{l_bar}{bar} | {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") as pbar:
+            for path, signal in leaf_signals.items():
+                enhanced = self._label_single_signal(path, signal)
+                labelled_data[enhanced["normalized_id"]] = enhanced
+                pbar.update(1)
+
+        self.labelled_path = Path(vss_json_path).parent / f"VSS_LABELLED_{len(labelled_data)}.json"
+        self.labelled_path.write_text(json.dumps(labelled_data, indent=2, ensure_ascii=False))
+        print(f"[LABELLING] Complete! {len(labelled_data)} signals labelled → {self.labelled_path}")
+        return labelled_data
+
+    def run_on_dict(self, signal_dict: dict):
+        """Fast labelling directly on a pre-selected dict (recommended for tests)"""
+        n = len(signal_dict)
+        print(f"[LABELLING] Labelling {n} pre-selected signals...")
+
+        labelled_data = {}
+        with tqdm(total=n, desc="Labelling signals", unit="signal",
+                  ncols=100, bar_format="{l_bar}{bar} | {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") as pbar:
+            for path, signal in signal_dict.items():
+                enhanced = self._label_single_signal(path, signal)
+                labelled_data[enhanced["normalized_id"]] = enhanced
+                pbar.update(1)
+
+        print(f"[LABELLING] Done! {len(labelled_data)} labelled signals ready")
+        return labelled_data
             flat.update(flatten_vss(value, full_path))
     return flat
 
