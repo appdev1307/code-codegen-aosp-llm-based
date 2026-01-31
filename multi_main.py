@@ -153,7 +153,7 @@ def main():
     # Debug: show sample loaded names
     if properties_by_name:
         print("Sample loaded property names (first 5):")
-        for name in list(properties_by_name)[:5]:
+        for name in list(properties_by_name.keys())[:5]:
             print(f"  → {name}")
 
     # 5. Module planning
@@ -223,7 +223,8 @@ def main():
             print(f" → FAILED: {e}")
 
     print(f"\nAll HAL module drafts generated ({generated_count} modules processed)")
-    print(f"Overall match rate: {total_matched}/{total_planned} properties ({total_matched/total_planned*100:.1f}%)")
+    print(f"Overall match rate: {total_matched}/{total_planned} properties "
+          f"({total_matched/total_planned*100:.1f}%)")
 
     # 7. Supporting components
     print("[SUPPORT] Generating supporting components...")
