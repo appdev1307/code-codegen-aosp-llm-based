@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agents.plan_agent import PlanAgent
 from agents.vhal_aidl_agent import generate_vhal_aidl
@@ -29,7 +29,6 @@ class ArchitectAgent:
         # Show input spec summary
         try:
             spec_text = spec.to_llm_spec()
-            # Quick summary for logging
             prop_count = len(spec.properties)
             first_names = [p.id for p in spec.properties[:3]] if prop_count > 0 else []
             print(f"[ARCHITECT] Module has {prop_count} properties")
@@ -42,12 +41,14 @@ class ArchitectAgent:
         print("[ARCHITECT] Input spec summary:")
         print(spec_text[:800] + "..." if len(spec_text) > 800 else spec_text)
 
-        # Optional: basic validation
+        # Basic validation
         name_set = {p.id for p in spec.properties}
         if len(name_set) != len(spec.properties):
             print(f"[WARNING] Duplicate property names detected ({len(spec.properties) - len(name_set)} duplicates)")
 
-        # Step 0: Generate and save PLAN.json
+        # ------------------------------------------------------------------
+        # Step 0: Generate plan — everything else depends on this.
+        # ------------------------------------------------------------------
         print("[ARCHITECT] Step 0: Generating module plan...")
         plan_agent = PlanAgent()
         plan = plan_agent.run(spec)
@@ -61,34 +62,65 @@ class ArchitectAgent:
 
         plan_text = json.dumps(plan, separators=(",", ":"))
 
-        # Step 1: Generate AIDL
-        print("[ARCHITECT] Step 1: Generating AIDL interface...")
-        aidl_success = generate_vhal_aidl(plan_text)
-        print("[AIDL] Success" if aidl_success else "[AIDL] Used fallback")
+        # ------------------------------------------------------------------
+        # Steps 1–5: all independent of each other, run in parallel.
+        #
+        #   Step 1 — AIDL interface          (needs plan_text)
+        #   Step 2 — C++ VehicleHalService   (needs plan_text)
+        #   Step 3 — Build glue files        (no deps)
+        #   Step 4 — Car framework service   (needs spec)
+        #   Step 5 — SELinux policy          (needs spec)
+        # ------------------------------------------------------------------
+        print("[ARCHITECT] Steps 1–5: Running in parallel...")
 
-        # Step 2: Generate C++ service
-        print("[ARCHITECT] Step 2: Generating C++ VehicleHalService...")
-        service_success = generate_vhal_service(plan_text)
-        print("[VHAL SERVICE] Success" if service_success else "[VHAL SERVICE] Used fallback")
+        # Derive the Car service class name from the domain
+        # e.g. HVAC → CarHvacService, POWERTRAIN → CarPowertrainService
+        car_service_class = f"Car{domain.capitalize()}Service"
 
-        # Step 3: Build glue
-        print("[ARCHITECT] Step 3: Generating build files (Android.bp, rc, VINTF)...")
-        generate_vhal_aidl_bp()
-        generate_vhal_service_build_glue()
-        print("[BUILD] Build glue generated")
+        def _step1_aidl():
+            success = generate_vhal_aidl(plan_text)
+            label = "Success" if success else "Used fallback"
+            print(f"  [AIDL] {label}")
+            return ("AIDL", True)
 
-        # Step 4: Car service (HVAC only for now)
-        print(f"[ARCHITECT] Step 4: Framework service (domain={domain})")
-        if domain == "HVAC":
+        def _step2_service():
+            success = generate_vhal_service(plan_text)
+            label = "Success" if success else "Used fallback"
+            print(f"  [VHAL SERVICE] {label}")
+            return ("VHAL SERVICE", True)
+
+        def _step3_build():
+            generate_vhal_aidl_bp()
+            generate_vhal_service_build_glue()
+            print("  [BUILD] Build glue generated")
+            return ("BUILD", True)
+
+        def _step4_car_service():
             generate_car_service(spec)
-            print("[CAR SERVICE] CarHvacService.java generated")
-        else:
-            print("[ARCHITECT] Skipping Car service (only HVAC supported)")
+            print(f"  [CAR SERVICE] {car_service_class}.java generated")
+            return ("CAR SERVICE", True)
 
-        # Step 5: SELinux
-        print("[ARCHITECT] Step 5: Generating SELinux policy...")
-        generate_selinux(spec)
-        print("[SELINUX] Policy generated")
+        def _step5_selinux():
+            generate_selinux(spec)
+            print("  [SELINUX] Policy generated")
+            return ("SELINUX", True)
+
+        steps = [
+            ("Step 1 — AIDL",           _step1_aidl),
+            ("Step 2 — C++ Service",    _step2_service),
+            ("Step 3 — Build glue",     _step3_build),
+            ("Step 4 — Car Service",    _step4_car_service),
+            ("Step 5 — SELinux",        _step5_selinux),
+        ]
+
+        with ThreadPoolExecutor(max_workers=len(steps)) as pool:
+            futures = {pool.submit(fn): name for name, fn in steps}
+            for future in as_completed(futures):
+                step_name = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"  [ARCHITECT] {step_name} FAILED: {e}")
 
         print("[ARCHITECT] ===============================")
         print("[ARCHITECT] Module generation COMPLETE")
