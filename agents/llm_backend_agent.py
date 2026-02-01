@@ -1,7 +1,12 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
+
+# Dedicated pool — Wave A fires 1 + 2*num_modules tasks simultaneously.
+# 12 covers up to ~5 modules comfortably without hitting the shared default pool.
+_EXECUTOR = ThreadPoolExecutor(max_workers=12)
 
 
 BACKEND_DIR_TEMPLATE = "{output_root}/backend/vss_dynamic_server"
@@ -157,7 +162,7 @@ async def _call_async(prompt: str) -> str | None:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None,
+            _EXECUTOR,  # dedicated pool — avoids contention with other agents
             lambda: call_llm(prompt=prompt, temperature=0.0, system=SYSTEM_PROMPT),
         )
     except Exception as e:

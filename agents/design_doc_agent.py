@@ -1,8 +1,14 @@
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
+
+# Dedicated pool — 5 tasks fire in gather simultaneously.
+# Using None (shared default pool) causes contention when multiple agents
+# run concurrently from multi_main's Group A ThreadPoolExecutor.
+_EXECUTOR = ThreadPoolExecutor(max_workers=5)
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +140,7 @@ async def _call_async(prompt: str) -> str | None:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None,  # default ThreadPoolExecutor
+            _EXECUTOR,  # dedicated pool — avoids contention with other agents
             lambda: call_llm(prompt=prompt, temperature=0.1, system=SYSTEM_PROMPT),
         )
     except Exception as e:
