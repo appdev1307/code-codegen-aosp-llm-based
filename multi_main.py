@@ -334,9 +334,32 @@ def main():
     except Exception as e:
         print(f"  [SUPPORT] PromoteDraft → FAILED: {e}")
 
+    # ═══════════════════════════════════════════════
+    # UPDATED: BuildGlueAgent with proper parameters and validation
+    # ═══════════════════════════════════════════════
     try:
-        BuildGlueAgent().run()
-        print("  [SUPPORT] BuildGlue → OK")
+        # Pass module plan and spec to BuildGlueAgent for dynamic generation
+        module_plan_path = OUTPUT_DIR / "MODULE_PLAN.json"
+        
+        build_agent = BuildGlueAgent(
+            output_root=str(OUTPUT_DIR),
+            module_plan=str(module_plan_path) if module_plan_path.exists() else None,
+            hal_spec=str(spec_path) if spec_path.exists() else None
+        )
+        
+        success = build_agent.run()
+        
+        if success:
+            # Validate generated build files
+            is_valid, errors = build_agent.validate()
+            if not is_valid:
+                print(f"  [SUPPORT] BuildGlue → OK (with validation warnings)")
+                print(f"           Warnings: {', '.join(errors)}")
+            else:
+                print("  [SUPPORT] BuildGlue → OK (validated ✓)")
+        else:
+            print("  [SUPPORT] BuildGlue → FAILED")
+            
     except Exception as e:
         print(f"  [SUPPORT] BuildGlue → FAILED: {e}")
 
