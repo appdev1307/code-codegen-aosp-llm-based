@@ -345,12 +345,32 @@ def main():
         # Pass module plan and spec to BuildGlueAgent for dynamic generation
         module_plan_path = OUTPUT_DIR / "MODULE_PLAN.json"
         
-        # Try to get LLM client from other agents (optional)
+        # Try to use existing call_llm function
         llm_client = None
         try:
-            # Attempt to import and initialize LLM client
-            from tools.llm_client import get_llm_client
-            llm_client = get_llm_client()
+            # Import the existing call_llm function
+            from llm_client import call_llm
+            
+            # Create a simple wrapper class for call_llm
+            # Note: If you upgrade to llm_client_enhanced.py, timeout will be honored
+            class LLMClientWrapper:
+                def generate(self, prompt, timeout=300):
+                    """
+                    Wrapper to make call_llm compatible with ImprovedBuildGlueAgent.
+                    
+                    With original llm_client.py: timeout parameter is ignored (uses TIMEOUT=1800)
+                    With enhanced llm_client.py: timeout parameter is honored
+                    """
+                    try:
+                        # Try passing timeout (works with enhanced version)
+                        return call_llm(prompt, timeout=timeout)
+                    except TypeError:
+                        # Original version doesn't accept timeout parameter
+                        # Falls back to using global TIMEOUT (1800s)
+                        return call_llm(prompt)
+            
+            llm_client = LLMClientWrapper()
+            print(f"  [BUILD GLUE] LLM client loaded successfully (using call_llm)")
         except (ImportError, Exception) as e:
             print(f"  [BUILD GLUE] LLM client not available: {e}")
             print(f"  [BUILD GLUE] Will use template-based generation")

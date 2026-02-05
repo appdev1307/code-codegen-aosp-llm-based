@@ -320,8 +320,15 @@ class ImprovedBuildGlueAgent(BuildGlueAgent):
             try:
                 print(f"  [BUILD GLUE] LLM attempt {attempt + 1}/{max_attempts} for {component_type} (timeout: {use_timeout}s)")
                 
-                # FIX: Add timeout parameter to LLM call
-                result = self.llm_client.generate(prompt, timeout=use_timeout)
+                # Try to pass timeout parameter to LLM call
+                # Some LLM clients may not support timeout parameter
+                try:
+                    result = self.llm_client.generate(prompt, timeout=use_timeout)
+                except TypeError:
+                    # LLM client doesn't accept timeout parameter
+                    print(f"  [BUILD GLUE] Note: LLM client doesn't support timeout parameter")
+                    result = self.llm_client.generate(prompt)
+                
                 cleaned = self._post_process(result)
                 
                 if self._validate_content(component_type, cleaned):

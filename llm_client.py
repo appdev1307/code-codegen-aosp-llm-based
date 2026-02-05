@@ -1,4 +1,5 @@
 # llm_client.py - Optimized for qwen2.5-coder:32b (and similar large coder models)
+# ENHANCED: Now supports configurable timeout per call
 import json
 import requests
 from pathlib import Path
@@ -8,9 +9,12 @@ import time
 # === CONFIGURATION ===
 MODEL = "qwen2.5-coder:32b"        # Perfect choice! Keep this
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-TIMEOUT = 1800                     # 30 minutes — safer for long generations with 32B
+DEFAULT_TIMEOUT = 1800             # 30 minutes — safer for long generations with 32B
 DEBUG_DIR = Path("output/.llm_draft/latest")
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+
+# RECOMMENDATION: For build_glue_agent, use shorter timeout to fail faster
+BUILD_GLUE_TIMEOUT = 300           # 5 minutes for build file generation
 
 def call_llm(
     prompt: str,
@@ -21,7 +25,27 @@ def call_llm(
     top_p: float = 1.0,
     stop: Optional[List[str]] = None,
     response_format: Optional[str] = None,
+    timeout: Optional[int] = None,  # NEW: Optional timeout override
 ) -> str:
+    """
+    Call Ollama LLM with qwen2.5-coder:32b.
+    
+    Args:
+        prompt: The prompt text
+        system: System message (optional)
+        stream: Enable streaming mode
+        temperature: Sampling temperature (0.0 = deterministic)
+        top_p: Nucleus sampling parameter
+        stop: Stop sequences
+        response_format: "json" for JSON mode
+        timeout: Request timeout in seconds (default: DEFAULT_TIMEOUT=1800)
+    
+    Returns:
+        The generated response text
+    """
+    # Use provided timeout or fall back to default
+    actual_timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
+    
     payload: Dict[str, Any] = {
         "model": MODEL,
         "prompt": prompt,
@@ -44,10 +68,12 @@ def call_llm(
         payload["format"] = "json"
 
     try:
-        resp = requests.post(OLLAMA_URL, json=payload, stream=stream, timeout=TIMEOUT)
+        resp = requests.post(OLLAMA_URL, json=payload, stream=stream, timeout=actual_timeout)
         resp.raise_for_status()
+    except requests.exceptions.Timeout as e:
+        raise TimeoutError(f"Ollama request timed out after {actual_timeout}s") from e
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Ollama request failed: {e}")
+        raise RuntimeError(f"Ollama request failed: {e}") from e
 
     if not stream:
         data = resp.json()
@@ -79,10 +105,24 @@ def call_llm(
     return "".join(chunks)
 
 
-def call_llm_json(prompt: str, system: str = "", max_retries: int = 6) -> dict:
+def call_llm_json(
+    prompt: str, 
+    system: str = "", 
+    max_retries: int = 6,
+    timeout: Optional[int] = None  # NEW: Optional timeout override
+) -> dict:
     """
     Reliable JSON extraction with cleaning + retries.
     Qwen2.5-Coder is excellent at JSON — this will almost always succeed on first try.
+    
+    Args:
+        prompt: The prompt text
+        system: System message (optional)
+        max_retries: Maximum retry attempts
+        timeout: Request timeout in seconds (default: DEFAULT_TIMEOUT)
+    
+    Returns:
+        Parsed JSON dictionary
     """
     for attempt in range(max_retries):
         try:
@@ -91,6 +131,7 @@ def call_llm_json(prompt: str, system: str = "", max_retries: int = 6) -> dict:
                 system=system,
                 temperature=0.0,
                 response_format="json",  # Enforced
+                timeout=timeout,         # Pass through timeout
             )
 
             raw = raw.strip()
@@ -120,3 +161,21 @@ def call_llm_json(prompt: str, system: str = "", max_retries: int = 6) -> dict:
             if attempt == max_retries - 1:
                 raise
             time.sleep(3)
+
+
+# === BACKWARD COMPATIBILITY ===
+# Your existing code will work without changes!
+# Old usage: call_llm(prompt) -> uses DEFAULT_TIMEOUT (1800s)
+# New usage: call_llm(prompt, timeout=300) -> uses custom timeout (300s)
+
+# === USAGE EXAMPLES ===
+"""
+# Example 1: Default timeout (30 minutes)
+response = call_llm("Generate a large AIDL file")
+
+# Example 2: Custom timeout (5 minutes) - for build glue
+response = call_llm("Generate Android.bp", timeout=300)
+
+# Example 3: JSON mode with custom timeout
+data = call_llm_json("Return JSON config", timeout=180)
+"""
