@@ -8,7 +8,7 @@ from agents.module_planner_agent import plan_modules_from_spec
 from agents.promote_draft_agent import PromoteDraftAgent
 from agents.design_doc_agent import DesignDocAgent
 from agents.selinux_agent import generate_selinux
-from agents.build_glue_agent import BuildGlueAgent
+from agents.build_glue_agent import BuildGlueAgent, ImprovedBuildGlueAgent
 from agents.llm_android_app_agent import LLMAndroidAppAgent
 from agents.llm_backend_agent import LLMBackendAgent
 from agents.vss_labelling_agent import VSSLabellingAgent, flatten_vss
@@ -29,6 +29,10 @@ OUTPUT_DIR = Path("output")
 # Max LLM calls that can run at the same time.
 # Keep this reasonable — you're bound by API rate limits, not CPU.
 MAX_PARALLEL_LLM_CALLS = 6
+
+# LLM timeout for build glue generation (seconds)
+# Reduced from 1800s (30min) to 300s (5min) to avoid long hangs
+BUILD_GLUE_LLM_TIMEOUT = 300
 
 # ────────────────────────────────────────────────
 class ModuleSpec:
@@ -335,17 +339,39 @@ def main():
         print(f"  [SUPPORT] PromoteDraft → FAILED: {e}")
 
     # ═══════════════════════════════════════════════
-    # UPDATED: BuildGlueAgent with proper parameters and validation
+    # UPDATED: BuildGlueAgent with LLM support and timeout handling
     # ═══════════════════════════════════════════════
     try:
         # Pass module plan and spec to BuildGlueAgent for dynamic generation
         module_plan_path = OUTPUT_DIR / "MODULE_PLAN.json"
         
-        build_agent = BuildGlueAgent(
-            output_root=str(OUTPUT_DIR),
-            module_plan=str(module_plan_path) if module_plan_path.exists() else None,
-            hal_spec=str(spec_path) if spec_path.exists() else None
-        )
+        # Try to get LLM client from other agents (optional)
+        llm_client = None
+        try:
+            # Attempt to import and initialize LLM client
+            from tools.llm_client import get_llm_client
+            llm_client = get_llm_client()
+        except (ImportError, Exception) as e:
+            print(f"  [BUILD GLUE] LLM client not available: {e}")
+            print(f"  [BUILD GLUE] Will use template-based generation")
+        
+        # Use ImprovedBuildGlueAgent if LLM is available, otherwise use basic agent
+        if llm_client:
+            print(f"  [BUILD GLUE] Using LLM-based generation (timeout: {BUILD_GLUE_LLM_TIMEOUT}s)")
+            build_agent = ImprovedBuildGlueAgent(
+                output_root=str(OUTPUT_DIR),
+                module_plan=str(module_plan_path) if module_plan_path.exists() else None,
+                hal_spec=str(spec_path) if spec_path.exists() else None,
+                llm_client=llm_client,
+                timeout=BUILD_GLUE_LLM_TIMEOUT
+            )
+        else:
+            print(f"  [BUILD GLUE] Using template-based generation")
+            build_agent = BuildGlueAgent(
+                output_root=str(OUTPUT_DIR),
+                module_plan=str(module_plan_path) if module_plan_path.exists() else None,
+                hal_spec=str(spec_path) if spec_path.exists() else None
+            )
         
         success = build_agent.run()
         
@@ -362,6 +388,8 @@ def main():
             
     except Exception as e:
         print(f"  [SUPPORT] BuildGlue → FAILED: {e}")
+        import traceback
+        traceback.print_exc()
 
     print("\nFinished.")
     print(f" → Cached input files: {PERSISTENT_CACHE_DIR}")
