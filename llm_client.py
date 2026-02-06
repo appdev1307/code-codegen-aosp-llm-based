@@ -9,12 +9,16 @@ import time
 # === CONFIGURATION ===
 MODEL = "qwen2.5-coder:32b"        # Perfect choice! Keep this
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-DEFAULT_TIMEOUT = 1800             # 30 minutes — safer for long generations with 32B
+DEFAULT_TIMEOUT = 1200             # 20 minutes - realistic for complex 32B generations
 DEBUG_DIR = Path("output/.llm_draft/latest")
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
-# RECOMMENDATION: For build_glue_agent, use shorter timeout to fail faster
-BUILD_GLUE_TIMEOUT = 300           # 5 minutes for build file generation
+# SPECIFIC TIMEOUTS FOR DIFFERENT TASKS
+# These are referenced in documentation but can be used by agents
+TIMEOUT_BUILD_FILES = 600    # 10 min - Build files are simpler
+TIMEOUT_DESIGN_DOCS = 600    # 10 min - Design documents  
+TIMEOUT_APP_GEN = 1200       # 20 min - Full app generation
+TIMEOUT_MODULE_GEN = 1800    # 30 min - Complex AIDL/C++ modules
 
 def call_llm(
     prompt: str,

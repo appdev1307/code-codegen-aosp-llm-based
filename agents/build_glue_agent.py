@@ -288,10 +288,10 @@ class ImprovedBuildGlueAgent(BuildGlueAgent):
     Includes timeout handling and graceful fallbacks.
     """
     
-    def __init__(self, output_root="output", module_plan=None, hal_spec=None, llm_client=None, timeout=300):
+    def __init__(self, output_root="output", module_plan=None, hal_spec=None, llm_client=None, timeout=600):
         super().__init__(output_root, module_plan, hal_spec)
         self.llm_client = llm_client
-        self.timeout = timeout  # Default 5 minutes instead of 30
+        self.timeout = timeout  # Default 10 minutes - optimized for qwen2.5-coder:32b
     
     def _generate_with_llm(self, component_type: str, context: Dict[str, Any], timeout: Optional[int] = None) -> str:
         """
@@ -342,8 +342,9 @@ class ImprovedBuildGlueAgent(BuildGlueAgent):
                 
             except TimeoutError as e:
                 print(f"  [BUILD GLUE] LLM timeout on attempt {attempt + 1}: {e}")
-                # Reduce timeout for next attempt
-                use_timeout = max(60, use_timeout // 2)
+                # Reduce timeout for next attempt (but not too aggressively for 32B model)
+                # For 600s: 600 -> 400 -> 200 (more reasonable than 600 -> 300 -> 150)
+                use_timeout = max(120, int(use_timeout * 0.67))
                 
             except Exception as e:
                 print(f"  [BUILD GLUE] LLM attempt {attempt + 1} failed: {e}")
@@ -467,7 +468,7 @@ OUTPUT:"""
 
 
 # Convenience function for quick usage
-def generate_build_files(output_root="output", module_plan=None, hal_spec=None, use_llm=False, llm_client=None, timeout=300):
+def generate_build_files(output_root="output", module_plan=None, hal_spec=None, use_llm=False, llm_client=None, timeout=600):
     """
     Quick helper to generate all build files.
     
@@ -477,7 +478,7 @@ def generate_build_files(output_root="output", module_plan=None, hal_spec=None, 
         hal_spec: HAL specification
         use_llm: Whether to use LLM-based generation
         llm_client: LLM client instance (required if use_llm=True)
-        timeout: Timeout for LLM calls in seconds (default 300)
+        timeout: Timeout for LLM calls in seconds (default 600 = 10 minutes for qwen2.5-coder:32b)
     
     Usage:
         from agents.build_glue_agent import generate_build_files

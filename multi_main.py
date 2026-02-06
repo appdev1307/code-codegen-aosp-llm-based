@@ -31,8 +31,9 @@ OUTPUT_DIR = Path("output")
 MAX_PARALLEL_LLM_CALLS = 6
 
 # LLM timeout for build glue generation (seconds)
-# Reduced from 1800s (30min) to 300s (5min) to avoid long hangs
-BUILD_GLUE_LLM_TIMEOUT = 300
+# Optimized for qwen2.5-coder:32b local model (10 minutes)
+# 32B models need more time than smaller ones, but build files are simpler than full modules
+BUILD_GLUE_LLM_TIMEOUT = 600
 
 # ────────────────────────────────────────────────
 class ModuleSpec:
