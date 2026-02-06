@@ -13,8 +13,8 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=5)
 
 # TIMEOUT CONFIGURATION
 # Reduced from 1800s (30min) to prevent pipeline blocking
-LLM_TIMEOUT_PER_TASK = 120  # 2 minutes per diagram/document
-TOTAL_TIMEOUT = 180  # 3 minutes for all tasks combined
+LLM_TIMEOUT_PER_TASK = 600  # 2 minutes per diagram/document
+TOTAL_TIMEOUT = 600  # 3 minutes for all tasks combined
 
 
 # ---------------------------------------------------------------------------
