@@ -50,9 +50,21 @@ python multi_main.py
 repo init -u https://android.googlesource.com/platform/manifest -b android-15.0.0_r1
 repo sync -j8
 
-cp -r output/hardware/interfaces/automotive/vehicle aosp_root/hardware/interfaces/automotive/
-cp -r output/packages/apps/VssDynamicApp aosp_root/packages/apps/
-cp -r output/system/sepolicy/vendor/* aosp_root/system/sepolicy/vendor/
+# Set your AOSP root
+export AOSP_ROOT=/path/to/aosp
+
+# Copy files to AOSP tree
+cp -r output/hardware/* $AOSP_ROOT/hardware/
+cp -r output/frameworks/* $AOSP_ROOT/frameworks/
+cp -r output/packages/* $AOSP_ROOT/packages/
+cp output/system/sepolicy/private/*.te $AOSP_ROOT/system/sepolicy/private/
+
+# Add to device manifest
+# (See AOSP_BUILDABILITY_ANALYSIS.md for details)
+
+# Build
+cd $AOSP_ROOT
+m -j$(nproc) android.hardware.automotive.vehicle-service VssDynamicApp
 
 # Build HAL
 source build/envsetup.sh
