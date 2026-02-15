@@ -26,9 +26,9 @@ from agents.promote_draft_agent import PromoteDraftAgent
 # Tradeoff: Takes 40% longer than reliability-first approach,
 #           but produces 93% LLM-generated vs 78% template-based
 # ═════════════════════════════════════════════════════════════════════════
-from agents.design_doc_agent_llm_first import DesignDocAgent
-from agents.llm_android_app_agent_llm_first import LLMAndroidAppAgent
-from agents.llm_backend_agent_llm_first import LLMBackendAgent
+from agents.design_doc_agent import DesignDocAgent
+from agents.llm_android_app_agent import LLMAndroidAppAgent
+from agents.llm_backend_agent import LLMBackendAgent
 
 from agents.selinux_agent import generate_selinux
 from agents.build_glue_agent import BuildGlueAgent, ImprovedBuildGlueAgent
