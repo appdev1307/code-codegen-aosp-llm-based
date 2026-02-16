@@ -1,9 +1,11 @@
-# FILE: agents/vhal_aidl_agent.py
+# agents/vhal_aidl_agent.py
 from __future__ import annotations
 import json
 import re
+import yaml
 from pathlib import Path
 from typing import Optional, Dict, Any, Union
+
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
 from tools.json_contract import parse_json_object
@@ -11,7 +13,7 @@ from tools.json_contract import parse_json_object
 
 class VHALAidlAgent:
     def __init__(self):
-        self.name = "VHAL AIDL Agent"
+        self.name = "VHAL AIDL Agent (VSS-aware)"
         self.output_root = "output/.llm_draft/latest"
         self.writer = SafeWriter(self.output_root)
         self.raw_dir = Path(self.output_root)
@@ -20,50 +22,77 @@ class VHALAidlAgent:
 
         self.system_prompt = (
             "You are an expert Android Automotive OS (AAOS) Vehicle HAL engineer.\n"
-            "Your task is to generate correct AIDL interface files based on the provided plan.\n"
+            "Generate correct, production-grade AIDL files from the provided VSS spec.\n"
             "You MUST output ONLY valid JSON. No explanations, no markdown, no code blocks.\n"
             "If you cannot produce perfect JSON, output exactly: {\"files\": []}"
         )
 
         self.base_dir = "hardware/interfaces/automotive/vehicle/aidl"
         self.pkg_dir = f"{self.base_dir}/android/hardware/automotive/vehicle"
+
         self.required_files = [
             f"{self.pkg_dir}/IVehicle.aidl",
             f"{self.pkg_dir}/IVehicleCallback.aidl",
             f"{self.pkg_dir}/VehiclePropValue.aidl",
+            f"{self.pkg_dir}/VehiclePropertyVss.aidl",
         ]
 
+    def _parse_properties(self, plan_text: str):
+        try:
+            if plan_text.strip().startswith("spec_version"):
+                spec = yaml.safe_load(plan_text)
+            else:
+                spec = json.loads(plan_text)
+            return spec.get("properties", [])
+        except Exception:
+            return []
+
     def build_prompt(self, plan_text: str) -> str:
+        props = self._parse_properties(plan_text)
+        prop_lines = [f"- {p.get('name')} ({p.get('type')}, {p.get('access')})" for p in props]
+
         required_list = "\n".join(f"- {f}" for f in self.required_files)
+
         return f"""
-Generate the core AOSP Vehicle HAL AIDL files.
+Generate complete Vehicle HAL AIDL files including vendor-specific property enum.
 
 MANDATORY OUTPUT FORMAT:
 Return ONLY valid JSON:
 {{
   "files": [
-    {{
-      "path": "<exact path>",
-      "content": "full AIDL content with \\n for newlines"
-    }}
+    {{"path": "...", "content": "full file content with \\n for newlines"}}
   ]
 }}
 
 CRITICAL RULES:
 - Output ONLY the JSON object. No extra text, no fences, no comments.
-- Use exact file paths (no variations).
+- Use exact file paths listed below.
 - Escape properly: newlines as \\n, quotes as \\\"
-- All files must have package android.hardware.automotive.vehicle;
 
-REQUIRED FILES (generate exactly these three):
+REQUIRED FILES (generate ALL of them):
 {required_list}
 
 AIDL REQUIREMENTS:
-- IVehicle.aidl: interface with get(), set(), registerCallback(), unregisterCallback()
-- IVehicleCallback.aidl: interface with onPropertyEvent(in VehiclePropValue)
-- VehiclePropValue.aidl: parcelable with prop, areaId, timestamp, intValues, floatValues, boolValues, stringValue
+- IVehicle.aidl: standard interface (get, set, registerCallback, unregisterCallback)
+- IVehicleCallback.aidl: onPropertyEvent(in VehiclePropValue)
+- VehiclePropValue.aidl: parcelable with all standard fields
+- VehiclePropertyVss.aidl: MUST contain @Backing(type="int") enum VehiclePropertyVss with ALL properties from spec
 
-PLAN CONTEXT (use only if adding custom extensions):
+VSS PROPERTIES TO INCLUDE IN VehiclePropertyVss.aidl:
+{'\n'.join(prop_lines)}
+
+VehiclePropertyVss.aidl example structure:
+@VintfStability
+@Backing(type="int")
+enum VehiclePropertyVss {{
+    {props[0].get('name','PROP_0')} = 0xF0000000,
+    {props[1].get('name','PROP_1')} = 0xF0000001,
+    // ... continue sequentially
+}}
+
+Use the full VSS spec below to determine property names, types, access rights, etc.
+
+FULL VSS SPEC:
 {plan_text}
 
 OUTPUT ONLY THE JSON NOW:
@@ -74,7 +103,6 @@ OUTPUT ONLY THE JSON NOW:
 
         prompt = self.build_prompt(plan_text)
 
-        # Attempt 1
         raw = call_llm(
             prompt=prompt,
             system=self.system_prompt,
@@ -86,10 +114,9 @@ OUTPUT ONLY THE JSON NOW:
             print(f"[DEBUG] {self.name}: done (LLM success on first try)")
             return True
 
-        # Attempt 2: Repair
         print(f"[DEBUG] {self.name}: first attempt failed → repair attempt")
         repair_prompt = prompt + "\n\nPREVIOUS OUTPUT WAS INVALID OR INCOMPLETE.\n" \
-                                "You MUST output valid JSON with ALL three required files and correct paths.\n" \
+                                "You MUST output valid JSON with ALL four required files and correct paths.\n" \
                                 "Fix all issues. No explanations."
 
         raw2 = call_llm(
@@ -103,7 +130,6 @@ OUTPUT ONLY THE JSON NOW:
             print(f"[DEBUG] {self.name}: done (LLM success after repair)")
             return True
 
-        # Fallback
         print(f"[WARN] {self.name}: LLM failed both attempts → using deterministic fallback")
         self._write_fallback()
         return False
@@ -142,7 +168,7 @@ OUTPUT ONLY THE JSON NOW:
             if safe_path not in self.required_files:
                 continue
 
-            content = content.rstrip() + "\n"  # Normalize ending
+            content = content.rstrip() + "\n"
             self.writer.write(safe_path, content)
             written_paths.append(safe_path)
 
@@ -201,10 +227,22 @@ parcelable VehiclePropValue {
 }
 """
 
+        vss_enum = """package android.hardware.automotive.vehicle;
+
+@VintfStability
+@Backing(type="int")
+enum VehiclePropertyVss {
+    VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENABLED = 0xF0000000,
+    VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENGAGED = 0xF0000001,
+    // Add more placeholders if needed - real LLM generation will fill them
+}
+"""
+
         files = [
             (f"{self.pkg_dir}/IVehicle.aidl", iv),
             (f"{self.pkg_dir}/IVehicleCallback.aidl", cb),
             (f"{self.pkg_dir}/VehiclePropValue.aidl", vp),
+            (f"{self.pkg_dir}/VehiclePropertyVss.aidl", vss_enum),
         ]
 
         for path, content in files:

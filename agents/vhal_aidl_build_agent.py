@@ -11,7 +11,7 @@ from tools.safe_writer import SafeWriter
 
 class VHALAidlBuildAgent:
     def __init__(self):
-        self.name = "VHAL AIDL Build Agent"
+        self.name = "VHAL AIDL Build Agent (updated)"
         self.output_root = "output"
         self.writer = SafeWriter(self.output_root)
 
@@ -54,10 +54,11 @@ REQUIREMENTS:
 - versions: ["1"]
 - stability: "vintf"
 - backend: ndk enabled, cpp/java disabled
-- srcs include exactly:
+- srcs MUST include exactly:
   android/hardware/automotive/vehicle/IVehicle.aidl
   android/hardware/automotive/vehicle/IVehicleCallback.aidl
   android/hardware/automotive/vehicle/VehiclePropValue.aidl
+  android/hardware/automotive/vehicle/VehiclePropertyVss.aidl
 
 RETURN JSON NOW.
 """.lstrip()
@@ -76,6 +77,7 @@ RETURN JSON NOW.
             + "\nREPAIR (MANDATORY):\n"
               "- Output ONLY JSON exactly matching schema.\n"
               "- Ensure path is exactly required.\n"
+              "- Make sure VehiclePropertyVss.aidl is included in srcs.\n"
               "\nPREVIOUS OUTPUT (for correction, do not repeat):\n"
               f"{out1}\n"
         )
@@ -146,6 +148,7 @@ RETURN JSON NOW.
         "android/hardware/automotive/vehicle/IVehicle.aidl",
         "android/hardware/automotive/vehicle/IVehicleCallback.aidl",
         "android/hardware/automotive/vehicle/VehiclePropValue.aidl",
+        "android/hardware/automotive/vehicle/VehiclePropertyVss.aidl",
     ],
     versions: ["1"],
     stability: "vintf",

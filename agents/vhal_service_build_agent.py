@@ -11,7 +11,7 @@ from tools.safe_writer import SafeWriter
 
 class VHALServiceBuildAgent:
     def __init__(self):
-        self.name = "VHAL Service Build Agent"
+        self.name = "VHAL Service Build Agent (updated)"
         self.output_root = "output"
         self.writer = SafeWriter(self.output_root)
 
@@ -57,7 +57,7 @@ Android.bp REQUIREMENTS:
 - cc_binary name: "android.hardware.automotive.vehicle-service-default"
 - vendor: true
 - relative_install_path: "hw"
-- srcs: ["VehicleHalService.cpp"]
+- srcs: ["VehicleHalService.cpp", "VssPropertyIds.h"]
 - shared_libs include at least:
   "libbase", "liblog", "libutils", "libbinder_ndk", "android.hardware.automotive.vehicle-V1-ndk"
 - init_rc: ["android.hardware.automotive.vehicle-service-default.rc"]
@@ -95,6 +95,7 @@ RETURN JSON NOW.
             + "\nREPAIR (MANDATORY):\n"
               "- Output ONLY JSON exactly matching schema.\n"
               "- Ensure all required files exist with exact paths.\n"
+              "- Include VssPropertyIds.h in srcs.\n"
               "\nPREVIOUS OUTPUT (for correction, do not repeat):\n"
               f"{out1}\n"
         )
@@ -166,7 +167,10 @@ RETURN JSON NOW.
     name: "android.hardware.automotive.vehicle-service-default",
     vendor: true,
     relative_install_path: "hw",
-    srcs: ["VehicleHalService.cpp"],
+    srcs: [
+        "VehicleHalService.cpp",
+        "VssPropertyIds.h",
+    ],
     shared_libs: [
         "libbase",
         "liblog",
