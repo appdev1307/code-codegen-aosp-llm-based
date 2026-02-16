@@ -25,7 +25,7 @@ def call_llm(
     system: str = "",
     *,
     stream: bool = False,
-    temperature: float = 0.0,
+    temperature: float = 0.25,
     top_p: float = 1.0,
     stop: Optional[List[str]] = None,
     response_format: Optional[str] = None,
