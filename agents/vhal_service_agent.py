@@ -4,7 +4,7 @@ import json
 import re
 import yaml
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List
 
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
@@ -33,26 +33,28 @@ class VHALServiceAgent:
 
         self.required_files = [self.impl_cpp, self.ids_header]
 
-    def _parse_properties(self, plan_text: str):
+    def _parse_properties(self, plan_text: str) -> List[Dict[str, Any]]:
         try:
             if plan_text.strip().startswith("spec_version"):
                 spec = yaml.safe_load(plan_text)
             else:
                 spec = json.loads(plan_text)
             return spec.get("properties", [])
-        except Exception:
+        except Exception as e:
+            print(f"[ERROR] Failed to parse VSS spec: {e}")
             return []
 
     def build_prompt(self, plan_text: str) -> str:
         props = self._parse_properties(plan_text)
         prop_summary = "\n".join(
-            f"  - {p.get('name'): <60} {p.get('type'): <10} {p.get('access'): <12} "
+            f"  - {p.get('name','<missing name>'): <60} "
+            f"{p.get('type','?'): <10} {p.get('access','?'): <12} "
             f"{p.get('sdv', {}).get('updatable_behavior', 'false'): <8} "
-            f"{p.get('meta', {}).get('description', '')[:100]}"
+            f"{p.get('meta', {}).get('description', 'no desc')[:100]}"
             for p in props
         )
 
-        few_shot_example = """
+        few_shot_example = r"""
 Example of high-quality getAllPropConfigs implementation:
 
 ScopedAStatus getAllPropConfigs(std::vector<VehiclePropConfig>* _aidl_return) override {
@@ -124,7 +126,7 @@ VSS PROPERTIES YOU MUST SUPPORT:
 FULL VSS YAML / SPEC:
 {plan_text}
 
-{ few_shot_example }
+{few_shot_example}
 
 Output ONLY valid JSON with exactly two files:
 {{
@@ -137,34 +139,30 @@ Output ONLY valid JSON with exactly two files:
 No explanations. No markdown. Pure JSON only.
 """.strip()
 
-    # ────────────────────────────────────────────────
-    # The rest of the class remains unchanged
-    # (run(), _try_write_from_output(), _write_fallback(), etc.)
-    # Copy your original implementation for these methods
-    # ────────────────────────────────────────────────
-
     def run(self, plan_text: str) -> bool:
         print(f"[DEBUG] {self.name}: start")
-
         prompt = self.build_prompt(plan_text)
 
         raw = call_llm(
             prompt=prompt,
             system=self.system_prompt,
-            temperature=0.25,           # ← increased for better quality
+            temperature=0.25,
             top_p=0.95,
             response_format="json",
         )
         self._dump_raw(raw, "attempt1")
+
         if self._try_write_from_output(raw):
             print(f"[DEBUG] {self.name}: done (LLM success on first try)")
             return True
 
-        # Repair attempt
         print(f"[DEBUG] {self.name}: first attempt failed → repair")
-        repair_prompt = prompt + "\n\nPREVIOUS OUTPUT WAS INVALID OR INCOMPLETE.\n" \
-                                "You MUST output valid JSON with BOTH files and correct method implementations.\n" \
-                                "Include getAllPropConfigs with real configs. Fix signatures. No excuses."
+        repair_prompt = (
+            prompt
+            + "\n\nPREVIOUS OUTPUT WAS INVALID OR INCOMPLETE.\n"
+            "You MUST output valid JSON with BOTH files and correct method implementations.\n"
+            "Include getAllPropConfigs with real configs. Fix signatures. No excuses."
+        )
 
         raw2 = call_llm(
             prompt=repair_prompt,
@@ -174,6 +172,7 @@ No explanations. No markdown. Pure JSON only.
             response_format="json",
         )
         self._dump_raw(raw2, "attempt2")
+
         if self._try_write_from_output(raw2):
             print(f"[DEBUG] {self.name}: success after repair")
             return True
@@ -182,4 +181,85 @@ No explanations. No markdown. Pure JSON only.
         self._write_fallback()
         return False
 
-    # ... your original _try_write_from_output, _dump_raw, _sanitize_path, _write_fallback methods ...
+    # ────────────────────────────────────────────────
+    # Minimal implementations for missing methods
+    # (replace with your original if you have better ones)
+    # ────────────────────────────────────────────────
+
+    def _dump_raw(self, text: str, label: str) -> None:
+        if not text:
+            text = "[EMPTY RESPONSE]"
+        path = self.raw_dir / f"VHAL_SERVICE_RAW_{label}.txt"
+        path.write_text(text, encoding="utf-8")
+
+    def _sanitize_path(self, rel_path: str) -> Optional[str]:
+        if not rel_path:
+            return None
+        p = rel_path.replace("\\", "/").strip("/")
+        p = re.sub(r"/+", "/", p)
+        if ".." in p.split("/") or not p.startswith("hardware/interfaces/automotive/vehicle/impl/"):
+            return None
+        return p
+
+    def _write_fallback(self) -> None:
+        cpp = """// Fallback minimal C++ implementation
+#include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
+// ... placeholder code ...
+"""
+        header = """#pragma once
+constexpr int32_t VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENABLED = 0xF0000000;
+// more placeholders...
+"""
+        self.writer.write(self.impl_cpp, cpp)
+        self.writer.write(self.ids_header, header)
+
+    def _try_write_from_output(self, text: str) -> bool:
+        if not text or not text.strip().startswith("{"):
+            return False
+
+        try:
+            data = json.loads(text.strip())
+        except json.JSONDecodeError:
+            return False
+
+        if "files" not in data or not isinstance(data["files"], list):
+            return False
+
+        written = 0
+        for item in data["files"]:
+            path = item.get("path", "").strip()
+            content = item.get("content")
+            if not path or not isinstance(content, str):
+                continue
+
+            safe_path = self._sanitize_path(path)
+            if safe_path not in self.required_files:
+                continue
+
+            self.writer.write(safe_path, content.rstrip() + "\n")
+            written += 1
+
+        return written == len(self.required_files)
+
+
+# ────────────────────────────────────────────────
+# Top-level entry point — this is what the pipeline expects
+# ────────────────────────────────────────────────
+
+def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any]) -> bool:
+    """
+    Main entry point for the pipeline / architect_agent.py.
+    Converts input to plan_text and runs the agent.
+    """
+    if isinstance(plan_or_spec, str):
+        plan_text = plan_or_spec
+    elif isinstance(plan_or_spec, dict):
+        plan_text = json.dumps(plan_or_spec, separators=(",", ":"))
+    else:
+        try:
+            plan_text = plan_or_spec.to_llm_spec()
+        except Exception:
+            plan_text = "{}"
+
+    agent = VHALServiceAgent()
+    return agent.run(plan_text)
