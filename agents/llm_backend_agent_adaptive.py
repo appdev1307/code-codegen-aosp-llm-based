@@ -27,8 +27,6 @@ import agents.llm_backend_agent as _base
 # ============================================================================
 # COPY ALL CONSTANTS FROM ORIGINAL
 # ============================================================================
-PACKAGE     = _base.PACKAGE
-BACKEND_DIR = _base.BACKEND_DIR
 SYSTEM_PROMPT = _base.SYSTEM_PROMPT
 _EXECUTOR   = _base._EXECUTOR
 
@@ -226,6 +224,7 @@ class LLMBackendAgentAdaptive:
 
     def __init__(self, output_root: str = "output"):
         self.writer   = SafeWriter(output_root)
+        self.backend_dir = Path(output_root) / "backend" / "vss_dynamic_server"
         self.adaptive = get_adaptive_wrapper()
         self.stats = {
             "llm_success": 0,
@@ -352,7 +351,7 @@ class LLMBackendAgentAdaptive:
                 content = template_func()
                 self.stats["template_fallback"] += 1
 
-            path = Path(_base.BACKEND_DIR) / name
+            path = self.backend_dir / name
             path.parent.mkdir(parents=True, exist_ok=True)
             self.writer.write(str(path), content.strip() + "\n")
 
@@ -382,7 +381,7 @@ class LLMBackendAgentAdaptive:
                                               props_by_name)
                 self.stats["template_fallback"] += 1
 
-            path = Path(_base.BACKEND_DIR) / f"models/{module_name.lower()}_model.py"
+            path = self.backend_dir / f"models/{module_name.lower()}_model.py"
             path.parent.mkdir(parents=True, exist_ok=True)
             self.writer.write(str(path), content.strip() + "\n")
 
@@ -412,7 +411,7 @@ class LLMBackendAgentAdaptive:
                                                   props_by_name)
                 self.stats["template_fallback"] += 1
 
-            path = Path(_base.BACKEND_DIR) / f"simulators/{module_name.lower()}_simulator.py"
+            path = self.backend_dir / f"simulators/{module_name.lower()}_simulator.py"
             path.parent.mkdir(parents=True, exist_ok=True)
             self.writer.write(str(path), content.strip() + "\n")
 
@@ -429,7 +428,7 @@ class LLMBackendAgentAdaptive:
             content = _get_template_main(modules)
             self.stats["template_fallback"] += 1
 
-        path = Path(_base.BACKEND_DIR) / "main.py"
+        path = self.backend_dir / "main.py"
         path.parent.mkdir(parents=True, exist_ok=True)
         self.writer.write(str(path), content.strip() + "\n")
 

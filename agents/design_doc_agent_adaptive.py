@@ -28,7 +28,6 @@ import agents.design_doc_agent as _base
 # COPY ALL CONSTANTS FROM ORIGINAL
 # ============================================================================
 SYSTEM_PROMPT    = _base.SYSTEM_PROMPT
-OUTPUT_DIR       = _base.OUTPUT_DIR
 _EXECUTOR        = _base._EXECUTOR
 
 # These are what adaptive system controls:
@@ -188,6 +187,7 @@ class DesignDocAgentAdaptive:
 
     def __init__(self, output_root: str = "output"):
         self.writer   = SafeWriter(output_root)
+        self.doc_dir  = Path("docs/design")
         self.adaptive = get_adaptive_wrapper()
         self.stats = {
             "llm_success": 0,
@@ -312,7 +312,7 @@ class DesignDocAgentAdaptive:
                 content = template_func()
                 self.stats["template_fallback"] += 1
 
-            path = Path(_base.OUTPUT_DIR) / f"docs/{name}_diagram.md"
+            path = self.doc_dir / f"{name}_diagram.md"
             path.parent.mkdir(parents=True, exist_ok=True)
             self.writer.write(str(path), content.strip() + "\n")
 
@@ -329,7 +329,7 @@ class DesignDocAgentAdaptive:
             doc = _base._get_template_document()
             self.stats["template_fallback"] += 1
 
-        path = Path(_base.OUTPUT_DIR) / "docs/design_document.md"
+        path = self.doc_dir / "design_document.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         self.writer.write(str(path), doc.strip() + "\n")
 
