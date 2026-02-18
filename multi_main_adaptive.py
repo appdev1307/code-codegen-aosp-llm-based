@@ -210,16 +210,59 @@ def main():
     if need_labelling:
         print("[LABELLING] Labelling the selected subset (fast mode)...")
         labelling_agent = VSSLabellingAgent()
-        labelled_data = labelling_agent.run_on_dict(selected_signals)
+
+        MAX_LABEL_RETRIES = 3
+        labelled_data = None
+
+        for attempt in range(1, MAX_LABEL_RETRIES + 1):
+            result = labelling_agent.run_on_dict(selected_signals)
+            if len(result) == len(selected_signals):
+                labelled_data = result
+                print(f"[LABELLING] All {len(selected_signals)} signals labelled correctly (attempt {attempt})")
+                break
+            print(f"[LABELLING] Attempt {attempt}: got {len(result)} labels, "
+                  f"expected {len(selected_signals)} — retrying with stricter prompt...")
+
+        # If all batch retries failed, fall back to per-signal labelling
+        if labelled_data is None:
+            print(f"[LABELLING] Batch labelling failed after {MAX_LABEL_RETRIES} attempts. "
+                  f"Falling back to individual signal labelling (slower but accurate)...")
+            labelled_data = {}
+            failed_signals = []
+            for sig_path, sig_data in selected_signals.items():
+                try:
+                    single_result = labelling_agent.run_on_dict({sig_path: sig_data})
+                    if single_result:
+                        labelled_data.update(single_result)
+                    else:
+                        failed_signals.append(sig_path)
+                        print(f"[LABELLING] WARNING: Could not label signal: {sig_path}")
+                except Exception as e:
+                    failed_signals.append(sig_path)
+                    print(f"[LABELLING] ERROR labelling {sig_path}: {e}")
+
+            if failed_signals:
+                print(f"[LABELLING] {len(failed_signals)} signals could not be labelled: "
+                      f"{failed_signals[:5]}{'...' if len(failed_signals) > 5 else ''}")
+            print(f"[LABELLING] Individual fallback complete: "
+                  f"{len(labelled_data)}/{len(selected_signals)} labelled")
+
         labelled_path.write_text(
             json.dumps(labelled_data, indent=2, ensure_ascii=False),
             encoding="utf-8"
         )
         print(f"[LABELLING] Saved fresh labelled data → {labelled_path}")
 
-    if len(labelled_data) != len(selected_signals):
-        print(f"[WARNING] Labelling returned {len(labelled_data)} items "
-              f"(expected {len(selected_signals)}) — continuing anyway")
+    # Hard validation — do not silently continue with bad labels
+    missing_labels = set(selected_signals.keys()) - set(labelled_data.keys())
+    if missing_labels:
+        print(f"[LABELLING] ERROR: {len(missing_labels)} signals have no label after all retries. "
+              f"They will be skipped in downstream processing.")
+        print(f"  Missing: {list(missing_labels)[:5]}{'...' if len(missing_labels) > 5 else ''}")
+        selected_signals = {k: v for k, v in selected_signals.items() if k in labelled_data}
+        print(f"  Proceeding with {len(selected_signals)} labelled signals.")
+    else:
+        print(f"[LABELLING] Done! {len(labelled_data)} labelled signals ready")
 
     # ──────────────────────────────────────────────
     # 3. Convert labelled data to YAML
@@ -336,7 +379,7 @@ def main():
             print(f"    Missing ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
 
         if not module_props:
-            print(f"  Skipping {domain} — no matching properties")
+            print(f"  Skipping {domain} — no matching properties (empty module, no files will be generated)")
             continue
 
         tasks_to_submit.append((domain, module_props))
@@ -535,10 +578,32 @@ def main():
     print("    - [LLM BACKEND] → LLM success rate & file count")
     print("    - [DESIGN DOC] → LLM success rate & file count")
     print()
-    print("Expected Quality Indicators:")
-    print("  ✓ Excellent (90%+): Most files LLM-generated")
-    print("  ✓ Good (80-89%): Some templates, still production-ready")
-    print("  ⚠ Fair (70-79%): Many templates, consider tuning timeouts")
+
+    # Dynamic quality summary — uses real tracked stats from this run
+    actual_rate = tracker.get("overall_success_rate", None)
+    if actual_rate is not None:
+        pct = actual_rate * 100
+        if pct >= 90:
+            tier, symbol = "Excellent", "✓"
+        elif pct >= 80:
+            tier, symbol = "Good", "✓"
+        elif pct >= 70:
+            tier, symbol = "Fair", "⚠"
+        else:
+            tier, symbol = "Poor", "✗"
+        print(f"Actual Quality This Run: {symbol} {tier} ({pct:.1f}% LLM-generated)")
+        print()
+        print("Quality Tiers for Reference:")
+        print("  ✓ Excellent (90%+): Most files LLM-generated")
+        print("  ✓ Good     (80-89%): Some templates, still production-ready")
+        print("  ⚠ Fair     (70-79%): Many templates, consider tuning timeouts")
+        print("  ✗ Poor      (<70%): Mostly templates, check LLM connectivity")
+    else:
+        print("Quality Tiers for Reference:")
+        print("  ✓ Excellent (90%+): Most files LLM-generated")
+        print("  ✓ Good     (80-89%): Some templates, still production-ready")
+        print("  ⚠ Fair     (70-79%): Many templates, consider tuning timeouts")
+        print("  ✗ Poor      (<70%): Mostly templates, check LLM connectivity")
     print()
     print("Next Steps:")
     print("  1. Review generated code in output/ directory")
