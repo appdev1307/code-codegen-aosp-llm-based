@@ -1,4 +1,81 @@
 
+------------------------------------ Full Pipeline With All Agents: 
+VSS signals
+    ↓
+VSSLabellingAgent          ← Fix 1 (retry) already done
+    ↓
+[RAG: retrieve AOSP context per signal type]
+    ↓
+ModulePlannerAgent         ← DSPy optimizes grouping prompt
+    ↓
+ArchitectAgent             ← RAG (AIDL examples) + DSPy
+  ├── AIDL Agent           ← RAG (.aidl files) + DSPy
+  ├── VHAL C++ Agent       ← RAG (.cpp/.h files) + DSPy
+  ├── SELinux Agent        ← RAG (.te policy files) + DSPy
+  └── Build Agent          ← RAG (Android.bp files) + DSPy
+    ↓
+DesignDocAgent             ← RAG (existing AOSP docs) + DSPy
+    ↓
+AndroidAppAgent            ← RAG (Car API examples) + DSPy
+    ↓
+BackendAgent               ← RAG (FastAPI/Python patterns) + DSPy
+    ↓
+BuildGlueAgent             ← RAG (VINTF/manifest files) + DSPy
+------------------------------------
+
+------------------------------------ RAG Sources Per Agent
+Agent                  RAG Source Files              Query Built From
+─────────────────────────────────────────────────────────────────────
+VSSLabelling           VSS spec docs, signal lists   signal path + type
+ModulePlanner          AOSP HAL domain docs           signal domain names
+ArchitectAgent         Full HAL module examples       domain + property types
+AIDL Agent             *.aidl files                   property names + types
+VHAL C++ Agent         *.cpp, *.h VHAL files          domain + property types
+SELinux Agent          *.te, file_contexts files      domain + service name
+Build Agent            Android.bp files               module name + deps
+DesignDoc Agent        AOSP design docs, READMEs      domain description
+AndroidApp Agent       CarPropertyManager examples    signal names + types
+                       Car API Java/Kotlin files
+Backend Agent          FastAPI examples               property types + access
+                       OpenAPI spec examples
+BuildGlue Agent        manifest.xml, init.rc          domain + HAL version
+                       VINTF fragments
+------------------------------------
+
+## Build Order (sequence matters)
+
+```
+Step 1 — Setup
+  pip install chromadb sentence-transformers dspy-ai
+
+Step 2 — Download AOSP source (one time, ~2GB)
+  git clone https://android.googlesource.com/platform/hardware/interfaces aosp_source/hardware
+  git clone https://android.googlesource.com/platform/system/sepolicy aosp_source/sepolicy
+  git clone https://android.googlesource.com/platform/packages/services/Car aosp_source/car
+
+Step 3 — Build RAG index (one time, ~10 min)
+  python -m rag.aosp_indexer
+
+Step 4 — Run baseline to get training examples for DSPy
+  python multi_main_adaptive.py
+
+Step 5 — Run DSPy optimization (one time per agent, ~30-60 min total)
+  python dspy_opt/optimizer.py
+
+Step 6 — Run three-way experiment
+  python experiments/run_comparison.py
+
+Step 7 — Analyze results
+  python experiments/analyze_results.py
+```
+
+Agentic RAG + Domain Fine-tuned LLM + Structured Output + Evaluation Layer
+Component                  ,Main Purpose in Enterprise Context,                        2026 Status
+Agentic RAG,               Reliable knowledge access + multi-step reasoning,           Core / de facto standard
+Domain Fine-tuned LLM,     "Consistency, domain expertise, cost/latency control",      Very common in production
+Structured Output,         Safe downstream integration + parsing reliability,          Mandatory for anything automated
+Evaluation Layer,          "Trust, monitoring, continuous improvement, compliance",    What separates PoC from production
+
 --------------- Title ------------------------------------
 Thesis: "Multi-Agent LLM Architectures for Automotive HAL Code Generation"
 
@@ -334,22 +411,7 @@ production-quality automotive HAL code?"**
 5. **Open-source toolkit** for VSS→AAOS translation
 6. **Best practices guide** for LLM-based automotive software development
 
----
-
-## Next Immediate Actions
-
-1. [ ] Share this document with thesis advisor
-2. [ ] Get formal approval on research questions
-3. [ ] Begin literature review (target: 3 papers/day)
-4. [ ] Implement validation tests on current system
-5. [ ] Design single-agent baseline
-6. [ ] Set up evaluation infrastructure
 
 ---
 
-**Notes:**
-- This document serves as the contract between you and your thesis
-- Update as you refine based on advisor feedback
-- Track progress weekly
-- Any major changes require justification
 

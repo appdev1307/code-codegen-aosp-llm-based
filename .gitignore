@@ -1,3 +1,11 @@
 *__pycache__*
 output/
 .venv/*
+rag/chroma_db/
+aosp_source/
+dspy_opt/saved/
+experiments/results/figures/*.png
+output_rag_dspy/
+adaptive_outputs/
+adaptive_outputs_rag_dspy/
+/content/
