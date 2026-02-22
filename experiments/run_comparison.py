@@ -78,67 +78,49 @@ SCORED_STAGES = [
 # Metric re-application helpers
 # ─────────────────────────────────────────────────────────────────
 
-def _load_metric_registry() -> dict:
-    """Load metric functions from dspy_opt.metrics if available."""
-    try:
-        from dspy_opt.metrics import METRIC_REGISTRY
-        return METRIC_REGISTRY
-    except ImportError:
-        return {}
+# Map file glob patterns to agent_type keys
+_FILE_PATTERNS: dict[str, list[str]] = {
+    "aidl":           ["*.aidl"],
+    "cpp":            ["*.cpp"],
+    "selinux":        ["*.te"],
+    "build":          ["Android.bp"],
+    "vintf":          ["manifest*.xml"],
+    "design_doc":     ["DESIGN_DOCUMENT.md"],
+    "puml":           ["*.puml"],
+    "android_app":    ["*Fragment*.kt"],
+    "android_layout": ["fragment_*.xml"],
+    "backend":        ["main.py"],
+    "backend_model":  ["models_*.py"],
+    "simulator":      ["simulator_*.py"],
+}
 
 
 def _score_generated_files(output_dir: str, condition: str) -> dict[str, float]:
     """
     Walk the output directory and score each generated file using
-    the appropriate metric function.
+    score_file() from dspy_opt.metrics (three-tier: struct+syntax+coverage).
 
     Returns dict: {agent_type: avg_score}
     """
-    metric_registry = _load_metric_registry()
-    if not metric_registry:
+    try:
+        from dspy_opt.metrics import score_file
+    except ImportError:
         return {}
 
     output_path = Path(output_dir)
     if not output_path.exists():
         return {}
 
-    # Map file patterns to agent_type keys
-    file_patterns = {
-        "aidl":        ["*.aidl"],
-        "cpp":         ["*.cpp", "*.h"],
-        "selinux":     ["*.te", "*file_contexts*"],
-        "build":       ["Android.bp"],
-        "vintf":       ["manifest*.xml", "*.rc"],
-        "design_doc":  ["DESIGN_DOCUMENT.md"],
-        "puml":        ["*.puml"],
-        "android_app": ["*Fragment*.kt"],
-        "android_layout": ["layout_*.xml", "fragment_*.xml"],
-        "backend":     ["main.py"],
-        "backend_model": ["models_*.py"],
-        "simulator":   ["simulator_*.py"],
-    }
-
     scores: dict[str, list[float]] = {}
 
-    for agent_type, patterns in file_patterns.items():
-        metric_fn = metric_registry.get(agent_type)
-        if metric_fn is None:
-            continue
-
+    for agent_type, patterns in _FILE_PATTERNS.items():
         for pattern in patterns:
             for fpath in output_path.rglob(pattern):
                 try:
                     content = fpath.read_text(encoding="utf-8", errors="ignore")
                     if not content.strip():
                         continue
-
-                    # Create a minimal prediction-like object
-                    class _Pred:
-                        pass
-                    pred = _Pred()
-                    setattr(pred, _get_output_field(agent_type), content)
-
-                    score = metric_fn(None, pred)
+                    score = score_file(agent_type, content)
                     scores.setdefault(agent_type, []).append(score)
                 except Exception:
                     pass
@@ -148,25 +130,6 @@ def _score_generated_files(output_dir: str, condition: str) -> dict[str, float]:
         for agent_type, vals in scores.items()
         if vals
     }
-
-
-def _get_output_field(agent_type: str) -> str:
-    """Map agent_type to its DSPy output field name."""
-    fields = {
-        "aidl":           "aidl_code",
-        "cpp":            "cpp_code",
-        "selinux":        "policy",
-        "build":          "build_file",
-        "vintf":          "manifest",
-        "design_doc":     "design_doc",
-        "puml":           "puml",
-        "android_app":    "kotlin_code",
-        "android_layout": "layout_xml",
-        "backend":        "api_code",
-        "backend_model":  "models_code",
-        "simulator":      "simulator_code",
-    }
-    return fields.get(agent_type, agent_type)
 
 
 # ─────────────────────────────────────────────────────────────────
