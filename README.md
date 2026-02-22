@@ -43,6 +43,38 @@ pip install -r requirements.txt
 #python main.py
 python multi_main.py
 
+# Adaptive learning
+python multi_main_adaptive.py
+
+# With RAG
+# Install tools that validators need
+sudo apt-get install -y clang checkpolicy
+
+# Clone AOSP source repos
+mkdir -p aosp_source
+git clone https://android.googlesource.com/platform/hardware/interfaces aosp_source/hardware
+git clone https://android.googlesource.com/platform/system/sepolicy aosp_source/sepolicy
+git clone https://android.googlesource.com/platform/packages/services/Car aosp_source/car
+
+# Build RAG index
+python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db
+
+# Run condition 2 first (generates labelled signals DSPy needs for training)
+python multi_main_adaptive.py
+
+# Optimise DSPy prompts
+python dspy_opt/optimizer.py
+
+# Run the pipeline
+python multi_main_rag_dspy.py
+
+# Do comparison
+python multi_main.py           # condition 1 → experiments/results/baseline.json
+python multi_main_adaptive.py  # condition 2 → experiments/results/adaptive.json
+python multi_main_rag_dspy.py  # condition 3 → experiments/results/rag_dspy.json
+python experiments/run_comparison.py
+python experiments/analyze_results.py
+
 # Download output from colab
 !!zip -r /content/code-codegen-aosp-llm-based.zip /content/code-codegen-aosp-llm-based/output
 
