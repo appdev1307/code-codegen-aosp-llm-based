@@ -103,10 +103,19 @@ class AOSPRetriever:
                 f"Run AOSPIndexer first: python -m rag.aosp_indexer"
             )
 
-        self.client = chromadb.PersistentClient(
-            path=str(self.db_path),
-            settings=Settings(anonymized_telemetry=False),
-        )
+        # Use the process-level shared client if one has been injected
+        # (set by multi_main_rag_dspy.py during preflight to avoid the
+        # "instance already exists with different settings" ChromaDB error).
+        # Fall back to creating a new client when running standalone.
+        global _SHARED_CLIENT
+        if _SHARED_CLIENT is not None:
+            self.client = _SHARED_CLIENT
+        else:
+            self.client = chromadb.PersistentClient(
+                path=str(self.db_path),
+                settings=Settings(anonymized_telemetry=False),
+            )
+            _SHARED_CLIENT = self.client   # cache for any subsequent instances
 
         # Lazy-load embedding model (shared across all agents via singleton)
         self._embedder: Optional[SentenceTransformer] = None
@@ -397,9 +406,13 @@ class AOSPRetriever:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Module-level singleton — shared across all agents in a process
-# avoids reloading the embedding model for every agent call
+# Module-level singletons
+# _SHARED_CLIENT  — injected by multi_main_rag_dspy.py before any
+#                   threads start; prevents "different settings" error
+#                   when parallel agents each try to open the DB
+# _shared_retriever — shared AOSPRetriever (avoids reloading embedder)
 # ─────────────────────────────────────────────────────────────────
+_SHARED_CLIENT: Optional[chromadb.ClientAPI] = None
 _shared_retriever: Optional[AOSPRetriever] = None
 
 
@@ -412,6 +425,9 @@ def get_retriever(
     Avoids loading the embedding model multiple times when
     many agents run in parallel threads.
 
+    The ChromaDB client is also shared via _SHARED_CLIENT so parallel
+    agents never open competing connections to the same database path.
+
     Usage in agents:
         from rag.aosp_retriever import get_retriever
         retriever = get_retriever()
@@ -419,6 +435,11 @@ def get_retriever(
     global _shared_retriever
     if _shared_retriever is None:
         _shared_retriever = AOSPRetriever(db_path=db_path, **kwargs)
+        # Ensure _SHARED_CLIENT is populated so future AOSPRetriever()
+        # instantiations reuse the same ChromaDB connection
+        global _SHARED_CLIENT
+        if _SHARED_CLIENT is None:
+            _SHARED_CLIENT = _shared_retriever.client
     return _shared_retriever
 
 
