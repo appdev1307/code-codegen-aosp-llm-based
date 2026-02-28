@@ -161,9 +161,12 @@ class TrainingSetBuilder:
         """
         Build training examples for a specific agent_type.
 
-        Groups signals into mini-modules (up to 5 signals each) so
-        examples reflect real generation conditions, then creates
-        one dspy.Example per group.
+        Groups signals into cross-domain mini-modules (up to 5 signals each,
+        drawn from DIFFERENT domains per group) to prevent metric saturation
+        during MIPROv2 optimisation. Homogeneous single-domain groups are
+        trivially easy for the model — cross-domain groups force it to handle
+        naming conflicts, mixed data types, and multi-domain property IDs
+        simultaneously, providing a meaningful optimisation signal.
 
         Parameters
         ----------
@@ -174,9 +177,41 @@ class TrainingSetBuilder:
         -------
         list[dspy.Example]
         """
-        items   = list(self.labelled_data.items())
-        # Group signals into batches of up to 5 (matches real pipeline chunks)
-        groups  = [items[i:i+5] for i in range(0, len(items), 5)][:n]
+        import random
+        random.seed(42)
+
+        items = list(self.labelled_data.items())
+
+        # Build per-domain buckets so we can sample across domains
+        domain_buckets: dict[str, list] = {}
+        for sig_path, sig_data in items:
+            domain = self._extract_domain(sig_path, sig_data)
+            domain_buckets.setdefault(domain, []).append((sig_path, sig_data))
+
+        domain_names = list(domain_buckets.keys())
+        logger.info(
+            f"[Optimizer] Domains found: {domain_names} — "
+            f"building cross-domain training examples"
+        )
+
+        # Build n groups, each drawing one signal from each domain (up to 5)
+        # This forces every training example to span multiple domains,
+        # making it significantly harder than single-domain batches
+        groups = []
+        for i in range(n):
+            group = []
+            # Shuffle domain order per example for variety
+            shuffled_domains = random.sample(domain_names, len(domain_names))
+            for domain_name in shuffled_domains:
+                bucket = domain_buckets[domain_name]
+                if bucket:
+                    # Pick a different signal each time using index rotation
+                    idx = i % len(bucket)
+                    group.append(bucket[idx])
+                if len(group) >= 5:
+                    break
+            if group:
+                groups.append(group)
 
         examples = []
         for group in groups:

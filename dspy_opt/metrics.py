@@ -94,7 +94,7 @@ def _blend(
     w_syntax:   float,
     w_cov:      float,
     trace=None,
-    threshold: float = 0.75,
+    threshold: float = 0.60,
 ) -> float:
     """
     Weighted blend of the three score components.
