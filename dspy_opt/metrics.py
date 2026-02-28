@@ -93,18 +93,31 @@ def _blend(
     w_struct:   float,
     w_syntax:   float,
     w_cov:      float,
+    trace=None,
+    threshold: float = 0.75,
 ) -> float:
     """
     Weighted blend of the three score components.
     Uses syntax_res.score (not just .ok) so partial credit flows through
     when a validator finds errors but not a total failure.
+
+    When called during MIPROv2 optimisation (trace is not None), returns a
+    binary 0/1 signal based on whether the score clears `threshold`.
+    This prevents metric saturation where every trial scores 100% because
+    the LLM trivially passes loose structural checks.
+
+    When called from run_comparison.py (trace is None), returns the raw
+    float so fine-grained per-file scores are preserved for the thesis.
     """
-    return round(
+    score = round(
         w_struct * structural
         + w_syntax * syntax_res.score
         + w_cov   * coverage,
         4,
     )
+    if trace is not None:
+        return float(score >= threshold)
+    return score
 
 
 def _make_pred(field: str, code: str):
@@ -141,17 +154,22 @@ def metric_aidl(example, prediction, trace=None) -> float:
     if not code:
         return 0.0
     structural = _heuristic([
-        ("package "        in code,                                          0.20),
-        ("interface "      in code,                                          0.20),
+        ("package "          in code,                                        0.15),
+        ("interface "        in code,                                        0.15),
         (_balanced_braces(code),                                             0.15),
-        (any(t in code for t in ["boolean","int","float","String","byte[]"]),0.20),
+        (any(t in code for t in ["boolean","int","float","String","byte[]"]),0.15),
         (any(k in code for k in ["void ","oneway ","ParcelableHolder"]),     0.15),
-        ("@VintfStability" in code,                                          0.10),
+        ("@VintfStability"   in code,                                        0.10),
+        # Strict AOSP-specific checks — general LLMs commonly miss these
+        ("@JavaDerive"       in code or "const int" in code,                 0.08),
+        ("vendor/automotive" in code or "android.hardware.automotive" in code, 0.07),
     ])
     syntax_res = validate("aidl", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.30, 0.50, 0.20)
-    _log("aidl", structural, syntax_res, coverage, score)
+    score      = _blend(structural, syntax_res, coverage, 0.30, 0.50, 0.20,
+                        trace=trace)
+    _log("aidl", structural, syntax_res, coverage,
+         score if trace is None else score)
     return score
 
 
@@ -166,13 +184,17 @@ def metric_cpp(example, prediction, trace=None) -> float:
         ("class "     in code,                                               0.15),
         (_balanced_braces(code),                                             0.15),
         (any(m in code for m in
-             ["getAllPropertyConfigs","getValues","setValues"]),              0.30),
+             ["getAllPropertyConfigs","getValues","setValues"]),              0.25),
         (any(t in code for t in
-             ["int32_t","float","bool","VehiclePropValue"]),                  0.15),
+             ["int32_t","float","bool","VehiclePropValue"]),                  0.10),
+        # Strict AOSP-specific checks
+        ("IVehicleHardware" in code,                                         0.05),
+        ("VehiclePropConfig" in code or "VehicleAreaConfig" in code,         0.05),
     ])
     syntax_res = validate("cpp", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.35, 0.45, 0.20)
+    score      = _blend(structural, syntax_res, coverage, 0.35, 0.45, 0.20,
+                        trace=trace)
     _log("cpp", structural, syntax_res, coverage, score)
     return score
 
@@ -186,16 +208,19 @@ def metric_selinux(example, prediction, trace=None) -> float:
     if not policy:
         return 0.0
     structural = _heuristic([
-        ("type "  in policy,                                                 0.20),
-        ("allow " in policy,                                                 0.30),
-        (any(k in policy for k in
-             ["hal_vehicle","vhal","hal_attribute"]),                         0.25),
+        ("type "  in policy,                                                 0.15),
+        ("allow " in policy,                                                 0.20),
+        # Strict: require the correct AOSP macro, not the generic one
+        ("hal_attribute_hwservice" in policy,                                0.25),
         (any(k in policy for k in
              ["binder_call","hwservice_use","add_hwservice"]),                0.25),
+        # Strict: require vendor domain declaration
+        ("vendor" in policy and "domain" in policy,                          0.15),
     ])
     syntax_res = validate("selinux", policy)
     coverage   = _signal_coverage(example, policy)
-    score      = _blend(structural, syntax_res, coverage, 0.25, 0.65, 0.10)
+    score      = _blend(structural, syntax_res, coverage, 0.25, 0.65, 0.10,
+                        trace=trace)
     _log("selinux", structural, syntax_res, coverage, score)
     return score
 
@@ -207,15 +232,19 @@ def metric_build(example, prediction, trace=None) -> float:
         return 0.0
     structural = _heuristic([
         (any(b in bp for b in
-             ["aidl_interface","cc_binary","cc_library_shared","cc_library"]),0.30),
-        ("name:"        in bp,                                               0.20),
-        ("srcs:"        in bp,                                               0.15),
-        ("vendor: true" in bp or "vendor:" in bp,                            0.20),
-        (_balanced_braces(bp),                                                0.15),
+             ["aidl_interface","cc_binary","cc_library_shared","cc_library"]),0.25),
+        ("name:"        in bp,                                               0.15),
+        ("srcs:"        in bp,                                               0.10),
+        ("vendor: true" in bp,                                               0.20),
+        (_balanced_braces(bp),                                               0.15),
+        # Strict AOSP-specific checks
+        ("stability:" in bp and "vintf" in bp,                               0.10),
+        ("vintf_fragments:" in bp or "init_rc:" in bp,                       0.05),
     ])
     syntax_res = validate("build", bp)
     coverage   = _signal_coverage(example, bp)
-    score      = _blend(structural, syntax_res, coverage, 0.35, 0.55, 0.10)
+    score      = _blend(structural, syntax_res, coverage, 0.35, 0.55, 0.10,
+                        trace=trace)
     _log("build", structural, syntax_res, coverage, score)
     return score
 
@@ -227,14 +256,15 @@ def metric_vintf(example, prediction, trace=None) -> float:
         return 0.0
     structural = _heuristic([
         ("<hal"        in manifest,                                          0.25),
-        ("<n>"      in manifest,                                          0.20),
+        ("<name>"      in manifest,                                          0.20),
         ("<transport>" in manifest or "transport" in manifest,               0.20),
         ("service "    in manifest,                                          0.20),
         ("class hal"   in manifest or "user " in manifest,                   0.15),
     ])
     syntax_res = validate("vintf", manifest)
     coverage   = _signal_coverage(example, manifest)
-    score      = _blend(structural, syntax_res, coverage, 0.30, 0.60, 0.10)
+    score      = _blend(structural, syntax_res, coverage, 0.30, 0.60, 0.10,
+                        trace=trace)
     _log("vintf", structural, syntax_res, coverage, score)
     return score
 
@@ -261,7 +291,8 @@ def metric_design_doc(example, prediction, trace=None) -> float:
     )
     syntax_res = validate("design_doc", doc)
     coverage   = _signal_coverage(example, doc)
-    score      = _blend(structural, syntax_res, coverage, 0.50, 0.30, 0.20)
+    score      = _blend(structural, syntax_res, coverage, 0.50, 0.30, 0.20,
+                        trace=trace)
     _log("design_doc", structural, syntax_res, coverage, score)
     return score
 
@@ -280,7 +311,8 @@ def metric_puml(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("puml", puml)
     coverage   = _signal_coverage(example, puml)
-    score      = _blend(structural, syntax_res, coverage, 0.40, 0.40, 0.20)
+    score      = _blend(structural, syntax_res, coverage, 0.40, 0.40, 0.20,
+                        trace=trace)
     _log("puml", structural, syntax_res, coverage, score)
     return score
 
@@ -307,7 +339,8 @@ def metric_kotlin(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("android_app", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.30, 0.40, 0.30)
+    score      = _blend(structural, syntax_res, coverage, 0.30, 0.40, 0.30,
+                        trace=trace)
     _log("android_app", structural, syntax_res, coverage, score)
     return score
 
@@ -329,7 +362,8 @@ def metric_layout_xml(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("android_layout", xml)
     coverage   = _signal_coverage(example, xml)
-    score      = _blend(structural, syntax_res, coverage, 0.30, 0.50, 0.20)
+    score      = _blend(structural, syntax_res, coverage, 0.30, 0.50, 0.20,
+                        trace=trace)
     _log("android_layout", structural, syntax_res, coverage, score)
     return score
 
@@ -355,7 +389,8 @@ def metric_backend_api(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("backend", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.25, 0.50, 0.25)
+    score      = _blend(structural, syntax_res, coverage, 0.25, 0.50, 0.25,
+                        trace=trace)
     _log("backend", structural, syntax_res, coverage, score)
     return score
 
@@ -373,7 +408,8 @@ def metric_backend_models(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("backend_model", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.25, 0.50, 0.25)
+    score      = _blend(structural, syntax_res, coverage, 0.25, 0.50, 0.25,
+                        trace=trace)
     _log("backend_model", structural, syntax_res, coverage, score)
     return score
 
@@ -392,7 +428,8 @@ def metric_simulator(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("simulator", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.35, 0.45, 0.20)
+    score      = _blend(structural, syntax_res, coverage, 0.35, 0.45, 0.20,
+                        trace=trace)
     _log("simulator", structural, syntax_res, coverage, score)
     return score
 
