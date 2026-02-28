@@ -54,6 +54,21 @@ from agents.rag_dspy_backend_agent     import RAGDSPyBackendAgent
 from dspy_opt.metrics    import score_file
 from dspy_opt.validators import validate, print_availability_report
 
+# Shared ChromaDB client singleton
+# ChromaDB raises "instance already exists with different settings" when
+# multiple PersistentClient objects open the same path concurrently.
+# This singleton ensures every agent shares one connection.
+_CHROMA_CLIENT = None
+
+def get_chroma_client(db_path: str = "rag/chroma_db"):
+    """Return the shared ChromaDB client, creating it on first call."""
+    global _CHROMA_CLIENT
+    if _CHROMA_CLIENT is None:
+        import chromadb
+        _CHROMA_CLIENT = chromadb.PersistentClient(path=str(db_path))
+    return _CHROMA_CLIENT
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,8 +401,9 @@ def _preflight_rag() -> bool:
         print("  Run: python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db")
         return False
     try:
-        import chromadb
-        client = chromadb.PersistentClient(path=str(db_path))
+        # Use the singleton — this is the ONLY place ChromaDB is opened.
+        # All agents will reuse this same client to avoid "different settings" error.
+        client = get_chroma_client(str(db_path))
         cols   = client.list_collections()
         total  = sum(c.count() for c in cols)
         print(f"[PREFLIGHT] ✓ ChromaDB — {len(cols)} collections, {total:,} chunks")
@@ -442,6 +458,19 @@ def main():
     if not _preflight_rag():
         return
     _preflight_dspy()
+
+    # Inject the already-open singleton into AGENT_CFG AND into the
+    # rag.aosp_retriever module so get_retriever() reuses it.
+    # This prevents "instance already exists with different settings" errors
+    # when multiple agents try to open the same ChromaDB path in parallel.
+    _client = get_chroma_client(AGENT_CFG["rag_db_path"])
+    AGENT_CFG["chroma_client"] = _client
+    try:
+        import rag.aosp_retriever as _retriever_mod
+        _retriever_mod._SHARED_CLIENT = _client   # patch the singleton slot
+        print("[PREFLIGHT] ChromaDB singleton patched into rag.aosp_retriever ✓")
+    except Exception as _e:
+        print(f"[PREFLIGHT] Could not patch retriever module: {_e}")
     print()
 
     run_metrics: list[dict] = []
