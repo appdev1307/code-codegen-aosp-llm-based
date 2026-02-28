@@ -464,7 +464,9 @@ def main():
     # This prevents "instance already exists with different settings" errors
     # when multiple agents try to open the same ChromaDB path in parallel.
     _client = get_chroma_client(AGENT_CFG["rag_db_path"])
-    AGENT_CFG["chroma_client"] = _client
+    # Do NOT add chroma_client to AGENT_CFG — agents don't accept it.
+    # The singleton is patched directly into rag.aosp_retriever._SHARED_CLIENT
+    # so all agents get it automatically via get_retriever().
     try:
         import rag.aosp_retriever as _retriever_mod
         _retriever_mod._SHARED_CLIENT = _client   # patch the singleton slot
