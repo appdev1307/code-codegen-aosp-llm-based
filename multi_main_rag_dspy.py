@@ -85,13 +85,13 @@ MAX_PARALLEL_LLM_CALLS = 4    # RAG+DSPy calls are heavier than baseline
 BUILD_GLUE_LLM_TIMEOUT = 600
 
 # Shared kwargs passed to every RAGDSPy agent constructor
-# output_dir ensures all agents write directly into the condition-isolated
-# directory (output_rag_dspy/) rather than the hardcoded "output/" default.
+# output_root is included in AGENT_CFG so it flows to all RAGDSPy agents
+# via **AGENT_CFG. Each RAGDSPy agent passes it to its sub-agents.
 AGENT_CFG = dict(
     dspy_programs_dir = "dspy_opt/saved",
     rag_top_k         = 3,
     rag_db_path       = "rag/chroma_db",
-    output_dir        = str(OUTPUT_DIR),
+    output_root       = str(OUTPUT_DIR),
 )
 
 # Map agent_type → glob pattern to find generated files under OUTPUT_DIR
@@ -292,6 +292,7 @@ def _run_support_components(
             })
             raise
 
+    # output_root flows via AGENT_CFG to all support agents
     group_a = [
         ("design_doc",  lambda: RAGDSPyDesignDocAgent(**AGENT_CFG).run(
                             module_signal_map, full_spec.properties, yaml_spec),

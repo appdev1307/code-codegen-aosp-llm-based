@@ -44,6 +44,9 @@ class RAGDSPyArchitectAgent:
         AOSP chunks retrieved per sub-agent call.
     rag_db_path : str
         ChromaDB path.
+    output_root : str
+        Directory where generated files are written.
+        Defaults to "output" (C1/C2 behaviour).
     """
 
     def __init__(
@@ -51,11 +54,13 @@ class RAGDSPyArchitectAgent:
         dspy_programs_dir: str = "dspy_opt/saved",
         rag_top_k:         int = 3,
         rag_db_path:       str = "rag/chroma_db",
+        output_root:       str = "output",
     ):
         self._cfg = dict(
             dspy_programs_dir=dspy_programs_dir,
             rag_top_k=rag_top_k,
             rag_db_path=rag_db_path,
+            output_root=output_root,
         )
 
     def run(self, module_spec) -> dict[str, str]:
