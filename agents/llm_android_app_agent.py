@@ -25,7 +25,7 @@ from tools.safe_writer import SafeWriter
 
 
 PACKAGE = "com.android.vssdynamic.app"
-APP_DIR = Path("packages/apps/VssDynamicApp")
+# self.app_dir is now instance-level (set in __init__) so output_root is respected
 
 SYSTEM_PROMPT = (
     "You are an expert Android Automotive OS developer. "
@@ -785,7 +785,11 @@ class LLMAndroidAppAgent:
     """
     
     def __init__(self, output_root: str = "output"):
+        self.output_root = Path(output_root)
         self.writer = SafeWriter(output_root)
+        # app_dir under output_root so C3 writes to output_rag_dspy/packages/...
+        # not a hardcoded ./packages/ relative to CWD
+        self.app_dir = self.output_root / "packages" / "apps" / "VssDynamicApp"
         self.stats = {
             "llm_success": 0,
             "llm_progressive": 0,
@@ -802,7 +806,7 @@ class LLMAndroidAppAgent:
         print(f"    - Templates as last resort only")
         print()
         
-        APP_DIR.mkdir(parents=True, exist_ok=True)
+        self.app_dir.mkdir(parents=True, exist_ok=True)
         asyncio.run(self._run_async(module_signal_map, all_properties))
     
     async def _run_async(self, module_signal_map: dict, all_properties: list):
@@ -853,13 +857,13 @@ class LLMAndroidAppAgent:
             
             # Write file
             if name == "AndroidManifest.xml":
-                path = APP_DIR / "src/main/AndroidManifest.xml"
+                path = self.app_dir / "src/main/AndroidManifest.xml"
             elif name == "Android.bp":
-                path = APP_DIR / "Android.bp"
+                path = self.app_dir / "Android.bp"
             elif name == "strings.xml":
-                path = APP_DIR / "src/main/res/values/strings.xml"
+                path = self.app_dir / "src/main/res/values/strings.xml"
             else:
-                path = APP_DIR / "src/main/res/layout/activity_main.xml"
+                path = self.app_dir / "src/main/res/layout/activity_main.xml"
             
             path.parent.mkdir(parents=True, exist_ok=True)
             self.writer.write(str(path), content.strip() + "\n")
@@ -917,7 +921,7 @@ class LLMAndroidAppAgent:
                 content = _get_template_module_layout(module_name, prop_names, props_by_name)
                 self.stats["template_fallback"] += 1
             
-            path = APP_DIR / "src/main/res/layout" / filename
+            path = self.app_dir / "src/main/res/layout" / filename
             path.parent.mkdir(parents=True, exist_ok=True)
             self.writer.write(str(path), content.strip() + "\n")
         
@@ -950,7 +954,7 @@ class LLMAndroidAppAgent:
                 content = _get_template_module_fragment(module_name, chunk_id)
                 self.stats["template_fallback"] += 1
             
-            path = APP_DIR / f"src/main/java/{PACKAGE.replace('.', '/')}/{class_name}.kt"
+            path = self.app_dir / f"src/main/java/{PACKAGE.replace('.', '/')}/{class_name}.kt"
             path.parent.mkdir(parents=True, exist_ok=True)
             self.writer.write(str(path), content.strip() + "\n")
     
@@ -967,7 +971,7 @@ class LLMAndroidAppAgent:
             content = _get_template_main_activity(modules)
             self.stats["template_fallback"] += 1
         
-        path = APP_DIR / f"src/main/java/{PACKAGE.replace('.', '/')}/MainActivity.kt"
+        path = self.app_dir / f"src/main/java/{PACKAGE.replace('.', '/')}/MainActivity.kt"
         path.parent.mkdir(parents=True, exist_ok=True)
         self.writer.write(str(path), content.strip() + "\n")
     

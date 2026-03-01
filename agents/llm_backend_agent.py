@@ -557,8 +557,9 @@ class LLMBackendAgent:
     """LLM-First Backend Agent - Optimized for quality"""
     
     def __init__(self, output_root: str = "output"):
+        self.output_root = Path(output_root)
         self.writer = SafeWriter(output_root)
-        self.backend_dir = Path(output_root) / "backend" / "vss_dynamic_server"
+        self.backend_dir = self.output_root / "backend" / "vss_dynamic_server"
         self.stats = {
             "llm_success": 0,
             "llm_progressive": 0,

@@ -541,8 +541,11 @@ class DesignDocAgent:
     """LLM-First Design Doc Agent"""
     
     def __init__(self, output_root: str = "output"):
+        self.output_root = Path(output_root)
         self.writer = SafeWriter(output_root)
-        self.doc_dir = Path("docs/design")
+        # doc_dir must be under output_root so C3 writes to output_rag_dspy/
+        # not a hardcoded ./docs/design/ relative to CWD
+        self.doc_dir = self.output_root / "docs" / "design"
         self.doc_dir.mkdir(parents=True, exist_ok=True)
         self.stats = {
             "llm_success": 0,

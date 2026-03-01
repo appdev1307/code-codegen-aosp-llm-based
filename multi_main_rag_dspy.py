@@ -95,18 +95,24 @@ AGENT_CFG = dict(
 )
 
 # Map agent_type → glob pattern to find generated files under OUTPUT_DIR
+# Paths reflect where each agent writes after the output_root fix:
+#   - HAL files:      output_rag_dspy/hardware/...  (via ArchitectAgent)
+#   - backend files:  output_rag_dspy/backend/...   (LLMBackendAgent)
+#   - android files:  output_rag_dspy/packages/...  (LLMAndroidAppAgent)
+#   - design docs:    output_rag_dspy/docs/design/  (DesignDocAgent)
 _FILE_PATTERNS: dict[str, str] = {
     "aidl":           "**/*.aidl",
     "cpp":            "**/*.cpp",
     "selinux":        "**/*.te",
     "build":          "**/Android.bp",
-    "android_app":    "**/*Fragment*.kt",
-    "android_layout": "**/fragment_*.xml",
+    "android_app":    "**/*.kt",
+    "android_layout": "**/*.xml",
     "backend":        "**/main.py",
     "backend_model":  "**/models_*.py",
     "simulator":      "**/simulator_*.py",
-    "design_doc":     "**/DESIGN_DOCUMENT.md",
+    "design_doc":     "**/*.md",
     "puml":           "**/*.puml",
+    "vintf":          "**/manifest.xml",
 }
 
 
@@ -587,13 +593,12 @@ def main():
     print("  [SUPPORT] Running PromoteDraft → BuildGlue...")
     t0 = time.time()
     try:
-        # Pass OUTPUT_DIR so promoted files land in output_rag_dspy/
-        # instead of the hardcoded "output/" default directory
-        try:
-            PromoteDraftAgent(output_root=str(OUTPUT_DIR)).run()
-        except TypeError:
-            # Fallback if agent doesn't accept output_root yet
-            PromoteDraftAgent().run()
+        # Pass draft_root and final_root so files land in output_rag_dspy/
+        # not the hardcoded "output/" default
+        PromoteDraftAgent().run(
+            draft_root=str(OUTPUT_DIR / ".llm_draft" / "latest"),
+            final_root=str(OUTPUT_DIR),
+        )
         print("  [SUPPORT] PromoteDraft → OK")
     except Exception as e:
         print(f"  [SUPPORT] PromoteDraft → FAILED: {e}")
