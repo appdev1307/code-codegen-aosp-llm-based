@@ -85,10 +85,13 @@ MAX_PARALLEL_LLM_CALLS = 4    # RAG+DSPy calls are heavier than baseline
 BUILD_GLUE_LLM_TIMEOUT = 600
 
 # Shared kwargs passed to every RAGDSPy agent constructor
+# output_dir ensures all agents write directly into the condition-isolated
+# directory (output_rag_dspy/) rather than the hardcoded "output/" default.
 AGENT_CFG = dict(
     dspy_programs_dir = "dspy_opt/saved",
     rag_top_k         = 3,
     rag_db_path       = "rag/chroma_db",
+    output_dir        = str(OUTPUT_DIR),
 )
 
 # Map agent_type → glob pattern to find generated files under OUTPUT_DIR
@@ -230,26 +233,20 @@ def _generate_one_module(
 
     elapsed = round(time.time() - t0, 2)
 
-    # Score every generated HAL-layer file for this module
-    print(f"\n   Validating {domain} output files:")
-    file_scores = _score_files(
-        ["aidl", "cpp", "selinux", "build"],
-        domain_filter=domain,
-    )
-    avg_score = _avg(file_scores)
-
+    # NOTE: Do NOT score here — files are still in draft/staging location.
+    # Scoring happens in main() after PromoteDraftAgent moves files to
+    # the final OUTPUT_DIR layout. Record generation time only.
     run_metrics.append({
         "domain":          domain,
         "stage":           "hal_module",
         "success":         True,
         "generation_time": elapsed,
-        "metric_score":    avg_score,
-        "file_scores":     file_scores,
+        "metric_score":    0.0,   # updated after promotion in main()
+        "file_scores":     {},    # updated after promotion in main()
         "properties":      len(module_props),
     })
 
-    print(f"\n [MODULE {domain}] → OK  "
-          f"avg_score={avg_score:.3f}  ({elapsed:.1f}s)")
+    print(f"\n [MODULE {domain}] → OK  ({elapsed:.1f}s) — scoring deferred to post-promote")
     return (domain, True, None)
 
 
@@ -270,6 +267,10 @@ def _run_support_components(
             fn()
             elapsed     = round(time.time() - t0, 2)
             file_scores = _score_files(agent_types)
+            if not file_scores:
+                # Files not found under OUTPUT_DIR — log clearly for debugging
+                print(f"  [SCORE WARNING] {stage}: no files found under {OUTPUT_DIR} "
+                      f"for patterns {agent_types}. Check agent output_dir setting.")
             run_metrics.append({
                 "stage":           stage,
                 "success":         True,
@@ -325,10 +326,13 @@ def _save_results(run_metrics: list, t_total: float) -> dict:
     all_scores: list[float] = []
     per_agent:  dict[str, list[float]] = {}
     for m in run_metrics:
-        for agent_type, score in m.get("file_scores", {}).items():
+        file_scores = m.get("file_scores", {})
+        for agent_type, score in file_scores.items():
             per_agent.setdefault(agent_type, []).append(score)
             all_scores.append(score)
-        if "metric_score" in m and not m.get("file_scores"):
+        # Only include metric_score when no per-file breakdown exists AND
+        # the score is non-zero — avoids diluting avg with scoring failures
+        if "metric_score" in m and not file_scores and m["metric_score"] > 0:
             all_scores.append(m["metric_score"])
 
     summary = {
@@ -579,14 +583,35 @@ def main():
     print("\n[SUPPORT] Generating design docs, SELinux, Android app, backend...")
     _run_support_components(module_signal_map, full_spec, yaml_spec, run_metrics)
 
-    # Group B — PromoteDraft → BuildGlue (sequential, order matters)
+    # Group B — PromoteDraft → Score HAL files → BuildGlue (order matters)
     print("  [SUPPORT] Running PromoteDraft → BuildGlue...")
     t0 = time.time()
     try:
-        PromoteDraftAgent().run()
+        # Pass OUTPUT_DIR so promoted files land in output_rag_dspy/
+        # instead of the hardcoded "output/" default directory
+        try:
+            PromoteDraftAgent(output_root=str(OUTPUT_DIR)).run()
+        except TypeError:
+            # Fallback if agent doesn't accept output_root yet
+            PromoteDraftAgent().run()
         print("  [SUPPORT] PromoteDraft → OK")
     except Exception as e:
         print(f"  [SUPPORT] PromoteDraft → FAILED: {e}")
+
+    # Score HAL-layer files NOW — after promotion, files are in OUTPUT_DIR
+    print("\n[SCORE] Scoring HAL layer files (post-promote)...")
+    hal_agent_types = ["aidl", "cpp", "selinux", "build", "vintf"]
+    hal_scores = _score_files(hal_agent_types)
+    hal_avg = _avg(hal_scores)
+    print(f"[SCORE] HAL layer avg score: {hal_avg:.3f}")
+
+    # Update the hal_module entries in run_metrics with real scores
+    for m in run_metrics:
+        if m.get("stage") == "hal_module" and m.get("success"):
+            domain = m.get("domain", "")
+            domain_scores = _score_files(hal_agent_types, domain_filter=domain)
+            m["file_scores"]  = domain_scores
+            m["metric_score"] = _avg(domain_scores)
 
     try:
         module_plan_path = OUTPUT_DIR / "MODULE_PLAN.json"
