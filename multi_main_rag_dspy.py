@@ -106,7 +106,7 @@ _FILE_PATTERNS: dict[str, str] = {
     "selinux":        "**/*.te",
     "build":          "**/Android.bp",
     "android_app":    "**/*.kt",
-    "android_layout": "**/*.xml",
+    "android_layout": "**/layout/*.xml",
     "backend":        "**/main.py",
     "backend_model":  "**/models_*.py",
     "simulator":      "**/simulator_*.py",

@@ -48,13 +48,17 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
         rag_top_k:         int = 3,
         rag_db_path:       str = "rag/chroma_db",
         output_dir:        str = "android_app",
+        output_root:       str = "",
     ):
         self._init_rag_dspy(
             dspy_programs_dir=dspy_programs_dir,
             rag_top_k=rag_top_k,
             rag_db_path=rag_db_path,
         )
-        self._output_dir = Path(output_dir)
+        if output_root:
+            self._output_dir = Path(output_root) / "android_app"
+        else:
+            self._output_dir = Path(output_dir)
 
         # Layout module loaded separately (different signature + output field)
         self._layout_module = self._load_layout_module(dspy_programs_dir)

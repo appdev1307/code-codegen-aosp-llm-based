@@ -109,4 +109,49 @@ class RAGDSPyArchitectAgent:
             f"  [RAG+DSPy ARCHITECT] {domain} complete — "
             f"{ok}/{len(sub_agents)} sub-agents OK ({total:.1f}s)"
         )
+
+        # Write all generated strings to disk so they can be
+        # promoted and scored. Without this step the generated code
+        # exists only in memory and is lost.
+        self._write_results(results, domain)
         return results
+
+    def _write_results(self, results: dict[str, str], domain: str) -> None:
+        """
+        Write generated code strings to disk under output_root.
+
+        AIDL and C++ go to .llm_draft/latest/ (PromoteDraftAgent picks
+        them up and moves them to the final AOSP layout).
+        SELinux goes directly to output_root/sepolicy/.
+        Build (Android.bp) goes directly to output_root/hardware/...
+        """
+        from pathlib import Path
+        import os
+
+        out       = Path(self._cfg["output_root"])
+        draft_dir = out / ".llm_draft" / "latest"
+        base_hw   = "hardware/interfaces/automotive/vehicle"
+        aidl_dir  = draft_dir / base_hw / "aidl" / "android/hardware/automotive/vehicle"
+        impl_dir  = draft_dir / base_hw / "impl"
+        sep_dir   = out / "sepolicy"
+
+        file_map = {
+            # AIDL → draft (contains full AIDL source, one file per type)
+            "AIDL":    (aidl_dir, f"IVehicle{domain.capitalize()}.aidl"),
+            # C++  → draft
+            "CPP":     (impl_dir, "VehicleHalService.cpp"),
+            # SELinux → direct (no promotion needed)
+            "SELinux": (sep_dir,  "vehicle_hal.te"),
+            # Build → direct (Android.bp for AIDL interface)
+            "Build":   (out / base_hw / "aidl", "Android.bp"),
+        }
+
+        for key, (directory, filename) in file_map.items():
+            content = results.get(key, "")
+            if not content or not content.strip():
+                print(f"  [RAG+DSPy ARCHITECT] {key}: no content — file not written")
+                continue
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / filename
+            path.write_text(content, encoding="utf-8")
+            print(f"  [RAG+DSPy ARCHITECT] {key}: wrote {path} ({len(content)} chars)")

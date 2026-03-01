@@ -54,13 +54,17 @@ class RAGDSPyBackendAgent(RAGDSPyMixin):
         rag_top_k:         int = 3,
         rag_db_path:       str = "rag/chroma_db",
         output_dir:        str = "output/backend/vss_dynamic_server",
+        output_root:       str = "",
     ):
         self._init_rag_dspy(
             dspy_programs_dir=dspy_programs_dir,
             rag_top_k=rag_top_k,
             rag_db_path=rag_db_path,
         )
-        self._output_dir = Path(output_dir)
+        if output_root:
+            self._output_dir = Path(output_root) / "backend" / "vss_dynamic_server"
+        else:
+            self._output_dir = Path(output_dir)
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
         # Load model and simulator modules separately

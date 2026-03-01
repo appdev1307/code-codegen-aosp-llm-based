@@ -57,13 +57,19 @@ class RAGDSPyDesignDocAgent(RAGDSPyMixin):
         rag_top_k:         int = 3,
         rag_db_path:       str = "rag/chroma_db",
         output_dir:        str = "docs/design",
+        output_root:       str = "",
     ):
         self._init_rag_dspy(
             dspy_programs_dir=dspy_programs_dir,
             rag_top_k=rag_top_k,
             rag_db_path=rag_db_path,
         )
-        self._output_dir = Path(output_dir)
+        # If output_root is provided (C3), place docs under it.
+        # Otherwise use output_dir as-is (C1/C2 behaviour).
+        if output_root:
+            self._output_dir = Path(output_root) / "docs" / "design"
+        else:
+            self._output_dir = Path(output_dir)
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
         # PlantUML module loaded separately (different signature)
