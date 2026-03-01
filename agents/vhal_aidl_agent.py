@@ -12,9 +12,9 @@ from tools.json_contract import parse_json_object
 
 
 class VHALAidlAgent:
-    def __init__(self):
+    def __init__(self, output_root: str = "output/.llm_draft/latest"):
         self.name = "VHAL AIDL Agent (VSS-aware)"
-        self.output_root = "output/.llm_draft/latest"
+        self.output_root = output_root
         self.writer = SafeWriter(self.output_root)
         self.raw_dir = Path(self.output_root)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
@@ -249,7 +249,7 @@ enum VehiclePropertyVss {
             self.writer.write(path, content.rstrip() + "\n")
 
 
-def generate_vhal_aidl(plan_or_spec: Union[str, Dict[str, Any], Any]) -> bool:
+def generate_vhal_aidl(plan_or_spec: Union[str, Dict[str, Any], Any], output_root: str = "output/.llm_draft/latest") -> bool:
     if isinstance(plan_or_spec, str):
         plan_text = plan_or_spec
     elif isinstance(plan_or_spec, dict):
@@ -260,4 +260,4 @@ def generate_vhal_aidl(plan_or_spec: Union[str, Dict[str, Any], Any]) -> bool:
         except:
             plan_text = "{}"
 
-    return VHALAidlAgent().run(plan_text)
+    return VHALAidlAgent(output_root=output_root).run(plan_text)

@@ -1,11 +1,12 @@
+from pathlib import Path
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
 
 
 class SelinuxAgent:
-    def __init__(self):
+    def __init__(self, output_root: str = "output"):
         self.name = "SELinux Agent"
-        self.output_dir = "output/sepolicy"
+        self.output_dir = str(Path(output_root) / "sepolicy")
         self.writer = SafeWriter(self.output_dir)
 
     def build_prompt(self, spec_text: str) -> str:
@@ -67,5 +68,5 @@ Specification:
             self.writer.write(current, "\n".join(buf))
 
 
-def generate_selinux(spec):
-    return SelinuxAgent().run(spec.to_llm_spec())
+def generate_selinux(spec, output_root: str = "output"):
+    return SelinuxAgent(output_root=output_root).run(spec.to_llm_spec())

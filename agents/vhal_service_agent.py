@@ -12,9 +12,9 @@ from tools.json_contract import parse_json_object
 
 
 class VHALServiceAgent:
-    def __init__(self):
+    def __init__(self, output_root: str = "output/.llm_draft/latest"):
         self.name = "VHAL C++ Service Agent (VSS-aware + strong prompt)"
-        self.output_root = "output/.llm_draft/latest"
+        self.output_root = output_root
         self.writer = SafeWriter(self.output_root)
         self.raw_dir = Path(self.output_root)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
@@ -246,7 +246,7 @@ constexpr int32_t VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENABLED = 0xF000
 # Top-level entry point — this is what the pipeline expects
 # ────────────────────────────────────────────────
 
-def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any]) -> bool:
+def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any], output_root: str = "output/.llm_draft/latest") -> bool:
     """
     Main entry point for the pipeline / architect_agent.py.
     Converts input to plan_text and runs the agent.
@@ -261,5 +261,5 @@ def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any]) -> bool
         except Exception:
             plan_text = "{}"
 
-    agent = VHALServiceAgent()
+    agent = VHALServiceAgent(output_root=output_root)
     return agent.run(plan_text)

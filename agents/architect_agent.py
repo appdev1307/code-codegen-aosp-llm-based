@@ -77,31 +77,37 @@ class ArchitectAgent:
         # e.g. HVAC → CarHvacService, POWERTRAIN → CarPowertrainService
         car_service_class = f"Car{domain.capitalize()}Service"
 
+        # Draft root: AIDL + C++ write to .llm_draft/latest so PromoteDraftAgent
+        # can validate before promoting to the final layout.
+        # Build glue, car service, selinux write directly to output_root.
+        draft_root = str(self.output_root / ".llm_draft" / "latest")
+        out = str(self.output_root)
+
         def _step1_aidl():
-            success = generate_vhal_aidl(plan_text)
+            success = generate_vhal_aidl(plan_text, output_root=draft_root)
             label = "Success" if success else "Used fallback"
             print(f"  [AIDL] {label}")
             return ("AIDL", True)
 
         def _step2_service():
-            success = generate_vhal_service(plan_text)
+            success = generate_vhal_service(plan_text, output_root=draft_root)
             label = "Success" if success else "Used fallback"
             print(f"  [VHAL SERVICE] {label}")
             return ("VHAL SERVICE", True)
 
         def _step3_build():
-            generate_vhal_aidl_bp()
-            generate_vhal_service_build_glue()
+            generate_vhal_aidl_bp(output_root=out)
+            generate_vhal_service_build_glue(output_root=out)
             print("  [BUILD] Build glue generated")
             return ("BUILD", True)
 
         def _step4_car_service():
-            generate_car_service(spec)
+            generate_car_service(spec, output_root=out)
             print(f"  [CAR SERVICE] {car_service_class}.java generated")
             return ("CAR SERVICE", True)
 
         def _step5_selinux():
-            generate_selinux(spec)
+            generate_selinux(spec, output_root=out)
             print("  [SELINUX] Policy generated")
             return ("SELINUX", True)
 

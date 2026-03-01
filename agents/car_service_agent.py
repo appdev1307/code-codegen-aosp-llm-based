@@ -123,9 +123,9 @@ public final class $class_name {
 
 
 class CarServiceAgent:
-    def __init__(self):
+    def __init__(self, output_root: str = "output"):
         self.name = "Car Service Agent"
-        self.writer = SafeWriter("output")
+        self.writer = SafeWriter(output_root)
 
     def run(self, spec: HalSpec) -> str:
         domain = (getattr(spec, "domain", "") or "").strip().upper()
@@ -172,5 +172,5 @@ class CarServiceAgent:
         return f"--- FILE: {rel_path} ---\n{content}"
 
 
-def generate_car_service(spec: HalSpec) -> str:
-    return CarServiceAgent().run(spec)
+def generate_car_service(spec: HalSpec, output_root: str = "output") -> str:
+    return CarServiceAgent(output_root=output_root).run(spec)

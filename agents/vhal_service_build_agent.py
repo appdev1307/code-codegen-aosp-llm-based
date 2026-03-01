@@ -10,9 +10,9 @@ from tools.safe_writer import SafeWriter
 
 
 class VHALServiceBuildAgent:
-    def __init__(self):
+    def __init__(self, output_root: str = "output"):
         self.name = "VHAL Service Build Agent (updated)"
-        self.output_root = "output"
+        self.output_root = output_root
         self.writer = SafeWriter(self.output_root)
 
         self.raw_dir = Path(self.output_root)
@@ -204,5 +204,5 @@ RETURN JSON NOW.
         self.writer.write(self.xml_path, xml.rstrip() + "\n")
 
 
-def generate_vhal_service_build_glue():
-    return VHALServiceBuildAgent().run()
+def generate_vhal_service_build_glue(output_root: str = "output"):
+    return VHALServiceBuildAgent(output_root=output_root).run()
