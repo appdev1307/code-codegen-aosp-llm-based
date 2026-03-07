@@ -161,12 +161,9 @@ class TrainingSetBuilder:
         """
         Build training examples for a specific agent_type.
 
-        Groups signals into cross-domain mini-modules (up to 5 signals each,
-        drawn from DIFFERENT domains per group) to prevent metric saturation
-        during MIPROv2 optimisation. Homogeneous single-domain groups are
-        trivially easy for the model — cross-domain groups force it to handle
-        naming conflicts, mixed data types, and multi-domain property IDs
-        simultaneously, providing a meaningful optimisation signal.
+        Groups signals into mini-modules (up to 5 signals each) so
+        examples reflect real generation conditions, then creates
+        one dspy.Example per group.
 
         Parameters
         ----------
@@ -177,41 +174,9 @@ class TrainingSetBuilder:
         -------
         list[dspy.Example]
         """
-        import random
-        random.seed(42)
-
-        items = list(self.labelled_data.items())
-
-        # Build per-domain buckets so we can sample across domains
-        domain_buckets: dict[str, list] = {}
-        for sig_path, sig_data in items:
-            domain = self._extract_domain(sig_path, sig_data)
-            domain_buckets.setdefault(domain, []).append((sig_path, sig_data))
-
-        domain_names = list(domain_buckets.keys())
-        logger.info(
-            f"[Optimizer] Domains found: {domain_names} — "
-            f"building cross-domain training examples"
-        )
-
-        # Build n groups, each drawing one signal from each domain (up to 5)
-        # This forces every training example to span multiple domains,
-        # making it significantly harder than single-domain batches
-        groups = []
-        for i in range(n):
-            group = []
-            # Shuffle domain order per example for variety
-            shuffled_domains = random.sample(domain_names, len(domain_names))
-            for domain_name in shuffled_domains:
-                bucket = domain_buckets[domain_name]
-                if bucket:
-                    # Pick a different signal each time using index rotation
-                    idx = i % len(bucket)
-                    group.append(bucket[idx])
-                if len(group) >= 5:
-                    break
-            if group:
-                groups.append(group)
+        items   = list(self.labelled_data.items())
+        # Group signals into batches of up to 5 (matches real pipeline chunks)
+        groups  = [items[i:i+5] for i in range(0, len(items), 5)][:n]
 
         examples = []
         for group in groups:
@@ -482,6 +447,11 @@ class HALPromptOptimizer:
                 max_bootstrapped_demos=MAX_BOOTSTRAPPED_DEMOS,
                 max_labeled_demos=MAX_LABELED_DEMOS,
                 requires_permission_to_run=False,
+                # Modules are loaded dynamically so inspect.getsource() fails.
+                # Disable program-aware proposer explicitly to avoid the
+                # "could not find class definition" warning and make the
+                # fallback behaviour intentional.
+                program_aware_proposer=False,
             )
 
             # 5. Score optimised module
@@ -496,10 +466,16 @@ class HALPromptOptimizer:
             print(f"[{agent_type}] Optimised score: {avg_optimised:.3f} "
                   f"(Δ{improvement:+.3f} vs baseline)")
 
-            # 6. Save optimised program
-            optimised_module.save(save_path)
+            # 6. Save best program — fall back to baseline if optimised is worse
+            if avg_optimised >= avg_baseline:
+                optimised_module.save(save_path)
+                saved_label = "optimised"
+            else:
+                print(f"[{agent_type}] ⚠ Optimised ({avg_optimised:.3f}) < baseline "                      f"({avg_baseline:.3f}) — saving baseline instead")
+                module.save(save_path)
+                saved_label = "baseline (fallback)"
             elapsed = time.time() - t_start
-            print(f"[{agent_type}] ✓ Done in {elapsed:.1f}s → {save_path}")
+            print(f"[{agent_type}] ✓ Done in {elapsed:.1f}s → {save_path} [{saved_label}]")
 
             return {
                 "success":         True,
@@ -508,6 +484,7 @@ class HALPromptOptimizer:
                 "baseline_score":  round(avg_baseline,   4),
                 "optimised_score": round(avg_optimised,  4),
                 "improvement":     round(improvement,    4),
+                "saved":           saved_label,
                 "train_examples":  len(trainset),
                 "time_s":          round(elapsed, 1),
                 "path":            str(save_path),

@@ -69,6 +69,29 @@ def _balanced_braces(text: str) -> bool:
             and text.count("(") == text.count(")"))
 
 
+def _type_coverage(example, code: str) -> float:
+    """
+    Coverage for artifact types where VSS signal names don't appear verbatim
+    (SELinux .te, Android.bp). Instead checks for expected structural keywords
+    derived from the domain name — a proxy for domain-awareness.
+
+    Falls back to _signal_coverage if no domain is present on example.
+    """
+    domain = (getattr(example, "domain", None) or "").lower().strip()
+    if not domain:
+        return _signal_coverage(example, code)
+
+    # Expect domain-derived identifiers to appear in the output
+    # e.g. domain="adas" → look for "adas", "hal_adas", "vendor.vss.adas"
+    checks = [
+        domain in code.lower(),
+        f"hal_{domain}" in code.lower(),
+        f"vendor.vss.{domain}" in code.lower(),
+    ]
+    hits = sum(1 for c in checks if c)
+    return hits / len(checks)
+
+
 def _signal_coverage(example, code: str) -> float:
     """
     Fraction of expected VSS property short-names found in generated code.
@@ -93,28 +116,18 @@ def _blend(
     w_struct:   float,
     w_syntax:   float,
     w_cov:      float,
-    trace=None,
-    threshold:  float = 0.60,
 ) -> float:
     """
     Weighted blend of the three score components.
     Uses syntax_res.score (not just .ok) so partial credit flows through
     when a validator finds errors but not a total failure.
-
-    During MIPROv2 optimisation (trace is not None), returns binary 0/1
-    so the Bayesian search has a meaningful pass/fail signal rather than
-    a near-constant float that gives no gradient.
-    Raw float is preserved for run_comparison.py evaluation.
     """
-    score = round(
+    return round(
         w_struct * structural
         + w_syntax * syntax_res.score
         + w_cov   * coverage,
         4,
     )
-    if trace is not None:
-        return float(score >= threshold)
-    return score
 
 
 def _make_pred(field: str, code: str):
@@ -160,7 +173,7 @@ def metric_aidl(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("aidl", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.30, 0.50, 0.20, trace=trace, threshold=0.60)
+    score      = _blend(structural, syntax_res, coverage, 0.30, 0.50, 0.20)
     _log("aidl", structural, syntax_res, coverage, score)
     return score
 
@@ -182,7 +195,7 @@ def metric_cpp(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("cpp", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.35, 0.45, 0.20, trace=trace, threshold=0.60)
+    score      = _blend(structural, syntax_res, coverage, 0.35, 0.45, 0.20)
     _log("cpp", structural, syntax_res, coverage, score)
     return score
 
@@ -204,8 +217,8 @@ def metric_selinux(example, prediction, trace=None) -> float:
              ["binder_call","hwservice_use","add_hwservice"]),                0.25),
     ])
     syntax_res = validate("selinux", policy)
-    coverage   = _signal_coverage(example, policy)
-    score      = _blend(structural, syntax_res, coverage, 0.25, 0.65, 0.10, trace=trace, threshold=0.60)
+    coverage   = _type_coverage(example, policy)   # VSS names don't appear in .te files
+    score      = _blend(structural, syntax_res, coverage, 0.25, 0.65, 0.10)
     _log("selinux", structural, syntax_res, coverage, score)
     return score
 
@@ -224,8 +237,8 @@ def metric_build(example, prediction, trace=None) -> float:
         (_balanced_braces(bp),                                                0.15),
     ])
     syntax_res = validate("build", bp)
-    coverage   = _signal_coverage(example, bp)
-    score      = _blend(structural, syntax_res, coverage, 0.35, 0.55, 0.10, trace=trace, threshold=0.60)
+    coverage   = _type_coverage(example, bp)       # VSS names don't appear in Android.bp
+    score      = _blend(structural, syntax_res, coverage, 0.35, 0.55, 0.10)
     _log("build", structural, syntax_res, coverage, score)
     return score
 
@@ -244,7 +257,7 @@ def metric_vintf(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("vintf", manifest)
     coverage   = _signal_coverage(example, manifest)
-    score      = _blend(structural, syntax_res, coverage, 0.30, 0.60, 0.10, trace=trace, threshold=0.60)
+    score      = _blend(structural, syntax_res, coverage, 0.30, 0.60, 0.10)
     _log("vintf", structural, syntax_res, coverage, score)
     return score
 
@@ -271,7 +284,7 @@ def metric_design_doc(example, prediction, trace=None) -> float:
     )
     syntax_res = validate("design_doc", doc)
     coverage   = _signal_coverage(example, doc)
-    score      = _blend(structural, syntax_res, coverage, 0.50, 0.30, 0.20, trace=trace, threshold=0.60)
+    score      = _blend(structural, syntax_res, coverage, 0.50, 0.30, 0.20)
     _log("design_doc", structural, syntax_res, coverage, score)
     return score
 
@@ -290,7 +303,7 @@ def metric_puml(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("puml", puml)
     coverage   = _signal_coverage(example, puml)
-    score      = _blend(structural, syntax_res, coverage, 0.40, 0.40, 0.20, trace=trace, threshold=0.60)
+    score      = _blend(structural, syntax_res, coverage, 0.40, 0.40, 0.20)
     _log("puml", structural, syntax_res, coverage, score)
     return score
 
@@ -317,7 +330,7 @@ def metric_kotlin(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("android_app", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.30, 0.40, 0.30, trace=trace, threshold=0.60)
+    score      = _blend(structural, syntax_res, coverage, 0.30, 0.40, 0.30)
     _log("android_app", structural, syntax_res, coverage, score)
     return score
 
@@ -339,7 +352,7 @@ def metric_layout_xml(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("android_layout", xml)
     coverage   = _signal_coverage(example, xml)
-    score      = _blend(structural, syntax_res, coverage, 0.30, 0.50, 0.20, trace=trace, threshold=0.60)
+    score      = _blend(structural, syntax_res, coverage, 0.30, 0.50, 0.20)
     _log("android_layout", structural, syntax_res, coverage, score)
     return score
 
@@ -365,8 +378,7 @@ def metric_backend_api(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("backend", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.25, 0.50, 0.25,
-                        trace=trace, threshold=0.50)
+    score      = _blend(structural, syntax_res, coverage, 0.25, 0.50, 0.25)
     _log("backend", structural, syntax_res, coverage, score)
     return score
 
@@ -384,8 +396,7 @@ def metric_backend_models(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("backend_model", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.25, 0.50, 0.25,
-                        trace=trace, threshold=0.50)
+    score      = _blend(structural, syntax_res, coverage, 0.25, 0.50, 0.25)
     _log("backend_model", structural, syntax_res, coverage, score)
     return score
 
@@ -404,8 +415,7 @@ def metric_simulator(example, prediction, trace=None) -> float:
     ])
     syntax_res = validate("simulator", code)
     coverage   = _signal_coverage(example, code)
-    score      = _blend(structural, syntax_res, coverage, 0.35, 0.45, 0.20,
-                        trace=trace, threshold=0.50)
+    score      = _blend(structural, syntax_res, coverage, 0.35, 0.45, 0.20)
     _log("simulator", structural, syntax_res, coverage, score)
     return score
 
