@@ -54,21 +54,6 @@ from agents.rag_dspy_backend_agent     import RAGDSPyBackendAgent
 from dspy_opt.metrics    import score_file
 from dspy_opt.validators import validate, print_availability_report
 
-# Shared ChromaDB client singleton
-# ChromaDB raises "instance already exists with different settings" when
-# multiple PersistentClient objects open the same path concurrently.
-# This singleton ensures every agent shares one connection.
-_CHROMA_CLIENT = None
-
-def get_chroma_client(db_path: str = "rag/chroma_db"):
-    """Return the shared ChromaDB client, creating it on first call."""
-    global _CHROMA_CLIENT
-    if _CHROMA_CLIENT is None:
-        import chromadb
-        _CHROMA_CLIENT = chromadb.PersistentClient(path=str(db_path))
-    return _CHROMA_CLIENT
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,38 +66,29 @@ PERSISTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 OUTPUT_DIR             = Path("output_rag_dspy")   # isolated from conditions 1+2
 RESULTS_DIR            = Path("experiments/results")
-MAX_PARALLEL_LLM_CALLS = 4    # RAG+DSPy calls are heavier than baseline
+MAX_PARALLEL_LLM_CALLS = 1  # local 32B: parallel calls cause GPU contention + timeout    # RAG+DSPy calls are heavier than baseline
 BUILD_GLUE_LLM_TIMEOUT = 600
 
 # Shared kwargs passed to every RAGDSPy agent constructor
-# output_root is included in AGENT_CFG so it flows to all RAGDSPy agents
-# via **AGENT_CFG. Each RAGDSPy agent passes it to its sub-agents.
 AGENT_CFG = dict(
     dspy_programs_dir = "dspy_opt/saved",
     rag_top_k         = 3,
     rag_db_path       = "rag/chroma_db",
-    output_root       = str(OUTPUT_DIR),
 )
 
 # Map agent_type → glob pattern to find generated files under OUTPUT_DIR
-# Paths reflect where each agent writes after the output_root fix:
-#   - HAL files:      output_rag_dspy/hardware/...  (via ArchitectAgent)
-#   - backend files:  output_rag_dspy/backend/...   (LLMBackendAgent)
-#   - android files:  output_rag_dspy/packages/...  (LLMAndroidAppAgent)
-#   - design docs:    output_rag_dspy/docs/design/  (DesignDocAgent)
 _FILE_PATTERNS: dict[str, str] = {
     "aidl":           "**/*.aidl",
     "cpp":            "**/*.cpp",
     "selinux":        "**/*.te",
     "build":          "**/Android.bp",
-    "android_app":    "**/*.kt",
-    "android_layout": "**/layout/*.xml",
+    "android_app":    "**/*Fragment*.kt",
+    "android_layout": "**/fragment_*.xml",
     "backend":        "**/main.py",
     "backend_model":  "**/models_*.py",
     "simulator":      "**/simulator_*.py",
-    "design_doc":     "**/*.md",
+    "design_doc":     "**/DESIGN_DOCUMENT.md",
     "puml":           "**/*.puml",
-    "vintf":          "**/manifest.xml",
 }
 
 
@@ -239,20 +215,26 @@ def _generate_one_module(
 
     elapsed = round(time.time() - t0, 2)
 
-    # NOTE: Do NOT score here — files are still in draft/staging location.
-    # Scoring happens in main() after PromoteDraftAgent moves files to
-    # the final OUTPUT_DIR layout. Record generation time only.
+    # Score every generated HAL-layer file for this module
+    print(f"\n   Validating {domain} output files:")
+    file_scores = _score_files(
+        ["aidl", "cpp", "selinux", "build"],
+        domain_filter=domain,
+    )
+    avg_score = _avg(file_scores)
+
     run_metrics.append({
         "domain":          domain,
         "stage":           "hal_module",
         "success":         True,
         "generation_time": elapsed,
-        "metric_score":    0.0,   # updated after promotion in main()
-        "file_scores":     {},    # updated after promotion in main()
+        "metric_score":    avg_score,
+        "file_scores":     file_scores,
         "properties":      len(module_props),
     })
 
-    print(f"\n [MODULE {domain}] → OK  ({elapsed:.1f}s) — scoring deferred to post-promote")
+    print(f"\n [MODULE {domain}] → OK  "
+          f"avg_score={avg_score:.3f}  ({elapsed:.1f}s)")
     return (domain, True, None)
 
 
@@ -273,10 +255,6 @@ def _run_support_components(
             fn()
             elapsed     = round(time.time() - t0, 2)
             file_scores = _score_files(agent_types)
-            if not file_scores:
-                # Files not found under OUTPUT_DIR — log clearly for debugging
-                print(f"  [SCORE WARNING] {stage}: no files found under {OUTPUT_DIR} "
-                      f"for patterns {agent_types}. Check agent output_dir setting.")
             run_metrics.append({
                 "stage":           stage,
                 "success":         True,
@@ -292,7 +270,6 @@ def _run_support_components(
             })
             raise
 
-    # output_root flows via AGENT_CFG to all support agents
     group_a = [
         ("design_doc",  lambda: RAGDSPyDesignDocAgent(**AGENT_CFG).run(
                             module_signal_map, full_spec.properties, yaml_spec),
@@ -307,295 +284,19 @@ def _run_support_components(
                         ["backend", "backend_model", "simulator"]),
     ]
 
-    with ThreadPoolExecutor(max_workers=len(group_a)) as pool:
-        futures = {
-            pool.submit(_run, stage, fn, atypes): stage
-            for stage, fn, atypes in group_a
-        }
-        for future in as_completed(futures):
-            stage = futures[future]
-            try:
-                future.result()
-                print(f"  [SUPPORT] {stage} → OK")
-            except Exception as e:
-                print(f"  [SUPPORT] {stage} → FAILED: {e}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Results
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _save_results(run_metrics: list, t_total: float) -> dict:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    module_metrics = [m for m in run_metrics if m.get("stage") == "hal_module"]
-
-    all_scores: list[float] = []
-    per_agent:  dict[str, list[float]] = {}
-    for m in run_metrics:
-        file_scores = m.get("file_scores", {})
-        for agent_type, score in file_scores.items():
-            per_agent.setdefault(agent_type, []).append(score)
-            all_scores.append(score)
-        # Only include metric_score when no per-file breakdown exists AND
-        # the score is non-zero — avoids diluting avg with scoring failures
-        if "metric_score" in m and not file_scores and m["metric_score"] > 0:
-            all_scores.append(m["metric_score"])
-
-    summary = {
-        "condition":             "rag_dspy",
-        "total_signals":         TEST_SIGNAL_COUNT,
-        "total_modules":         len(module_metrics),
-        "modules_succeeded":     sum(1 for m in module_metrics if m.get("success")),
-        "total_run_time_s":      round(t_total, 1),
-        "avg_metric_score":      round(sum(all_scores) / len(all_scores), 4) if all_scores else 0.0,
-        "avg_generation_time_s": round(
-            sum(m.get("generation_time", 0) for m in run_metrics) / max(len(run_metrics), 1), 2
-        ),
-        "stages_succeeded":      sum(1 for m in run_metrics if m.get("success")),
-        "stages_total":          len(run_metrics),
-        "rag_top_k":             AGENT_CFG["rag_top_k"],
-        "dspy_optimised":        (
-            Path(AGENT_CFG["dspy_programs_dir"]) / "aidl_program" / "program.json"
-        ).exists(),
-        "per_agent_avg_scores":  {
-            k: round(sum(v) / len(v), 4) for k, v in per_agent.items()
-        },
-        "per_stage_metrics":     run_metrics,
-    }
-
-    out_path = RESULTS_DIR / "rag_dspy.json"
-    out_path.write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    print(f"\n[RESULTS] Saved → {out_path}")
-    return summary
-
-
-def _print_summary(summary: dict) -> None:
-    print("\n" + "=" * 65)
-    print("  RAG+DSPy Pipeline — Run Summary")
-    print("=" * 65)
-    print(f"  Modules succeeded    : {summary['modules_succeeded']}/{summary['total_modules']}")
-    print(f"  Avg metric score     : {summary['avg_metric_score']:.3f}")
-    print(f"  Avg generation time  : {summary['avg_generation_time_s']:.1f}s")
-    print(f"  Stages succeeded     : {summary['stages_succeeded']}/{summary['stages_total']}")
-    print(f"  Total run time       : {summary['total_run_time_s']:.0f}s")
-    print(f"  DSPy optimised       : {'yes' if summary['dspy_optimised'] else 'no (fallback)'}")
-    print(f"  RAG top-k            : {summary['rag_top_k']}")
-
-    if summary.get("per_agent_avg_scores"):
-        print("\n  Per-agent avg scores (three-tier: struct+syntax+coverage):")
-        for agent, score in sorted(summary["per_agent_avg_scores"].items()):
-            bar    = "█" * int(score * 20)
-            marker = "✓" if score >= 0.75 else ("~" if score >= 0.50 else "✗")
-            print(f"    {marker} {agent:<18} {score:.3f}  {bar}")
-
-    print("=" * 65)
-    print(f"\n  Outputs  → {OUTPUT_DIR.resolve()}")
-    print(f"  Results  → {RESULTS_DIR.resolve()}/rag_dspy.json")
-    print()
-    print("  Next steps:")
-    print("    python experiments/run_comparison.py")
-    print("    python experiments/analyze_results.py")
-    print("=" * 65)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Preflight checks
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _preflight_rag() -> bool:
-    db_path = Path(AGENT_CFG["rag_db_path"])
-    if not db_path.exists():
-        print(f"[PREFLIGHT] ✗ ChromaDB not found: {db_path}")
-        print("  Run: python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db")
-        return False
-    try:
-        # Use the singleton — this is the ONLY place ChromaDB is opened.
-        # All agents will reuse this same client to avoid "different settings" error.
-        client = get_chroma_client(str(db_path))
-        cols   = client.list_collections()
-        total  = sum(c.count() for c in cols)
-        print(f"[PREFLIGHT] ✓ ChromaDB — {len(cols)} collections, {total:,} chunks")
-        for c in cols:
-            print(f"             {c.name}: {c.count()} chunks")
-        return True
-    except Exception as e:
-        print(f"[PREFLIGHT] ✗ ChromaDB error: {e}")
-        return False
-
-
-def _preflight_dspy() -> None:
-    saved_dir   = Path(AGENT_CFG["dspy_programs_dir"])
-    agent_types = [
-        "aidl","cpp","selinux","build","vintf",
-        "design_doc","puml","android_app","android_layout",
-        "backend","backend_model","simulator",
-    ]
-    found   = [a for a in agent_types
-               if (saved_dir / f"{a}_program" / "program.json").exists()]
-    missing = [a for a in agent_types if a not in found]
-
-    print(f"[PREFLIGHT] DSPy programs: {len(found)}/{len(agent_types)} optimised")
-    if missing:
-        print(f"             Missing (unoptimised fallback): {', '.join(missing)}")
-        print(f"             To optimise: python dspy_opt/optimizer.py "
-              f"--agents {' '.join(missing)}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# main()
-# ─────────────────────────────────────────────────────────────────────────────
-
-def main():
-    t_run_start = time.time()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 70)
-    print("  VSS → AAOS HAL Generation — Condition 3: RAG + DSPy")
-    print("=" * 70)
-    print(f"  Signals       : {TEST_SIGNAL_COUNT}")
-    print(f"  Output dir    : {OUTPUT_DIR.resolve()}")
-    print(f"  RAG db        : {AGENT_CFG['rag_db_path']}")
-    print(f"  DSPy programs : {AGENT_CFG['dspy_programs_dir']}")
-    print(f"  Max parallel  : {MAX_PARALLEL_LLM_CALLS}")
-    print()
-
-    # ── Print which validators are available (include in thesis methods) ───────
-    print_availability_report()
-
-    # ── Preflight ─────────────────────────────────────────────────────────────
-    if not _preflight_rag():
-        return
-    _preflight_dspy()
-
-    # Inject the already-open singleton into AGENT_CFG AND into the
-    # rag.aosp_retriever module so get_retriever() reuses it.
-    # This prevents "instance already exists with different settings" errors
-    # when multiple agents try to open the same ChromaDB path in parallel.
-    _client = get_chroma_client(AGENT_CFG["rag_db_path"])
-    # Do NOT add chroma_client to AGENT_CFG — agents don't accept it.
-    # The singleton is patched directly into rag.aosp_retriever._SHARED_CLIENT
-    # so all agents get it automatically via get_retriever().
-    try:
-        import rag.aosp_retriever as _retriever_mod
-        _retriever_mod._SHARED_CLIENT = _client   # patch the singleton slot
-        print("[PREFLIGHT] ChromaDB singleton patched into rag.aosp_retriever ✓")
-    except Exception as _e:
-        print(f"[PREFLIGHT] Could not patch retriever module: {_e}")
-    print()
-
-    run_metrics: list[dict] = []
-
-    # ── 1. Load + flatten VSS ─────────────────────────────────────────────────
-    print(f"[PREP] Loading {VSS_PATH} ...")
-    try:
-        with open(VSS_PATH, "r", encoding="utf-8") as f:
-            raw_vss = json.load(f)
-        all_leaves = flatten_vss(raw_vss)
-        print(f"       {len(all_leaves)} leaf signals found")
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        return
-
-    selected_signals = dict(
-        list(sorted(all_leaves.items()))[:TEST_SIGNAL_COUNT]
-        if len(all_leaves) >= TEST_SIGNAL_COUNT
-        else all_leaves.items()
-    )
-
-    limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
-    limited_path.write_text(
-        json.dumps(selected_signals, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-    # ── 2. Label ──────────────────────────────────────────────────────────────
-    labelled_path = PERSISTENT_CACHE_DIR / f"VSS_LABELLED_{TEST_SIGNAL_COUNT}.json"
-    if (labelled_path.exists()
-            and labelled_path.stat().st_mtime >= limited_path.stat().st_mtime):
-        print(f"[LABELLING] Cached labels: {labelled_path}")
-        labelled_data = json.loads(labelled_path.read_text())
-    else:
-        print("[LABELLING] Labelling signals...")
-        labelled_data = VSSLabellingAgent().run_on_dict(selected_signals)
-        labelled_path.write_text(
-            json.dumps(labelled_data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    print(f"             {len(labelled_data)} signals labelled")
-
-    # ── 3. YAML spec ──────────────────────────────────────────────────────────
-    print("\n[YAML] Converting to HAL YAML spec...")
-    yaml_spec, prop_count = vss_to_yaml_spec(
-        vss_json_path=str(labelled_path),
-        include_prefixes=None, max_props=None,
-        vendor_namespace=VENDOR_NAMESPACE, add_meta=True,
-    )
-    spec_path = OUTPUT_DIR / f"SPEC_FROM_VSS_{TEST_SIGNAL_COUNT}.yaml"
-    spec_path.write_text(yaml_spec, encoding="utf-8")
-    print(f"       {prop_count} properties")
-
-    # ── 4. Load spec ──────────────────────────────────────────────────────────
-    print("[LOAD] Loading HAL spec...")
-    try:
-        full_spec = load_hal_spec_from_yaml_text(yaml_spec)
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        return
-
-    properties_by_id = {
-        getattr(p, "id", None): p
-        for p in full_spec.properties
-        if getattr(p, "id", None)
-    }
-    print(f"       {len(properties_by_id)} unique property IDs")
-
-    # ── 5. Module planning ────────────────────────────────────────────────────
-    print("\n[PLAN] Running Module Planner...")
-    try:
-        module_signal_map = plan_modules_from_spec(yaml_spec)
-        total = sum(len(v) for v in module_signal_map.values())
-        print(f"       {len(module_signal_map)} modules, {total} signals")
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        return
-
-    # ── 6. HAL module generation (parallel) ───────────────────────────────────
-    print(f"\n[GEN] Generating {len(module_signal_map)} HAL modules "
-          f"(max {MAX_PARALLEL_LLM_CALLS} parallel)...")
-
-    tasks: list[tuple[str, list]] = []
-    for domain, signal_names in module_signal_map.items():
-        props = [properties_by_id[n] for n in signal_names if n in properties_by_id]
-        if not props:
-            print(f"  Skipping {domain} — no properties resolved")
-            continue
-        print(f"  {domain}: {len(props)}/{len(signal_names)} properties matched")
-        tasks.append((domain, props))
-
-    generated_count = 0
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_LLM_CALLS) as pool:
-        futures = {
-            pool.submit(_generate_one_module, domain, props, run_metrics): domain
-            for domain, props in tasks
-        }
-        for future in as_completed(futures):
-            _, ok, _ = future.result()
-            if ok:
-                generated_count += 1
-
-    print(f"\n[GEN] HAL modules: {generated_count}/{len(tasks)} OK")
-
-    # ── 7. Support components ─────────────────────────────────────────────────
-    print("\n[SUPPORT] Generating design docs, SELinux, Android app, backend...")
-    _run_support_components(module_signal_map, full_spec, yaml_spec, run_metrics)
-
-    # Group B — PromoteDraft → Score HAL files → BuildGlue (order matters)
+    # Sequential — local 32B model: parallel GPU contention causes timeouts
+    for stage, fn, atypes in group_a:
+        print(f"  [SUPPORT] {stage}...")
+        try:
+            fn()
+            _score_stage(stage, atypes)
+            print(f"  [SUPPORT] {stage} -> OK")
+        except Exception as e:
+            print(f"  [SUPPORT] {stage} -> FAILED: {e}")
+    # Group B — PromoteDraft → BuildGlue (sequential, order matters)
     print("  [SUPPORT] Running PromoteDraft → BuildGlue...")
     t0 = time.time()
     try:
-        # Pass draft_root and final_root so files land in output_rag_dspy/
-        # not the hardcoded "output/" default
         PromoteDraftAgent().run(
             draft_root=str(OUTPUT_DIR / ".llm_draft" / "latest"),
             final_root=str(OUTPUT_DIR),
@@ -603,21 +304,6 @@ def main():
         print("  [SUPPORT] PromoteDraft → OK")
     except Exception as e:
         print(f"  [SUPPORT] PromoteDraft → FAILED: {e}")
-
-    # Score HAL-layer files NOW — after promotion, files are in OUTPUT_DIR
-    print("\n[SCORE] Scoring HAL layer files (post-promote)...")
-    hal_agent_types = ["aidl", "cpp", "selinux", "build", "vintf"]
-    hal_scores = _score_files(hal_agent_types)
-    hal_avg = _avg(hal_scores)
-    print(f"[SCORE] HAL layer avg score: {hal_avg:.3f}")
-
-    # Update the hal_module entries in run_metrics with real scores
-    for m in run_metrics:
-        if m.get("stage") == "hal_module" and m.get("success"):
-            domain = m.get("domain", "")
-            domain_scores = _score_files(hal_agent_types, domain_filter=domain)
-            m["file_scores"]  = domain_scores
-            m["metric_score"] = _avg(domain_scores)
 
     try:
         module_plan_path = OUTPUT_DIR / "MODULE_PLAN.json"

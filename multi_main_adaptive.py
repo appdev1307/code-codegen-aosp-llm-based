@@ -50,12 +50,11 @@ VENDOR_NAMESPACE = "vendor.vss"
 PERSISTENT_CACHE_DIR = Path("/content/vss_temp")
 PERSISTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-OUTPUT_DIR = Path("output")
+OUTPUT_DIR = Path("output_adaptive")  # C2 isolated from C1 ("output")
 
 # Max LLM calls that can run at the same time.
 # Keep this reasonable — you're bound by API rate limits, not CPU.
-# Local 32B model: parallel calls fight for GPU memory and all timeout.
-MAX_PARALLEL_LLM_CALLS = 1
+MAX_PARALLEL_LLM_CALLS = 1  # local 32B: parallel calls cause GPU contention + timeout
 
 # LLM timeout for build glue generation (seconds)
 # Optimized for qwen2.5-coder:32b local model (10 minutes)
@@ -349,13 +348,10 @@ def main():
             pool.submit(_generate_one_module, domain, props): domain
             for domain, props in tasks_to_submit
         }
-        for future in as_completed(futures, timeout=3600):
-            try:
-                domain, success, error = future.result(timeout=60)
-                if success:
-                    generated_count += 1
-            except Exception as e:
-                print(f"  [MODULE] future failed: {e}")
+        for future in as_completed(futures):
+            domain, success, error = future.result()
+            if success:
+                generated_count += 1
 
     print(f"\nAll HAL module drafts generated ({generated_count}/{len(tasks_to_submit)} modules OK)")
     if total_planned > 0:
@@ -396,7 +392,6 @@ def main():
             module_signal_map, full_spec.properties, yaml_spec)
 
     def _run_selinux():
-        # SELinux is template-based — no adaptive wrapping needed
         generate_selinux(full_spec, output_root=str(OUTPUT_DIR))
 
     def _run_android_app():
@@ -407,7 +402,7 @@ def main():
         LLMBackendAgentAdaptive(output_root=str(OUTPUT_DIR)).run(
             module_signal_map, full_spec.properties)
 
-    # Group A — all independent, run together
+    # Group A — sequential (local 32B: parallel GPU contention causes timeouts)
     group_a_tasks = [
         ("DesignDoc",  _run_design_doc),
         ("SELinux",    _run_selinux),
@@ -415,15 +410,13 @@ def main():
         ("Backend",    _run_backend),
     ]
 
-    with ThreadPoolExecutor(max_workers=len(group_a_tasks)) as pool:
-        futures = {pool.submit(fn): name for name, fn in group_a_tasks}
-        for future in as_completed(futures, timeout=7200):
-            name = futures[future]
-            try:
-                future.result(timeout=60)
-                print(f"  [SUPPORT] {name} -> OK")
-            except Exception as e:
-                print(f"  [SUPPORT] {name} -> FAILED: {e}")
+    for name, fn in group_a_tasks:
+        print(f"  [SUPPORT] {name}...")
+        try:
+            fn()
+            print(f"  [SUPPORT] {name} -> OK")
+        except Exception as e:
+            print(f"  [SUPPORT] {name} -> FAILED: {e}")
 
     # Group B — sequential chain (Promote must finish before BuildGlue)
     print("  [SUPPORT] Running PromoteDraft → BuildGlue (sequential, order matters)...")
