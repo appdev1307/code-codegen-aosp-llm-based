@@ -27,9 +27,10 @@ Usage:
   python dspy_opt/optimizer.py --force
 
 Expected runtime (--mipro-auto light --train-size 4 --force):
-  Fast-path agents  (aidl, design_doc, selinux, build): ~2 LLM calls each  → ~6 min
-  MIPROv2 agents    (cpp, vintf, puml, android_*, etc): ~20 LLM calls each → ~30 min
-  Total: ~35-45 minutes on qwen2.5-coder:32b (was 60-90+ min)
+  Fast-path agents  (aidl, design_doc, selinux, build): ~2 LLM calls each  → ~5 min
+  MIPROv2 agents    (cpp, vintf, puml, android_*, etc): ~5 LLM calls each  → ~15-20 min
+  Total: ~20-25 minutes on qwen2.5-coder:32b
+  (MAX_BOOTSTRAPPED_DEMOS=0, NUM_TRIALS=3, train_size=1)
 
   Speed improvements applied vs original:
     MAX_BOOTSTRAPPED_DEMOS  3 → 1   saves ~96 LLM calls (~48 min)
@@ -77,11 +78,11 @@ DEFAULT_PROGRAMS_DIR  = "dspy_opt/saved"
 
 # Default training set size (number of VSS signals used as examples).
 # PERFORMANCE NOTE: MIPROv2 eval cost = num_trials × train_size LLM calls.
-# With light auto (6 trials):
-#   train_size=2 → 12 trial calls/agent (~16 min total)   ← recommended
-#   train_size=4 → 24 trial calls/agent (~32 min total)
-#   train_size=15 → 90 trial calls/agent (~90 min total)  ← original default
-DEFAULT_TRAIN_SIZE = 2
+# With light auto and MAX_BOOTSTRAPPED_DEMOS=0:
+#   train_size=1 → 3 trial calls/agent (~15-20 min total) ← use this
+#   train_size=2 → 6 trial calls/agent (~30-60 min total)
+#   train_size=4 → 12 trial calls/agent (~60-120 min total)
+DEFAULT_TRAIN_SIZE = 1
 
 # MIPROv2 settings — "medium" balances quality vs optimisation time
 # Options: "light" (fast, lower quality), "medium", "heavy" (best, slow)
@@ -89,18 +90,38 @@ MIPRO_AUTO_SETTING = "medium"
 
 # Max bootstrapped demonstrations MIPROv2 will try.
 # PERFORMANCE: each bootstrap attempt = 1 full LLM forward pass.
-# 12 agents × 4 examples × 3 demos = 144 extra LLM calls (~2hrs extra).
-# Keep at 1 for thesis runs — one demo is enough for Qwen2.5-Coder.
-MAX_BOOTSTRAPPED_DEMOS = 1
+# With 32B model at 60-120s/call, even 1 demo × 8 agents × 1 example = 8 extra calls.
+# Set to 0: MIPROv2 still optimises instructions via trials; no demos needed.
+# Thesis note: this is zero-shot instruction optimisation — valid and faster.
+MAX_BOOTSTRAPPED_DEMOS = 0
 
-# Max labelled demonstrations. Kept at 2 — longer prompts slow every
-# subsequent inference call on a local 32B model.
-MAX_LABELED_DEMOS = 2
+# Max labelled demonstrations. Kept at 1 to keep prompts short.
+MAX_LABELED_DEMOS = 1
 
-# Agents where MIPROv2 gives zero trial variance (metric ceiling or miscalibration).
-# These use LabeledFewShot (~2 LLM calls) instead of MIPROv2 (~36 LLM calls).
-# Re-enable individually once the metric is fixed and re-validated.
-MIPRO_SKIP_AGENTS = {"aidl", "design_doc", "selinux", "build"}
+# Number of MIPROv2 Bayesian optimisation trials.
+# 'light' auto default is 6 trials × train_size calls each.
+# Setting to 3 halves the trial cost while still giving optimiser signal.
+NUM_TRIALS = 3
+
+# Agents that skip MIPROv2 and use LabeledFewShot instead (~2 LLM calls each).
+#
+# MIPROv2 runs only on 4 important agents:
+#   cpp        — confirmed +0.047 improvement
+#   vintf      — confirmed +0.360 improvement (biggest win)
+#   selinux    — was -0.050 due to metric bug; re-run after _type_coverage fix
+#   puml       — unknown result, central to thesis design doc scoring
+#
+# All others skipped because:
+#   aidl, design_doc          — metric ceiling (0.903, 1.000), zero variance
+#   build                     — zero variance, metric miscalibration
+#   android_app, android_layout, backend, backend_model, simulator
+#                             — not HAL core artefacts; app/backend layer
+#                               not scored by VHAL metric suite
+MIPRO_SKIP_AGENTS = {
+    "aidl", "design_doc", "build",
+    "android_app", "android_layout",
+    "backend", "backend_model", "simulator",
+}
 
 # RAG settings for building training examples
 RAG_DB_PATH = "rag/chroma_db"
@@ -477,6 +498,7 @@ class HALPromptOptimizer:
                     trainset=trainset,
                     max_bootstrapped_demos=MAX_BOOTSTRAPPED_DEMOS,
                     max_labeled_demos=MAX_LABELED_DEMOS,
+                    num_trials=NUM_TRIALS,
                     requires_permission_to_run=False,
                     # Modules loaded dynamically — inspect.getsource() fails on them.
                     # Disable program-aware proposer to suppress the warning and make
