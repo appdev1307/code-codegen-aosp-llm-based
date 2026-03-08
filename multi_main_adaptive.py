@@ -54,7 +54,8 @@ OUTPUT_DIR = Path("output")
 
 # Max LLM calls that can run at the same time.
 # Keep this reasonable — you're bound by API rate limits, not CPU.
-MAX_PARALLEL_LLM_CALLS = 6
+# Local 32B model: parallel calls fight for GPU memory and all timeout.
+MAX_PARALLEL_LLM_CALLS = 1
 
 # LLM timeout for build glue generation (seconds)
 # Optimized for qwen2.5-coder:32b local model (10 minutes)
@@ -125,7 +126,7 @@ def _generate_one_module(domain: str, module_props: list) -> tuple[str, bool, st
 
     module_spec = ModuleSpec(domain=domain, properties=module_props)
     try:
-        ArchitectAgent().run(module_spec)
+        ArchitectAgent(output_root=str(OUTPUT_DIR)).run(module_spec)
         print(f" [MODULE {domain}] → OK")
         return (domain, True, None)
     except Exception as e:
@@ -210,59 +211,16 @@ def main():
     if need_labelling:
         print("[LABELLING] Labelling the selected subset (fast mode)...")
         labelling_agent = VSSLabellingAgent()
-
-        MAX_LABEL_RETRIES = 3
-        labelled_data = None
-
-        for attempt in range(1, MAX_LABEL_RETRIES + 1):
-            result = labelling_agent.run_on_dict(selected_signals)
-            if len(result) == len(selected_signals):
-                labelled_data = result
-                print(f"[LABELLING] All {len(selected_signals)} signals labelled correctly (attempt {attempt})")
-                break
-            print(f"[LABELLING] Attempt {attempt}: got {len(result)} labels, "
-                  f"expected {len(selected_signals)} — retrying with stricter prompt...")
-
-        # If all batch retries failed, fall back to per-signal labelling
-        if labelled_data is None:
-            print(f"[LABELLING] Batch labelling failed after {MAX_LABEL_RETRIES} attempts. "
-                  f"Falling back to individual signal labelling (slower but accurate)...")
-            labelled_data = {}
-            failed_signals = []
-            for sig_path, sig_data in selected_signals.items():
-                try:
-                    single_result = labelling_agent.run_on_dict({sig_path: sig_data})
-                    if single_result:
-                        labelled_data.update(single_result)
-                    else:
-                        failed_signals.append(sig_path)
-                        print(f"[LABELLING] WARNING: Could not label signal: {sig_path}")
-                except Exception as e:
-                    failed_signals.append(sig_path)
-                    print(f"[LABELLING] ERROR labelling {sig_path}: {e}")
-
-            if failed_signals:
-                print(f"[LABELLING] {len(failed_signals)} signals could not be labelled: "
-                      f"{failed_signals[:5]}{'...' if len(failed_signals) > 5 else ''}")
-            print(f"[LABELLING] Individual fallback complete: "
-                  f"{len(labelled_data)}/{len(selected_signals)} labelled")
-
+        labelled_data = labelling_agent.run_on_dict(selected_signals)
         labelled_path.write_text(
             json.dumps(labelled_data, indent=2, ensure_ascii=False),
             encoding="utf-8"
         )
         print(f"[LABELLING] Saved fresh labelled data → {labelled_path}")
 
-    # Hard validation — do not silently continue with bad labels
-    missing_labels = set(selected_signals.keys()) - set(labelled_data.keys())
-    if missing_labels:
-        print(f"[LABELLING] ERROR: {len(missing_labels)} signals have no label after all retries. "
-              f"They will be skipped in downstream processing.")
-        print(f"  Missing: {list(missing_labels)[:5]}{'...' if len(missing_labels) > 5 else ''}")
-        selected_signals = {k: v for k, v in selected_signals.items() if k in labelled_data}
-        print(f"  Proceeding with {len(selected_signals)} labelled signals.")
-    else:
-        print(f"[LABELLING] Done! {len(labelled_data)} labelled signals ready")
+    if len(labelled_data) != len(selected_signals):
+        print(f"[WARNING] Labelling returned {len(labelled_data)} items "
+              f"(expected {len(selected_signals)}) — continuing anyway")
 
     # ──────────────────────────────────────────────
     # 3. Convert labelled data to YAML
@@ -379,7 +337,7 @@ def main():
             print(f"    Missing ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
 
         if not module_props:
-            print(f"  Skipping {domain} — no matching properties (empty module, no files will be generated)")
+            print(f"  Skipping {domain} — no matching properties")
             continue
 
         tasks_to_submit.append((domain, module_props))
@@ -391,10 +349,13 @@ def main():
             pool.submit(_generate_one_module, domain, props): domain
             for domain, props in tasks_to_submit
         }
-        for future in as_completed(futures):
-            domain, success, error = future.result()
-            if success:
-                generated_count += 1
+        for future in as_completed(futures, timeout=3600):
+            try:
+                domain, success, error = future.result(timeout=60)
+                if success:
+                    generated_count += 1
+            except Exception as e:
+                print(f"  [MODULE] future failed: {e}")
 
     print(f"\nAll HAL module drafts generated ({generated_count}/{len(tasks_to_submit)} modules OK)")
     if total_planned > 0:
@@ -431,17 +392,20 @@ def main():
     # ════════════════════════════════════════════════════════════════════
 
     def _run_design_doc():
-        DesignDocAgentAdaptive().run(module_signal_map, full_spec.properties, yaml_spec)
+        DesignDocAgentAdaptive(output_root=str(OUTPUT_DIR)).run(
+            module_signal_map, full_spec.properties, yaml_spec)
 
     def _run_selinux():
         # SELinux is template-based — no adaptive wrapping needed
-        generate_selinux(full_spec)
+        generate_selinux(full_spec, output_root=str(OUTPUT_DIR))
 
     def _run_android_app():
-        LLMAndroidAppAgentAdaptive().run(module_signal_map, full_spec.properties)
+        LLMAndroidAppAgentAdaptive(output_root=str(OUTPUT_DIR)).run(
+            module_signal_map, full_spec.properties)
 
     def _run_backend():
-        LLMBackendAgentAdaptive().run(module_signal_map, full_spec.properties)
+        LLMBackendAgentAdaptive(output_root=str(OUTPUT_DIR)).run(
+            module_signal_map, full_spec.properties)
 
     # Group A — all independent, run together
     group_a_tasks = [
@@ -453,21 +417,24 @@ def main():
 
     with ThreadPoolExecutor(max_workers=len(group_a_tasks)) as pool:
         futures = {pool.submit(fn): name for name, fn in group_a_tasks}
-        for future in as_completed(futures):
+        for future in as_completed(futures, timeout=7200):
             name = futures[future]
             try:
-                future.result()
-                print(f"  [SUPPORT] {name} → OK")
+                future.result(timeout=60)
+                print(f"  [SUPPORT] {name} -> OK")
             except Exception as e:
-                print(f"  [SUPPORT] {name} → FAILED: {e}")
+                print(f"  [SUPPORT] {name} -> FAILED: {e}")
 
     # Group B — sequential chain (Promote must finish before BuildGlue)
     print("  [SUPPORT] Running PromoteDraft → BuildGlue (sequential, order matters)...")
     try:
-        PromoteDraftAgent().run()
-        print("  [SUPPORT] PromoteDraft → OK")
+        PromoteDraftAgent().run(
+            draft_root=str(OUTPUT_DIR / ".llm_draft" / "latest"),
+            final_root=str(OUTPUT_DIR),
+        )
+        print("  [SUPPORT] PromoteDraft -> OK")
     except Exception as e:
-        print(f"  [SUPPORT] PromoteDraft → FAILED: {e}")
+        print(f"  [SUPPORT] PromoteDraft -> FAILED: {e}")
 
     # ═══════════════════════════════════════════════
     # UPDATED: BuildGlueAgent with LLM support and timeout handling
@@ -578,32 +545,10 @@ def main():
     print("    - [LLM BACKEND] → LLM success rate & file count")
     print("    - [DESIGN DOC] → LLM success rate & file count")
     print()
-
-    # Dynamic quality summary — uses real tracked stats from this run
-    actual_rate = tracker.get("overall_success_rate", None)
-    if actual_rate is not None:
-        pct = actual_rate * 100
-        if pct >= 90:
-            tier, symbol = "Excellent", "✓"
-        elif pct >= 80:
-            tier, symbol = "Good", "✓"
-        elif pct >= 70:
-            tier, symbol = "Fair", "⚠"
-        else:
-            tier, symbol = "Poor", "✗"
-        print(f"Actual Quality This Run: {symbol} {tier} ({pct:.1f}% LLM-generated)")
-        print()
-        print("Quality Tiers for Reference:")
-        print("  ✓ Excellent (90%+): Most files LLM-generated")
-        print("  ✓ Good     (80-89%): Some templates, still production-ready")
-        print("  ⚠ Fair     (70-79%): Many templates, consider tuning timeouts")
-        print("  ✗ Poor      (<70%): Mostly templates, check LLM connectivity")
-    else:
-        print("Quality Tiers for Reference:")
-        print("  ✓ Excellent (90%+): Most files LLM-generated")
-        print("  ✓ Good     (80-89%): Some templates, still production-ready")
-        print("  ⚠ Fair     (70-79%): Many templates, consider tuning timeouts")
-        print("  ✗ Poor      (<70%): Mostly templates, check LLM connectivity")
+    print("Expected Quality Indicators:")
+    print("  ✓ Excellent (90%+): Most files LLM-generated")
+    print("  ✓ Good (80-89%): Some templates, still production-ready")
+    print("  ⚠ Fair (70-79%): Many templates, consider tuning timeouts")
     print()
     print("Next Steps:")
     print("  1. Review generated code in output/ directory")

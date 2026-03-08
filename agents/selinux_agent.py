@@ -3,9 +3,9 @@ from tools.safe_writer import SafeWriter
 
 
 class SelinuxAgent:
-    def __init__(self):
+    def __init__(self, output_root: str = "output"):
         self.name = "SELinux Agent"
-        self.output_dir = "output/sepolicy"
+        self.output_dir = f"{output_root}/sepolicy"
         self.writer = SafeWriter(self.output_dir)
 
     @staticmethod
@@ -89,5 +89,5 @@ Specification:
             self.writer.write(current, "\n".join(buf))
 
 
-def generate_selinux(spec):
-    return SelinuxAgent().run(spec.to_llm_spec())
+def generate_selinux(spec, output_root: str = "output"):
+    return SelinuxAgent(output_root=output_root).run(spec.to_llm_spec())

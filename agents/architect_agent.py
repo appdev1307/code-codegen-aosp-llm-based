@@ -71,56 +71,33 @@ class ArchitectAgent:
         #   Step 4 — Car framework service   (needs spec)
         #   Step 5 — SELinux policy          (needs spec)
         # ------------------------------------------------------------------
-        print("[ARCHITECT] Steps 1–5: Running in parallel...")
+        # NOTE: Steps run SEQUENTIALLY — local 32B models cannot handle
+        # multiple simultaneous generation calls (GPU memory + timeout).
+        print("[ARCHITECT] Steps 1–5: Running sequentially (local 32B model)...")
 
-        # Derive the Car service class name from the domain
-        # e.g. HVAC → CarHvacService, POWERTRAIN → CarPowertrainService
         car_service_class = f"Car{domain.capitalize()}Service"
-
-        def _step1_aidl():
-            success = generate_vhal_aidl(plan_text, output_root=str(self.output_root))
-            label = "Success" if success else "Used fallback"
-            print(f"  [AIDL] {label}")
-            return ("AIDL", True)
-
-        def _step2_service():
-            success = generate_vhal_service(plan_text, output_root=str(self.output_root))
-            label = "Success" if success else "Used fallback"
-            print(f"  [VHAL SERVICE] {label}")
-            return ("VHAL SERVICE", True)
-
-        def _step3_build():
-            generate_vhal_aidl_bp()
-            generate_vhal_service_build_glue()
-            print("  [BUILD] Build glue generated")
-            return ("BUILD", True)
-
-        def _step4_car_service():
-            generate_car_service(spec)
-            print(f"  [CAR SERVICE] {car_service_class}.java generated")
-            return ("CAR SERVICE", True)
-
-        def _step5_selinux():
-            generate_selinux(spec)
-            print("  [SELINUX] Policy generated")
-            return ("SELINUX", True)
+        draft_root = str(self.output_root / ".llm_draft" / "latest")
 
         steps = [
-            ("Step 1 — AIDL",           _step1_aidl),
-            ("Step 2 — C++ Service",    _step2_service),
-            ("Step 3 — Build glue",     _step3_build),
-            ("Step 4 — Car Service",    _step4_car_service),
-            ("Step 5 — SELinux",        _step5_selinux),
+            ("Step 1 — AIDL",
+             lambda: generate_vhal_aidl(plan_text, output_root=draft_root)),
+            ("Step 2 — C++ Service",
+             lambda: generate_vhal_service(plan_text, output_root=draft_root)),
+            ("Step 3 — Build glue",
+             lambda: (generate_vhal_aidl_bp(), generate_vhal_service_build_glue())),
+            ("Step 4 — Car Service",
+             lambda: generate_car_service(spec, output_root=str(self.output_root))),
+            ("Step 5 — SELinux",
+             lambda: generate_selinux(spec, output_root=str(self.output_root))),
         ]
 
-        with ThreadPoolExecutor(max_workers=len(steps)) as pool:
-            futures = {pool.submit(fn): name for name, fn in steps}
-            for future in as_completed(futures):
-                step_name = futures[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    print(f"  [ARCHITECT] {step_name} FAILED: {e}")
+        for step_name, fn in steps:
+            print(f"  [ARCHITECT] {step_name}...")
+            try:
+                fn()
+                print(f"  [ARCHITECT] {step_name} -> OK")
+            except Exception as e:
+                print(f"  [ARCHITECT] {step_name} FAILED: {e}")
 
         print("[ARCHITECT] ===============================")
         print("[ARCHITECT] Module generation COMPLETE")
