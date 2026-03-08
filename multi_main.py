@@ -388,7 +388,7 @@ def main():
         LLMBackendAgent(output_root=str(OUTPUT_DIR)).run(
             module_signal_map, full_spec.properties)
 
-    # Group A — run sequentially (local 32B: parallel GPU contention causes timeouts)
+    # Group A — sequential (local 32B: parallel GPU contention causes timeouts)
     group_a_tasks = [
         ("DesignDoc",  _run_design_doc),
         ("SELinux",    _run_selinux),
