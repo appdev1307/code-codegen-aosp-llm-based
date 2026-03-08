@@ -26,10 +26,20 @@ Usage:
   # Force re-optimise even if saved programs exist
   python dspy_opt/optimizer.py --force
 
-Expected runtime: 30-90 minutes total for all 12 agents on
-qwen2.5-coder:32b local model (depends on hardware).
-Each agent optimises independently, so you can run a subset
-and re-run the rest later.
+Expected runtime (--mipro-auto light --train-size 4 --force):
+  Fast-path agents  (aidl, design_doc, selinux, build): ~2 LLM calls each  → ~6 min
+  MIPROv2 agents    (cpp, vintf, puml, android_*, etc): ~20 LLM calls each → ~30 min
+  Total: ~35-45 minutes on qwen2.5-coder:32b (was 60-90+ min)
+
+  Speed improvements applied vs original:
+    MAX_BOOTSTRAPPED_DEMOS  3 → 1   saves ~96 LLM calls (~48 min)
+    MAX_LABELED_DEMOS       5 → 2   shorter prompts, faster inference
+    Ceiling agents bypass MIPROv2   saves ~128 LLM calls (~64 min)
+    Eval sample size        3 → 2   saves 24 LLM calls (~12 min)
+    num_threads             2 → 1   removes Ollama contention overhead
+
+  Each agent optimises independently — run a subset with --agents and
+  resume later. Already-saved programs are skipped unless --force is set.
 ═══════════════════════════════════════════════════════════════════
 """
 
@@ -65,19 +75,32 @@ DEFAULT_LABELLED_PATH = "/content/vss_temp/VSS_LABELLED_50.json"
 # Where optimised programs are saved
 DEFAULT_PROGRAMS_DIR  = "dspy_opt/saved"
 
-# Default training set size (number of VSS signals used as examples)
-# 15-20 is a practical default for MIPROv2 with a large local LLM
-DEFAULT_TRAIN_SIZE = 15
+# Default training set size (number of VSS signals used as examples).
+# PERFORMANCE NOTE: MIPROv2 eval cost = num_trials × train_size LLM calls.
+# With light auto (6 trials):
+#   train_size=2 → 12 trial calls/agent (~16 min total)   ← recommended
+#   train_size=4 → 24 trial calls/agent (~32 min total)
+#   train_size=15 → 90 trial calls/agent (~90 min total)  ← original default
+DEFAULT_TRAIN_SIZE = 2
 
 # MIPROv2 settings — "medium" balances quality vs optimisation time
 # Options: "light" (fast, lower quality), "medium", "heavy" (best, slow)
 MIPRO_AUTO_SETTING = "medium"
 
-# Max bootstrapped demonstrations MIPROv2 will try
-MAX_BOOTSTRAPPED_DEMOS = 3
+# Max bootstrapped demonstrations MIPROv2 will try.
+# PERFORMANCE: each bootstrap attempt = 1 full LLM forward pass.
+# 12 agents × 4 examples × 3 demos = 144 extra LLM calls (~2hrs extra).
+# Keep at 1 for thesis runs — one demo is enough for Qwen2.5-Coder.
+MAX_BOOTSTRAPPED_DEMOS = 1
 
-# Max labelled demonstrations to include in optimised prompt
-MAX_LABELED_DEMOS = 5
+# Max labelled demonstrations. Kept at 2 — longer prompts slow every
+# subsequent inference call on a local 32B model.
+MAX_LABELED_DEMOS = 2
+
+# Agents where MIPROv2 gives zero trial variance (metric ceiling or miscalibration).
+# These use LabeledFewShot (~2 LLM calls) instead of MIPROv2 (~36 LLM calls).
+# Re-enable individually once the metric is fixed and re-validated.
+MIPRO_SKIP_AGENTS = {"aidl", "design_doc", "selinux", "build"}
 
 # RAG settings for building training examples
 RAG_DB_PATH = "rag/chroma_db"
@@ -424,7 +447,7 @@ class HALPromptOptimizer:
 
             # 3. Score unoptimised baseline on first few examples
             baseline_scores = self._evaluate_sample(
-                module, metric_fn, trainset[:3], agent_type
+                module, metric_fn, trainset[:2], agent_type
             )
             avg_baseline = (
                 sum(baseline_scores) / len(baseline_scores)
@@ -432,31 +455,38 @@ class HALPromptOptimizer:
             )
             print(f"[{agent_type}] Baseline score: {avg_baseline:.3f}")
 
-            # 4. Run MIPROv2 optimisation
-            print(f"[{agent_type}] Running MIPROv2 ({self.mipro_auto})...")
-            optimizer = dspy.MIPROv2(
-                metric=metric_fn,
-                auto=self.mipro_auto,
-                num_threads=2,        # conservative for large local LLM
-                verbose=False,
-            )
-
-            optimised_module = optimizer.compile(
-                module,
-                trainset=trainset,
-                max_bootstrapped_demos=MAX_BOOTSTRAPPED_DEMOS,
-                max_labeled_demos=MAX_LABELED_DEMOS,
-                requires_permission_to_run=False,
-                # Modules are loaded dynamically so inspect.getsource() fails.
-                # Disable program-aware proposer explicitly to avoid the
-                # "could not find class definition" warning and make the
-                # fallback behaviour intentional.
-                program_aware_proposer=False,
-            )
+            # 4. Choose optimisation strategy.
+            #    Agents in MIPRO_SKIP_AGENTS have zero-variance metric responses
+            #    or already hit ceiling — use LabeledFewShot (~2 LLM calls) instead
+            #    of MIPROv2 (~36 LLM calls) to avoid wasting optimiser budget.
+            if agent_type in MIPRO_SKIP_AGENTS:
+                print(f"[{agent_type}] Using LabeledFewShot "
+                      f"(skip MIPROv2 — metric ceiling or zero-variance agent)")
+                few_shot = dspy.LabeledFewShot(k=min(MAX_LABELED_DEMOS, len(trainset)))
+                optimised_module = few_shot.compile(module, trainset=trainset)
+            else:
+                print(f"[{agent_type}] Running MIPROv2 ({self.mipro_auto})...")
+                optimizer = dspy.MIPROv2(
+                    metric=metric_fn,
+                    auto=self.mipro_auto,
+                    num_threads=1,        # 1 thread: Ollama serialises anyway; >1 adds overhead
+                    verbose=False,
+                )
+                optimised_module = optimizer.compile(
+                    module,
+                    trainset=trainset,
+                    max_bootstrapped_demos=MAX_BOOTSTRAPPED_DEMOS,
+                    max_labeled_demos=MAX_LABELED_DEMOS,
+                    requires_permission_to_run=False,
+                    # Modules loaded dynamically — inspect.getsource() fails on them.
+                    # Disable program-aware proposer to suppress the warning and make
+                    # the fallback intentional.
+                    program_aware_proposer=False,
+                )
 
             # 5. Score optimised module
             optimised_scores = self._evaluate_sample(
-                optimised_module, metric_fn, trainset[:3], agent_type
+                optimised_module, metric_fn, trainset[:2], agent_type
             )
             avg_optimised = (
                 sum(optimised_scores) / len(optimised_scores)
@@ -471,7 +501,8 @@ class HALPromptOptimizer:
                 optimised_module.save(save_path)
                 saved_label = "optimised"
             else:
-                print(f"[{agent_type}] ⚠ Optimised ({avg_optimised:.3f}) < baseline "                      f"({avg_baseline:.3f}) — saving baseline instead")
+                print(f"[{agent_type}] ⚠ Optimised ({avg_optimised:.3f}) < baseline "
+                      f"({avg_baseline:.3f}) — saving baseline instead")
                 module.save(save_path)
                 saved_label = "baseline (fallback)"
             elapsed = time.time() - t_start
@@ -625,6 +656,18 @@ if __name__ == "__main__":
         help="Re-optimise even if saved programs already exist",
     )
     parser.add_argument(
+        "--skip-agents",
+        nargs="+",
+        choices=list(MODULE_REGISTRY.keys()),
+        default=None,
+        help="Additional agent types to skip entirely (on top of MIPRO_SKIP_AGENTS)",
+    )
+    parser.add_argument(
+        "--no-skip",
+        action="store_true",
+        help="Run full MIPROv2 on all agents, including ceiling agents (ablation use)",
+    )
+    parser.add_argument(
         "--lm-model",
         default=LLM_MODEL,
         help=f"DSPy LM model string (default: {LLM_MODEL})",
@@ -648,4 +691,14 @@ if __name__ == "__main__":
         force_reoptimise = args.force,
     )
 
-    optimiser.optimise_all(agent_types=args.agents)
+    # Build final agent list
+    targets = args.agents  # None means all registered agents
+    if args.skip_agents:
+        all_targets = targets or list(MODULE_REGISTRY.keys())
+        targets = [a for a in all_targets if a not in args.skip_agents]
+
+    # --no-skip: run MIPROv2 on ceiling agents too (for ablation study)
+    if args.no_skip:
+        MIPRO_SKIP_AGENTS.clear()
+
+    optimiser.optimise_all(agent_types=targets)

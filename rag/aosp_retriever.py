@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Agent-type → ChromaDB collection mapping
 # Must match collection names created by AOSPIndexer
 # ─────────────────────────────────────────────────────────────────
-COLLECTION_MAP: dict[str, str] = {
+COLLECTION_MAP: dict[str, str | list[str]] = {
     "aidl":          "aosp_aidl",
     "cpp":           "aosp_cpp",
     "selinux":       "aosp_selinux",
@@ -53,11 +53,11 @@ COLLECTION_MAP: dict[str, str] = {
     "vintf":         "aosp_vintf",
     "android_app":   "aosp_car_api",
     "android_layout":"aosp_car_api",   # layouts use same Car API source
-    "design_doc":    "aosp_docs",
-    "puml":          "aosp_docs",      # PlantUML borrows from docs context
-    "backend":       "aosp_docs",      # no dedicated Python AOSP source
-    "backend_model": "aosp_docs",
-    "simulator":     "aosp_docs",
+    "design_doc":    ["aosp_docs", "aosp_cpp"],  # docs + C++ for architecture context
+    "puml":          ["aosp_docs", "aosp_cpp"],  # PlantUML needs component names from C++
+    "backend":       "aosp_cpp",    # C++ VHAL source has VehiclePropValue structs
+    "backend_model": "aosp_cpp",    # Pydantic models mirror VHAL property types
+    "simulator":     "aosp_cpp",    # simulator values come from VHAL property ranges
 }
 
 # Default number of chunks to retrieve
@@ -187,20 +187,11 @@ class AOSPRetriever:
             logger.debug(f"[RAG Retriever] Cache hit for query: {query[:60]}")
             return self._query_cache[cache_key]
 
-        collection_name = COLLECTION_MAP[agent_type]
-        collection = self._get_collection(collection_name)
-        if collection is None:
-            return []
+        collection_names = COLLECTION_MAP[agent_type]
+        if isinstance(collection_names, str):
+            collection_names = [collection_names]
 
-        # Check collection has documents
-        if collection.count() == 0:
-            logger.warning(
-                f"[RAG Retriever] Collection '{collection_name}' is empty. "
-                f"Run AOSPIndexer with --force to rebuild."
-            )
-            return []
-
-        # Embed query
+        # Embed query once (shared across all collections for this agent)
         t0 = time.time()
         embedding = self._embed(query)
         embed_time = time.time() - t0
@@ -210,24 +201,42 @@ class AOSPRetriever:
         if filter_filename:
             where = {"filename": {"$contains": filter_filename}}
 
-        # Query ChromaDB
-        try:
-            results = collection.query(
-                query_embeddings=[embedding],
-                n_results=min(top_k * 2, collection.count()),  # over-fetch then filter
-                where=where,
-                include=["documents", "metadatas", "distances"],
-            )
-        except Exception as e:
-            logger.error(f"[RAG Retriever] Query failed for '{agent_type}': {e}")
-            return []
+        # Query each mapped collection and merge results
+        all_retrieved: list[dict] = []
+        seen_ids: set[str] = set()
+        per_col_k = max(2, top_k // len(collection_names) + 1)  # spread budget
 
-        # Parse and filter results
-        retrieved = self._parse_results(results, top_k)
+        for collection_name in collection_names:
+            collection = self._get_collection(collection_name)
+            if collection is None:
+                continue
+            if collection.count() == 0:
+                logger.warning(
+                    f"[RAG Retriever] Collection '{collection_name}' is empty."
+                )
+                continue
+            try:
+                results = collection.query(
+                    query_embeddings=[embedding],
+                    n_results=min(per_col_k * 2, collection.count()),
+                    where=where,
+                    include=["documents", "metadatas", "distances"],
+                )
+                for r in self._parse_results(results, per_col_k):
+                    uid = f"{r['file']}::{r['chunk_index']}"
+                    if uid not in seen_ids:
+                        seen_ids.add(uid)
+                        all_retrieved.append(r)
+            except Exception as e:
+                logger.error(f"[RAG Retriever] Query failed for '{collection_name}': {e}")
+
+        # Re-rank merged results by score, return top_k
+        all_retrieved.sort(key=lambda x: x["score"], reverse=True)
+        retrieved = all_retrieved[:top_k]
 
         logger.debug(
             f"[RAG Retriever] {agent_type}: {len(retrieved)} results "
-            f"(embed {embed_time:.2f}s, collection={collection_name})"
+            f"(embed {embed_time:.2f}s, collections={collection_names})"
         )
 
         self._query_cache[cache_key] = retrieved
@@ -332,9 +341,16 @@ class AOSPRetriever:
     def collection_stats(self) -> dict[str, int]:
         """Return chunk counts per collection — useful for health checks."""
         stats = {}
-        for agent_type, col_name in COLLECTION_MAP.items():
-            col = self._get_collection(col_name)
-            stats[col_name] = col.count() if col else 0
+        seen = set()
+        for agent_type, col_names in COLLECTION_MAP.items():
+            if isinstance(col_names, str):
+                col_names = [col_names]
+            for col_name in col_names:
+                if col_name in seen:
+                    continue
+                seen.add(col_name)
+                col = self._get_collection(col_name)
+                stats[col_name] = col.count() if col else 0
         return stats
 
     # ──────────────────────────────────────────────

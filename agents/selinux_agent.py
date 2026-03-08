@@ -1,15 +1,35 @@
-from pathlib import Path
 from llm_client import call_llm
 from tools.safe_writer import SafeWriter
 
 
 class SelinuxAgent:
-    def __init__(self, output_root: str = "output"):
+    def __init__(self):
         self.name = "SELinux Agent"
-        self.output_dir = str(Path(output_root) / "sepolicy")
+        self.output_dir = "output/sepolicy"
         self.writer = SafeWriter(self.output_dir)
 
+    @staticmethod
+    def _trim_spec(spec_text: str) -> str:
+        """Return a compact summary: domain + property names only.
+        This avoids sending the full 50-property spec (large prompt -> timeout).
+        """
+        lines = []
+        domain = "UNKNOWN"
+        prop_names = []
+        for line in spec_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("HAL Domain:"):
+                domain = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("- Name:"):
+                prop_names.append(stripped.split(":", 1)[1].strip())
+        lines.append(f"Domain: {domain}")
+        lines.append(f"Properties ({len(prop_names)}):")
+        for n in prop_names:
+            lines.append(f"  {n}")
+        return "\n".join(lines)
+
     def build_prompt(self, spec_text: str) -> str:
+        compact = self._trim_spec(spec_text)
         return f"""
 You are an Android SELinux policy expert.
 
@@ -18,7 +38,8 @@ Generate SELinux rules for an Android Automotive Vehicle HAL service.
 Rules:
 - Follow AOSP SELinux conventions
 - Define service domain and type
-- Allow required binder communication
+- Allow required binder communication (binder_call, hwservice_use, add_hwservice)
+- Use hal_vehicle_default as the HAL domain type
 - No placeholders
 - No explanations
 
@@ -32,7 +53,7 @@ Output format EXACTLY:
 <file content>
 
 Specification:
-{spec_text}
+{compact}
 """
 
     def run(self, spec_text: str):
@@ -68,5 +89,5 @@ Specification:
             self.writer.write(current, "\n".join(buf))
 
 
-def generate_selinux(spec, output_root: str = "output"):
-    return SelinuxAgent(output_root=output_root).run(spec.to_llm_spec())
+def generate_selinux(spec):
+    return SelinuxAgent().run(spec.to_llm_spec())

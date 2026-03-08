@@ -12,6 +12,9 @@ from tools.json_contract import parse_json_object
 
 
 class VHALServiceAgent:
+    # Max properties per LLM call — avoids 1200s timeouts on 32B models
+    CHUNK_SIZE = 12
+
     def __init__(self, output_root: str = "output/.llm_draft/latest"):
         self.name = "VHAL C++ Service Agent (VSS-aware + strong prompt)"
         self.output_root = output_root
@@ -141,8 +144,58 @@ No explanations. No markdown. Pure JSON only.
 
     def run(self, plan_text: str) -> bool:
         print(f"[DEBUG] {self.name}: start")
-        prompt = self.build_prompt(plan_text)
+        props = self._parse_properties(plan_text)
 
+        if not props or len(props) <= self.CHUNK_SIZE:
+            return self._run_single(plan_text, "attempt1")
+
+        # Large spec: generate VssPropertyIds.h from all props (one call),
+        # then generate VehicleHalService.cpp in chunks and merge the
+        # getAllPropConfigs body across chunks.
+        print(f"[DEBUG] {self.name}: {len(props)} properties -> "
+              f"chunking into batches of {self.CHUNK_SIZE}")
+        chunks = [props[i:i + self.CHUNK_SIZE]
+                  for i in range(0, len(props), self.CHUNK_SIZE)]
+
+        # Step A: generate the header (VssPropertyIds.h) from all props — it's small
+        header_ok = self._generate_header(props)
+
+        # Step B: generate CPP per chunk, extract getAllPropConfigs blocks, merge
+        all_prop_config_blocks: list = []
+        cpp_boilerplate_written = False
+
+        for idx, chunk in enumerate(chunks):
+            chunk_plan = self._make_chunk_plan(plan_text, chunk, idx, len(chunks))
+            raw = call_llm(
+                prompt=self.build_prompt(chunk_plan),
+                system=self.system_prompt,
+                temperature=0.25,
+                top_p=0.95,
+                response_format="json",
+            )
+            self._dump_raw(raw, f"chunk{idx + 1}")
+            blocks = self._extract_prop_config_block(raw)
+            all_prop_config_blocks.extend(blocks)
+            print(f"[DEBUG] {self.name}: chunk {idx + 1}/{len(chunks)} "
+                  f"-> {len(blocks)} prop config entries")
+            if idx == 0:
+                cpp_boilerplate_written = self._write_cpp_from_raw(raw)
+
+        cpp_ok = self._merge_cpp_prop_configs(all_prop_config_blocks)
+
+        if not cpp_boilerplate_written:
+            print(f"[WARN] {self.name}: CPP boilerplate missing -> repair")
+            self._run_single(plan_text, "repair_cpp")
+        if not header_ok:
+            print(f"[WARN] {self.name}: header missing -> fallback header")
+            self._write_fallback_header(props)
+
+        success = (cpp_boilerplate_written or cpp_ok) and header_ok
+        print(f"[DEBUG] {self.name}: done (chunked {'success' if success else 'partial/fallback'})")
+        return success
+
+    def _run_single(self, plan_text: str, label: str) -> bool:
+        prompt = self.build_prompt(plan_text)
         raw = call_llm(
             prompt=prompt,
             system=self.system_prompt,
@@ -150,20 +203,16 @@ No explanations. No markdown. Pure JSON only.
             top_p=0.95,
             response_format="json",
         )
-        self._dump_raw(raw, "attempt1")
-
+        self._dump_raw(raw, label)
         if self._try_write_from_output(raw):
-            print(f"[DEBUG] {self.name}: done (LLM success on first try)")
+            print(f"[DEBUG] {self.name}: done ({label} success)")
             return True
-
-        print(f"[DEBUG] {self.name}: first attempt failed → repair")
         repair_prompt = (
             prompt
             + "\n\nPREVIOUS OUTPUT WAS INVALID OR INCOMPLETE.\n"
             "You MUST output valid JSON with BOTH files and correct method implementations.\n"
             "Include getAllPropConfigs with real configs. Fix signatures. No excuses."
         )
-
         raw2 = call_llm(
             prompt=repair_prompt,
             system=self.system_prompt,
@@ -171,14 +220,95 @@ No explanations. No markdown. Pure JSON only.
             top_p=0.95,
             response_format="json",
         )
-        self._dump_raw(raw2, "attempt2")
-
+        self._dump_raw(raw2, label + "_repair")
         if self._try_write_from_output(raw2):
-            print(f"[DEBUG] {self.name}: success after repair")
+            print(f"[DEBUG] {self.name}: success ({label} repair)")
             return True
-
-        print(f"[WARN] {self.name}: LLM failed → fallback")
+        print(f"[WARN] {self.name}: LLM failed -> fallback")
         self._write_fallback()
+        return False
+
+    def _make_chunk_plan(self, plan_text: str, chunk: list, idx: int, total: int) -> str:
+        import yaml as _yaml
+        try:
+            if plan_text.strip().startswith("spec_version"):
+                base = _yaml.safe_load(plan_text)
+            else:
+                import json as _json
+                base = _json.loads(plan_text)
+        except Exception:
+            base = {}
+        base = dict(base)
+        base["properties"] = chunk
+        base["_chunk_info"] = f"{idx + 1}/{total}"
+        import json as _json
+        return _json.dumps(base, separators=(",", ":"))
+
+    def _generate_header(self, props: list) -> bool:
+        """Generate VssPropertyIds.h from the full property list (small, fast)."""
+        lines = ["#pragma once", "#include <cstdint>", ""]
+        for i, p in enumerate(props):
+            name = p.get("name", f"PROP_{i}") if isinstance(p, dict) else f"PROP_{i}"
+            lines.append(f"constexpr int32_t {name} = 0xF{i:07X};")
+        lines.append("")
+        content = "\n".join(lines)
+        self.writer.write(self.ids_header, content)
+        return True
+
+    def _write_fallback_header(self, props: list) -> None:
+        self._generate_header(props)
+
+    def _extract_prop_config_block(self, raw: str) -> list:
+        """Extract VehiclePropConfig cfg blocks from C++ source in LLM JSON output."""
+        try:
+            data = json.loads(raw.strip())
+            for item in data.get("files", []):
+                path = (item.get("path") or "").strip()
+                if "VehicleHalService.cpp" in path:
+                    content = item.get("content", "")
+                    blocks = []
+                    # Extract each "VehiclePropConfig cfg;" block up to push_back
+                    pattern = r'(VehiclePropConfig cfg[^;]*;.*?_aidl_return->push_back[^;]+;)'
+                    for m in re.findall(pattern, content, re.DOTALL):
+                        blocks.append(m.strip())
+                    return blocks
+        except Exception:
+            pass
+        return []
+
+    def _write_cpp_from_raw(self, raw: str) -> bool:
+        """Write VehicleHalService.cpp from first-chunk LLM output (may be partial)."""
+        try:
+            data = json.loads(raw.strip())
+            for item in data.get("files", []):
+                path = self._sanitize_path((item.get("path") or "").strip())
+                content = item.get("content")
+                if path == self.impl_cpp and isinstance(content, str):
+                    self.writer.write(path, content.rstrip() + "\n")
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _merge_cpp_prop_configs(self, blocks: list) -> bool:
+        """Rewrite getAllPropConfigs in the saved CPP with merged blocks."""
+        if not blocks:
+            return False
+        cpp_path = Path(self.output_root) / self.impl_cpp
+        if not cpp_path.exists():
+            return False
+        try:
+            original_cpp = cpp_path.read_text(encoding="utf-8")
+            merged_body = "\n\n    ".join(blocks)
+            # Replace the getAllPropConfigs body with merged blocks
+            pattern = r'(getAllPropConfigs\([^)]*\)[^{]*\{)[^}]*(\s*return ndk::ScopedAStatus::ok\(\);\s*\})'
+            replacement = f"\1\n    {merged_body}\n    \2"
+            new_cpp = re.sub(pattern, replacement, original_cpp, flags=re.DOTALL)
+            if new_cpp != original_cpp:
+                cpp_path.write_text(new_cpp, encoding="utf-8")
+                return True
+        except Exception:
+            pass
         return False
 
     # ────────────────────────────────────────────────
@@ -246,7 +376,8 @@ constexpr int32_t VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENABLED = 0xF000
 # Top-level entry point — this is what the pipeline expects
 # ────────────────────────────────────────────────
 
-def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any], output_root: str = "output/.llm_draft/latest") -> bool:
+def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any],
+                          output_root: str = "output/.llm_draft/latest") -> bool:
     """
     Main entry point for the pipeline / architect_agent.py.
     Converts input to plan_text and runs the agent.
