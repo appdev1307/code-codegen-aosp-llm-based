@@ -9,6 +9,7 @@ from agents.vhal_aidl_build_agent import generate_vhal_aidl_bp
 from agents.vhal_service_build_agent import generate_vhal_service_build_glue
 from agents.car_service_agent import generate_car_service
 from agents.selinux_agent import generate_selinux
+from agents.promote_draft_agent import PromoteDraftAgent
 
 
 class ArchitectAgent:
@@ -84,7 +85,8 @@ class ArchitectAgent:
             ("Step 2 — C++ Service",
              lambda: generate_vhal_service(plan_text, output_root=draft_root)),
             ("Step 3 — Build glue",
-             lambda: (generate_vhal_aidl_bp(), generate_vhal_service_build_glue())),
+             lambda: (generate_vhal_aidl_bp(output_root=str(self.output_root)),
+                      generate_vhal_service_build_glue(output_root=str(self.output_root)))),
             ("Step 4 — Car Service",
              lambda: generate_car_service(spec, output_root=str(self.output_root))),
             ("Step 5 — SELinux",
@@ -98,6 +100,17 @@ class ArchitectAgent:
                 print(f"  [ARCHITECT] {step_name} -> OK")
             except Exception as e:
                 print(f"  [ARCHITECT] {step_name} FAILED: {e}")
+
+        # Promote AIDL/C++ drafts from .llm_draft/latest -> output/hardware
+        print("[ARCHITECT] Promoting drafts to final output...")
+        try:
+            PromoteDraftAgent().run(
+                draft_root=str(self.output_root / ".llm_draft" / "latest"),
+                final_root=str(self.output_root),
+            )
+            print("[ARCHITECT] Promote -> OK")
+        except Exception as e:
+            print(f"[ARCHITECT] Promote FAILED: {e}")
 
         print("[ARCHITECT] ===============================")
         print("[ARCHITECT] Module generation COMPLETE")

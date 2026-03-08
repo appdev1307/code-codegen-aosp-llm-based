@@ -388,7 +388,7 @@ def main():
         LLMBackendAgent(output_root=str(OUTPUT_DIR)).run(
             module_signal_map, full_spec.properties)
 
-    # Group A — all independent, run together
+    # Group A — run sequentially (local 32B: parallel GPU contention causes timeouts)
     group_a_tasks = [
         ("DesignDoc",  _run_design_doc),
         ("SELinux",    _run_selinux),
@@ -396,15 +396,13 @@ def main():
         ("Backend",    _run_backend),
     ]
 
-    with ThreadPoolExecutor(max_workers=len(group_a_tasks)) as pool:
-        futures = {pool.submit(fn): name for name, fn in group_a_tasks}
-        for future in as_completed(futures, timeout=7200):  # 2hr max for group A
-            name = futures[future]
-            try:
-                future.result(timeout=60)
-                print(f"  [SUPPORT] {name} -> OK")
-            except Exception as e:
-                print(f"  [SUPPORT] {name} -> FAILED: {e}")
+    for name, fn in group_a_tasks:
+        print(f"  [SUPPORT] {name}...")
+        try:
+            fn()
+            print(f"  [SUPPORT] {name} -> OK")
+        except Exception as e:
+            print(f"  [SUPPORT] {name} -> FAILED: {e}")
 
     # Group B — sequential chain (Promote must finish before BuildGlue)
     print("  [SUPPORT] Running PromoteDraft → BuildGlue (sequential, order matters)...")
