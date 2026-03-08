@@ -98,10 +98,12 @@ MAX_BOOTSTRAPPED_DEMOS = 0
 # Max labelled demonstrations. Kept at 1 to keep prompts short.
 MAX_LABELED_DEMOS = 1
 
-# Number of MIPROv2 Bayesian optimisation trials.
-# 'light' auto default is 6 trials × train_size calls each.
-# Setting to 3 halves the trial cost while still giving optimiser signal.
-NUM_TRIALS = 3
+# Number of instruction candidates MIPROv2 will propose and evaluate.
+# Each candidate = 1 fast LLM call (proposer) + train_size slow calls (eval).
+# 3 candidates = 3 proposal calls + 3 eval calls per agent — minimum viable.
+# Note: do NOT pass num_trials to compile() — it is not a valid parameter.
+# num_candidates here replaces the auto= setting to avoid its high trial count.
+NUM_CANDIDATES = 3
 
 # Agents that skip MIPROv2 and use LabeledFewShot instead (~2 LLM calls each).
 #
@@ -370,7 +372,9 @@ class HALPromptOptimizer:
 
         # Configure DSPy LM — connects to your existing local Ollama instance
         print(f"[Optimizer] Connecting to LLM: {lm_model} @ {lm_api_base}")
-        lm = dspy.LM(lm_model, api_base=lm_api_base, cache=False)
+        # timeout=600: DSPy default is 120s which causes timeouts on 32B models.
+        # 600s (10 min) is safe for chunked prompts (15 props each).
+        lm = dspy.LM(lm_model, api_base=lm_api_base, cache=False, timeout=600)
         dspy.configure(lm=lm)
         print(f"[Optimizer] LM configured ✓")
 
@@ -489,7 +493,7 @@ class HALPromptOptimizer:
                 print(f"[{agent_type}] Running MIPROv2 ({self.mipro_auto})...")
                 optimizer = dspy.MIPROv2(
                     metric=metric_fn,
-                    auto=self.mipro_auto,
+                    num_candidates=NUM_CANDIDATES,   # instruction candidates to propose
                     num_threads=1,        # 1 thread: Ollama serialises anyway; >1 adds overhead
                     verbose=False,
                 )
@@ -498,7 +502,6 @@ class HALPromptOptimizer:
                     trainset=trainset,
                     max_bootstrapped_demos=MAX_BOOTSTRAPPED_DEMOS,
                     max_labeled_demos=MAX_LABELED_DEMOS,
-                    num_trials=NUM_TRIALS,
                     requires_permission_to_run=False,
                     # Modules loaded dynamically — inspect.getsource() fails on them.
                     # Disable program-aware proposer to suppress the warning and make
