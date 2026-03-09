@@ -349,7 +349,7 @@ class HALPromptOptimizer:
 
         # Configure DSPy LM — connects to your existing local Ollama instance
         print(f"[Optimizer] Connecting to LLM: {lm_model} @ {lm_api_base}")
-        lm = dspy.LM(lm_model, api_base=lm_api_base, cache=False)
+        lm = dspy.LM(lm_model, api_base=lm_api_base, cache=False, timeout=600)
         dspy.configure(lm=lm)
         print(f"[Optimizer] LM configured ✓")
 
