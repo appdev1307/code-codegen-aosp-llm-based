@@ -549,7 +549,10 @@ def main():
     print("  [SUPPORT] Running PromoteDraft → BuildGlue...")
     t0 = time.time()
     try:
-        PromoteDraftAgent().run()
+        PromoteDraftAgent().run(
+            draft_root=str(OUTPUT_DIR / ".llm_draft" / "latest"),
+            final_root=str(OUTPUT_DIR),
+        )
         print("  [SUPPORT] PromoteDraft → OK")
     except Exception as e:
         print(f"  [SUPPORT] PromoteDraft → FAILED: {e}")

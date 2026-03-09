@@ -649,7 +649,7 @@ class LLMBackendAgent:
             
             path = self.backend_dir / filename
             path.parent.mkdir(parents=True, exist_ok=True)
-            self.writer.write(str(path), content.strip() + "\n")
+            self.writer.write(str(path.relative_to(self.output_root)), content.strip() + "\n")
     
     async def _generate_main(self, modules: List[str]):
         """Generate main.py"""
@@ -665,7 +665,7 @@ class LLMBackendAgent:
             self.stats["template_fallback"] += 1
         
         path = self.backend_dir / "main.py"
-        self.writer.write(str(path), content.strip() + "\n")
+        self.writer.write(str(path.relative_to(self.output_root)), content.strip() + "\n")
     
     def _print_statistics(self):
         """Print statistics"""

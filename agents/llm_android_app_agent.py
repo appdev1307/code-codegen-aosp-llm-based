@@ -866,7 +866,7 @@ class LLMAndroidAppAgent:
                 path = self.app_dir / "src/main/res/layout/activity_main.xml"
             
             path.parent.mkdir(parents=True, exist_ok=True)
-            self.writer.write(str(path), content.strip() + "\n")
+            self.writer.write(str(path.relative_to(self.output_root)), content.strip() + "\n")
     
     async def _generate_layouts(self, modules: List[str], module_signal_map: dict,
                                 props_by_name: dict) -> List[Tuple]:
@@ -923,7 +923,7 @@ class LLMAndroidAppAgent:
             
             path = self.app_dir / "src/main/res/layout" / filename
             path.parent.mkdir(parents=True, exist_ok=True)
-            self.writer.write(str(path), content.strip() + "\n")
+            self.writer.write(str(path.relative_to(self.output_root)), content.strip() + "\n")
         
         return layout_info
     
@@ -956,7 +956,7 @@ class LLMAndroidAppAgent:
             
             path = self.app_dir / f"src/main/java/{PACKAGE.replace('.', '/')}/{class_name}.kt"
             path.parent.mkdir(parents=True, exist_ok=True)
-            self.writer.write(str(path), content.strip() + "\n")
+            self.writer.write(str(path.relative_to(self.output_root)), content.strip() + "\n")
     
     async def _generate_main_activity(self, modules: List[str]):
         """Generate MainActivity"""
@@ -973,7 +973,7 @@ class LLMAndroidAppAgent:
         
         path = self.app_dir / f"src/main/java/{PACKAGE.replace('.', '/')}/MainActivity.kt"
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.writer.write(str(path), content.strip() + "\n")
+        self.writer.write(str(path.relative_to(self.output_root)), content.strip() + "\n")
     
     def _print_statistics(self):
         """Print generation statistics"""

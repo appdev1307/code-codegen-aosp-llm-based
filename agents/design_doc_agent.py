@@ -618,7 +618,7 @@ class DesignDocAgent:
             
             # Write file
             full_path = self.doc_dir / filename
-            self.writer.write(str(full_path), content.rstrip() + "\n")
+            self.writer.write(str(full_path.relative_to(self.output_root)), content.rstrip() + "\n")
         
         # Print statistics
         self._print_statistics()

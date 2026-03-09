@@ -6,7 +6,9 @@ class SelinuxAgent:
     def __init__(self, output_root: str = "output"):
         self.name = "SELinux Agent"
         self.output_dir = f"{output_root}/sepolicy"
-        self.writer = SafeWriter(self.output_dir)
+        # SafeWriter root = output_root (not output_root/sepolicy)
+        # because LLM outputs paths like "sepolicy/private/vehicle_hal.te"
+        self.writer = SafeWriter(output_root)
 
     @staticmethod
     def _trim_spec(spec_text: str) -> str:
