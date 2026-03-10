@@ -184,13 +184,14 @@ def main():
 
     print(f"Selected {len(selected_signals)} leaf signals for labelling & processing")
 
-    # Write selected flat subset
+    # Write selected flat subset — only if contents changed, to preserve label cache validity
     limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
-    limited_path.write_text(
-        json.dumps(selected_signals, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
-    print(f" Wrote selected flat subset → {limited_path}")
+    new_limited_text = json.dumps(selected_signals, indent=2, ensure_ascii=False)
+    if not limited_path.exists() or limited_path.read_text(encoding="utf-8") != new_limited_text:
+        limited_path.write_text(new_limited_text, encoding="utf-8")
+        print(f" Wrote selected flat subset → {limited_path}")
+    else:
+        print(f" Selected flat subset unchanged → {limited_path} (cache preserved)")
 
     # ──────────────────────────────────────────────
     # 2. Label the selected subset — with cache invalidation
