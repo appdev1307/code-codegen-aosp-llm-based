@@ -111,32 +111,57 @@ Response MUST be ONLY the array:
 
     def run_on_dict(self, signal_dict: dict):
         n = len(signal_dict)
-        print(f"[LABELLING] Labelling {n} pre-selected signals (batched + async)...")
+        print(f"[LABELLING] Labelling {n} pre-selected signals (sequential batches)...")
 
-        batch_size = 4   # lowered for better LLM reliability
-        max_concurrent = 5
-
+        batch_size = 4
         items = list(signal_dict.items())
         batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
 
         labelled_data = {}
-        semaphore = asyncio.Semaphore(max_concurrent)
-
-        async def run_all():
-            tasks = [self._label_batch_async(batch, semaphore) for batch in batches]
-            return await asyncio.gather(*tasks, return_exceptions=True)
-
-        loop = asyncio.get_event_loop()
-        results = loop.run_until_complete(run_all())
-
         pbar = tqdm(total=n, desc="Labelling signals", unit="signal", ncols=100)
-        for batch_result in results:
-            if isinstance(batch_result, Exception):
-                print(f"[ERROR] Batch failed: {batch_result}")
-                continue
-            for path, enhanced in batch_result:
-                labelled_data[enhanced["normalized_id"]] = enhanced
-                pbar.update(1)
+
+        for b_idx, batch in enumerate(batches):
+            print(f"[LABELLING] Batch {b_idx+1}/{len(batches)} ({len(batch)} signals)...")
+            try:
+                # _label_batch_sync: same logic as _label_batch_async but blocking
+                prompt = self._build_batch_prompt(batch)
+                labels_list = None
+                for attempt in range(2):
+                    try:
+                        raw = call_llm(prompt=prompt, temperature=0.0, response_format="json")
+                        raw_clean = raw.strip()
+                        if raw_clean.startswith("```json"):
+                            raw_clean = raw_clean.split("```json", 1)[1].strip()
+                        if raw_clean.endswith("```"):
+                            raw_clean = raw_clean.rsplit("```", 1)[0].strip()
+                        parsed = json.loads(raw_clean)
+                        if isinstance(parsed, dict):
+                            parsed = [parsed]
+                        if not isinstance(parsed, list):
+                            raise ValueError("Not a list")
+                        if len(parsed) != len(batch):
+                            print(f"[INFO] Length mismatch ({len(parsed)} vs {len(batch)}) — padding")
+                            parsed += [parsed[0]] * (len(batch) - len(parsed))
+                        labels_list = parsed
+                        break
+                    except Exception as e:
+                        print(f"[WARNING] Attempt {attempt+1}/2 failed: {e}")
+                        if attempt == 1:
+                            labels_list = [{"domain": "OTHER", "safety_level": "Low",
+                                            "ui_widget": "Text", "ui_range_min": None,
+                                            "ui_range_max": None, "ui_step": None,
+                                            "ui_unit": None, "aosp_standard": False}] * len(batch)
+
+                for (path, signal), labels in zip(batch, labels_list):
+                    enhanced = signal.copy()
+                    enhanced["labels"] = labels
+                    enhanced["normalized_id"] = path.upper().replace(".", "_")
+                    labelled_data[enhanced["normalized_id"]] = enhanced
+                    pbar.update(1)
+
+            except Exception as e:
+                print(f"[ERROR] Batch {b_idx+1} failed: {e}")
+                pbar.update(len(batch))
 
         pbar.close()
         print(f"[LABELLING] Done! {len(labelled_data)} labelled signals ready")
