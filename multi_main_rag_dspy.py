@@ -74,6 +74,7 @@ AGENT_CFG = dict(
     dspy_programs_dir = "dspy_opt/saved",
     rag_top_k         = 3,
     rag_db_path       = "rag/chroma_db",
+    output_root       = str(OUTPUT_DIR),   # → output_rag_dspy/ (C3 isolated)
 )
 
 # Map agent_type → glob pattern to find generated files under OUTPUT_DIR
