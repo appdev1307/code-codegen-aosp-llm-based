@@ -98,13 +98,17 @@ MANDATORY REQUIREMENTS — you MUST implement ALL of these:
 
 2. Class inherits BnIVehicle
 
-3. Implement ALL these methods with correct signatures:
+3. Implement ALL these methods with EXACT names and signatures (names must match exactly):
+   - getAllPropertyConfigs(std::vector<VehiclePropConfig>* _aidl_return)   ← EXACT NAME REQUIRED
+   - getValues(const std::vector<GetValueRequest>& requests, std::vector<GetValueResult>* _aidl_return)  ← EXACT NAME REQUIRED
+   - setValues(const std::vector<SetValueRequest>& requests)               ← EXACT NAME REQUIRED
    - get(int32_t propId, int32_t areaId, VehiclePropValue* _aidl_return)
    - set(const VehiclePropValue& value)
-   - getAllPropConfigs(std::vector<VehiclePropConfig>* _aidl_return)
-   - getPropConfigs(const std::vector<int32_t>& props, std::vector<VehiclePropConfig>* _aidl_return)
+   - subscribe(const std::shared_ptr<IVehicleCallback>& callback, const std::vector<SubscribeOptions>& options)
+   - unsubscribe(const std::shared_ptr<IVehicleCallback>& callback, const std::vector<int32_t>& propIds)
    - registerCallback(const std::shared_ptr<IVehicleCallback>& callback)
    - unregisterCallback(const std::shared_ptr<IVehicleCallback>& callback)
+   Include VehiclePropValue type in all value handling.
 
 4. Use thread-safe unordered_map<PropKey, VehiclePropValue> or vector
 
@@ -332,9 +336,53 @@ No explanations. No markdown. Pure JSON only.
         return p
 
     def _write_fallback(self) -> None:
-        cpp = """// Fallback minimal C++ implementation
+        cpp = """// Fallback minimal C++ VHAL implementation
 #include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
-// ... placeholder code ...
+#include <aidl/android/hardware/automotive/vehicle/IVehicleCallback.h>
+#include <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
+#include <aidl/android/hardware/automotive/vehicle/VehiclePropConfig.h>
+#include "VssPropertyIds.h"
+
+namespace aidl::android::hardware::automotive::vehicle {
+
+class VehicleHalService : public BnIVehicle {
+public:
+    ndk::ScopedAStatus getAllPropertyConfigs(std::vector<VehiclePropConfig>* _aidl_return) override {
+        if (!_aidl_return) return ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
+        _aidl_return->clear();
+        return ndk::ScopedAStatus::ok();
+    }
+
+    ndk::ScopedAStatus getValues(
+        const std::vector<GetValueRequest>& requests,
+        std::vector<GetValueResult>* _aidl_return) override {
+        if (!_aidl_return) return ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
+        for (const auto& req : requests) {
+            GetValueResult res;
+            res.requestId = req.requestId;
+            res.status = StatusCode::NOT_AVAILABLE;
+            _aidl_return->push_back(std::move(res));
+        }
+        return ndk::ScopedAStatus::ok();
+    }
+
+    ndk::ScopedAStatus setValues(
+        const std::vector<SetValueRequest>& requests) override {
+        return ndk::ScopedAStatus::ok();
+    }
+
+    ndk::ScopedAStatus registerCallback(
+        const std::shared_ptr<IVehicleCallback>& callback) override {
+        return ndk::ScopedAStatus::ok();
+    }
+
+    ndk::ScopedAStatus unregisterCallback(
+        const std::shared_ptr<IVehicleCallback>& callback) override {
+        return ndk::ScopedAStatus::ok();
+    }
+};
+
+}  // namespace aidl::android::hardware::automotive::vehicle
 """
         header = """#pragma once
 constexpr int32_t VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENABLED = 0xF0000000;

@@ -51,6 +51,7 @@ REQUIREMENTS:
 - Provide an aidl_interface module named:
   "android.hardware.automotive.vehicle"
 - vendor_available: true
+- vendor: true
 - versions: ["1"]
 - stability: "vintf"
 - backend: ndk enabled, cpp/java disabled
@@ -144,6 +145,7 @@ RETURN JSON NOW.
         bp = """aidl_interface {
     name: "android.hardware.automotive.vehicle",
     vendor_available: true,
+    vendor: true,
     srcs: [
         "android/hardware/automotive/vehicle/IVehicle.aidl",
         "android/hardware/automotive/vehicle/IVehicleCallback.aidl",

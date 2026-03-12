@@ -72,9 +72,8 @@ BUILD_GLUE_LLM_TIMEOUT = 600
 # Shared kwargs passed to every RAGDSPy agent constructor
 AGENT_CFG = dict(
     dspy_programs_dir = "dspy_opt/saved",
-    rag_top_k         = 3,
+    rag_top_k         = 8,
     rag_db_path       = "rag/chroma_db",
-    output_root       = str(OUTPUT_DIR),   # → output_rag_dspy/ (C3 isolated)
 )
 
 # Map agent_type → glob pattern to find generated files under OUTPUT_DIR
@@ -550,10 +549,7 @@ def main():
     print("  [SUPPORT] Running PromoteDraft → BuildGlue...")
     t0 = time.time()
     try:
-        PromoteDraftAgent().run(
-            draft_root=str(OUTPUT_DIR / ".llm_draft" / "latest"),
-            final_root=str(OUTPUT_DIR),
-        )
+        PromoteDraftAgent().run()
         print("  [SUPPORT] PromoteDraft → OK")
     except Exception as e:
         print(f"  [SUPPORT] PromoteDraft → FAILED: {e}")

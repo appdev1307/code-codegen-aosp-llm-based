@@ -384,14 +384,17 @@ class VHALAidlAgent:
         )
         vp = (
             "package android.hardware.automotive.vehicle;\n\n"
+            "@VintfStability\n"
             "parcelable VehiclePropValue {\n"
             "    int prop;\n"
             "    int areaId;\n"
             "    long timestamp;\n"
+            "    int status;\n"
             "    int[] intValues;\n"
             "    float[] floatValues;\n"
             "    boolean[] boolValues;\n"
             "    String stringValue;\n"
+            "    byte[] byteValues;\n"
             "}\n"
         )
         vss = (
@@ -399,8 +402,7 @@ class VHALAidlAgent:
             "@VintfStability\n"
             "@Backing(type=\"int\")\n"
             "enum VehiclePropertyVss {\n"
-            "    VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENABLED = 0xF0000000,\n"
-            "    VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENGAGED = 0xF0000001,\n"
+            "    VEHICLE_PROP_PLACEHOLDER = 0xF0000000,\n"
             "}\n"
         )
         for path, content in [

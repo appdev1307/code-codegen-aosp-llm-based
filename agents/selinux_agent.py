@@ -6,9 +6,7 @@ class SelinuxAgent:
     def __init__(self, output_root: str = "output"):
         self.name = "SELinux Agent"
         self.output_dir = f"{output_root}/sepolicy"
-        # SafeWriter root = output_root (not output_root/sepolicy)
-        # because LLM outputs paths like "sepolicy/private/vehicle_hal.te"
-        self.writer = SafeWriter(output_root)
+        self.writer = SafeWriter(self.output_dir)
 
     @staticmethod
     def _trim_spec(spec_text: str) -> str:
@@ -32,26 +30,42 @@ class SelinuxAgent:
 
     def build_prompt(self, spec_text: str) -> str:
         compact = self._trim_spec(spec_text)
+        # Extract domain name for concrete example generation
+        domain_lower = "unknown"
+        for line in compact.splitlines():
+            if line.strip().startswith("Domain:"):
+                domain_lower = line.split(":", 1)[1].strip().lower()
+                break
+
         return f"""
 You are an Android SELinux policy expert.
 
 Generate SELinux rules for an Android Automotive Vehicle HAL service.
 
+REQUIRED CONTENT — ALL of the following MUST appear in the output:
+  type hal_vehicle_{domain_lower}, domain;
+  type hal_vehicle_{domain_lower}_exec, exec_type, vendor_file_type, file_type;
+  hal_attribute(vehicle);
+  allow hal_vehicle_{domain_lower} hal_vehicle_hwservice:hwservice_manager add_service;
+  binder_call(hal_vehicle_{domain_lower}, system_server);
+  hwservice_use(hal_vehicle_{domain_lower}, hal_vehicle_hwservice);
+  add_hwservice(hal_vehicle_{domain_lower}, hal_vehicle_hwservice);
+
 Rules:
 - Follow AOSP SELinux conventions
-- Define service domain and type
+- Define service domain and type using hal_vehicle_{domain_lower} as domain name
 - Allow required binder communication (binder_call, hwservice_use, add_hwservice)
-- Use hal_vehicle_default as the HAL domain type
+- Use hal_vehicle_default as the HAL domain type if domain-specific is not available
 - No placeholders
 - No explanations
 
 IMPORTANT:
 - ALL file paths MUST be RELATIVE
 - Use AOSP-style paths only
-  (e.g. sepolicy/private/vehicle_hal.te)
+  (e.g. sepolicy/vendor/hal_vehicle_{domain_lower}.te)
 
 Output format EXACTLY:
---- FILE: <relative path> ---
+--- FILE: sepolicy/vendor/hal_vehicle_{domain_lower}.te ---
 <file content>
 
 Specification:

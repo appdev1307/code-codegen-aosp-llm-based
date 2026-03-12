@@ -55,7 +55,7 @@ YOU MUST GENERATE EXACTLY THESE FILES:
 
 Android.bp REQUIREMENTS:
 - cc_binary name: "android.hardware.automotive.vehicle-service-default"
-- vendor: true
+- vendor: true                  ← REQUIRED, must appear exactly
 - relative_install_path: "hw"
 - srcs: ["VehicleHalService.cpp", "VssPropertyIds.h"]
 - shared_libs include at least:

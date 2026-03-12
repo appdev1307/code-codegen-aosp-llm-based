@@ -124,12 +124,45 @@ def _generate_one_module(domain: str, module_props: list) -> tuple[str, bool, st
     print(f"{'=' * 60}")
 
     module_spec = ModuleSpec(domain=domain, properties=module_props)
+    import time as _time
+    t0 = _time.perf_counter()
     try:
         ArchitectAgent(output_root=str(OUTPUT_DIR)).run(module_spec)
-        print(f" [MODULE {domain}] → OK")
+        elapsed = _time.perf_counter() - t0
+        print(f" [MODULE {domain}] → OK  ({elapsed:.1f}s)")
+        # Log to adaptive tracker so HAL outcomes feed Thompson sampling
+        try:
+            from adaptive_integration import get_adaptive_wrapper as _gaw
+            _gaw().tracker.record(
+                module_name=f"HalModule_{domain}",
+                property_count=len(module_props),
+                chunk_size=getattr(module_spec, "chunk_size", 15),
+                timeout=900.0,
+                prompt_variant="default",
+                success=1,
+                quality_score=1.0,
+                generation_time=elapsed,
+            )
+        except Exception:
+            pass  # adaptive logging is best-effort
         return (domain, True, None)
     except Exception as e:
-        print(f" [MODULE {domain}] → FAILED: {e}")
+        elapsed = _time.perf_counter() - t0
+        print(f" [MODULE {domain}] → FAILED: {e}  ({elapsed:.1f}s)")
+        try:
+            from adaptive_integration import get_adaptive_wrapper as _gaw
+            _gaw().tracker.record(
+                module_name=f"HalModule_{domain}",
+                property_count=len(module_props),
+                chunk_size=getattr(module_spec, "chunk_size", 15),
+                timeout=900.0,
+                prompt_variant="default",
+                success=0,
+                quality_score=0.0,
+                generation_time=elapsed,
+            )
+        except Exception:
+            pass
         return (domain, False, str(e))
 
 
@@ -184,14 +217,13 @@ def main():
 
     print(f"Selected {len(selected_signals)} leaf signals for labelling & processing")
 
-    # Write selected flat subset — only if contents changed, to preserve label cache validity
+    # Write selected flat subset
     limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
-    new_limited_text = json.dumps(selected_signals, indent=2, ensure_ascii=False)
-    if not limited_path.exists() or limited_path.read_text(encoding="utf-8") != new_limited_text:
-        limited_path.write_text(new_limited_text, encoding="utf-8")
-        print(f" Wrote selected flat subset → {limited_path}")
-    else:
-        print(f" Selected flat subset unchanged → {limited_path} (cache preserved)")
+    limited_path.write_text(
+        json.dumps(selected_signals, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
+    print(f" Wrote selected flat subset → {limited_path}")
 
     # ──────────────────────────────────────────────
     # 2. Label the selected subset — with cache invalidation
