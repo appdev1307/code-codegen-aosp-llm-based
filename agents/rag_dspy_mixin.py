@@ -228,6 +228,79 @@ class RAGDSPyMixin:
             return ""
 
     # ─────────────────────────────────────────────────────────────
+    # Output cleaning
+    # ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _clean_output(code: str) -> str:
+        """
+        Strip markdown fences and LLM preamble from generated code.
+
+        Fixes the most common LLM formatting issue: wrapping output in
+        ```language ... ``` blocks, which causes downstream validation
+        failures (ast.parse, xml.etree, clang++, checkpolicy).
+
+        Also removes conversational preamble lines like
+        "Here is the generated code:" that some models prepend.
+        """
+        if not code or not code.strip():
+            return code
+
+        lines = code.strip().splitlines()
+
+        # Remove opening fence: ```python, ```cpp, ```kotlin, ```xml, etc.
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+
+        # Remove closing fence
+        while lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        # Handle multiple fenced blocks within the output
+        cleaned = []
+        for line in lines:
+            stripped = line.strip()
+            # Skip intermediate fence markers (```python, ```xml, etc.)
+            if stripped.startswith("```"):
+                continue
+            cleaned.append(line)
+
+        if not cleaned or not "".join(cleaned).strip():
+            cleaned = lines  # fallback if cleaning was too aggressive
+
+        # Remove common LLM preamble lines
+        while cleaned:
+            first = cleaned[0].strip()
+            if not first:
+                cleaned = cleaned[1:]
+                continue
+            first_lower = first.lower()
+            if any(first_lower.startswith(p) for p in [
+                "here is ", "here's ", "below is ", "the following ",
+                "i've generated", "i have generated", "i've created",
+                "i have created", "this is the ", "sure,", "certainly,",
+            ]):
+                cleaned = cleaned[1:]
+                continue
+            break
+
+        # Remove trailing LLM commentary
+        while cleaned:
+            last = cleaned[-1].strip().lower()
+            if not last:
+                cleaned = cleaned[:-1]
+                continue
+            if any(last.startswith(p) for p in [
+                "this code ", "this implementation ", "note:", "note that ",
+                "the above ", "feel free ", "let me know", "you can ",
+            ]):
+                cleaned = cleaned[:-1]
+                continue
+            break
+
+        return "\n".join(cleaned)
+
+    # ─────────────────────────────────────────────────────────────
     # DSPy generation
     # ─────────────────────────────────────────────────────────────
 
@@ -258,6 +331,9 @@ class RAGDSPyMixin:
             if not output.strip():
                 self._log(f"WARNING: DSPy returned empty output ({elapsed:.1f}s)")
                 return ""
+
+            # Clean markdown fences and preamble before returning
+            output = self._clean_output(output)
 
             self._log(
                 f"DSPy generated {len(output)} chars "
