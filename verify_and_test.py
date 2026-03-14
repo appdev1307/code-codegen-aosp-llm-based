@@ -51,18 +51,12 @@ CONDITIONS = {
 RESULTS_DIR = Path("experiments/results")
 VERIFICATION_DIR = Path("experiments/verification")
 
-# File pattern → agent type
-FILE_CLASSIFY = {
-    r"\.aidl$":              "aidl",
-    r"VehicleHalServer\.cpp$": "cpp",
-    r"(?<!Android)\.cpp$":   "cpp",
-    r"\.te$":                "selinux",
-    r"Android\.bp$":         "build",
-    r"design_doc.*\.md$":    "design_doc",
-    r"\.kt$":                "android_app",
-    # Only match backend python files, not test/util scripts
-    r"(backend|server|service|app).*\.py$": "backend",
-}
+# Dirs/files to always skip during discovery
+SKIP_DIRS = {".llm_draft", "__pycache__", ".git", "latest"}
+SKIP_FILES = {"file_contexts", "PLAN.json", "MODULE_PLAN.json"}
+SKIP_PREFIXES = ("SPEC_FROM_VSS", "VHAL_AIDL_RAW", "VHAL_SERVICE_RAW",
+                 "VHAL_AIDL_BP_RAW", "VHAL_SERVICE_BP_RAW", "OLLAMA_HTTP")
+SKIP_EXTENSIONS = {".txt", ".json", ".yaml", ".xml", ".puml", ".h", ".java", ".rc"}
 
 
 @dataclass
@@ -83,36 +77,85 @@ class TestResult:
         return self.tests_passed / self.tests_run if self.tests_run > 0 else 0.0
 
 
-# ── File Classification ──────────────────────────────────────────
+# ── File Classification (AOSP tree layout) ───────────────────────
 
-def classify_file(filename: str) -> Optional[str]:
-    for pattern, agent_type in FILE_CLASSIFY.items():
-        if re.search(pattern, filename, re.IGNORECASE):
-            return agent_type
+def classify_file(filepath: Path, output_root: Path) -> Optional[str]:
+    """Classify a file into an agent type based on extension + path context.
+    Works with AOSP source tree layout:
+      hardware/interfaces/...  → .aidl, .cpp
+      sepolicy/...             → .te
+      packages/apps/...        → .kt, Android.bp
+      backend/...              → .py
+      docs/design/...          → .md
+    """
+    name = filepath.name
+    suffix = filepath.suffix.lower()
+    rel = str(filepath.relative_to(output_root))
+    parts = set(Path(rel).parts)
+
+    # Skip non-output dirs and files
+    if parts & SKIP_DIRS:
+        return None
+    if name in SKIP_FILES:
+        return None
+    if any(name.startswith(p) for p in SKIP_PREFIXES):
+        return None
+    if suffix in SKIP_EXTENSIONS:
+        return None
+    if filepath.stat().st_size < 20:
+        return None
+
+    # Classify by extension + path
+    if suffix == ".aidl":
+        return "aidl"
+    if suffix == ".te":
+        return "selinux"
+    if suffix == ".cpp":
+        return "cpp"
+    if name == "Android.bp" or suffix == ".bp":
+        return "build"
+    if suffix == ".md":
+        if "design" in rel.lower() or "DESIGN" in name:
+            return "design_doc"
+        return None
+    if suffix == ".kt":
+        return "android_app"
+    if suffix == ".py":
+        if "backend" in rel.lower() or "server" in rel.lower():
+            if filepath.stat().st_size > 100:
+                return "backend"
+        return None
+
     return None
 
 
 def discover_files(output_dir: Path) -> dict[str, list[tuple[str, Path]]]:
-    """Discover all spec dirs and their files.
-    Returns: {spec_name: [(agent_type, filepath), ...]}
+    """Walk the AOSP-structured output tree via rglob.
+    Returns: {group_name: [(agent_type, filepath), ...]}
+    Groups files by their parent AOSP path component for display.
     """
-    specs = {}
+    grouped: dict[str, list[tuple[str, Path]]] = {}
     if not output_dir.exists():
-        return specs
+        return grouped
 
-    for spec_dir in sorted(output_dir.iterdir()):
-        if not spec_dir.is_dir():
+    for filepath in sorted(output_dir.rglob("*")):
+        if not filepath.is_file():
             continue
-        files = []
-        for fpath in sorted(spec_dir.iterdir()):
-            if fpath.is_file():
-                agent = classify_file(fpath.name)
-                if agent:
-                    files.append((agent, fpath))
-        if files:
-            specs[spec_dir.name] = files
+        agent = classify_file(filepath, output_dir)
+        if agent is None:
+            continue
 
-    return specs
+        # Use a meaningful group name from the path
+        rel = filepath.relative_to(output_dir)
+        # Group by first 2 meaningful path components
+        parts = [p for p in rel.parts[:-1] if p not in SKIP_DIRS]
+        group = "/".join(parts[:2]) if parts else "_root"
+
+        if group not in grouped:
+            grouped[group] = []
+        grouped[group].append((agent, filepath))
+
+    return grouped
 
 
 # ══════════════════════════════════════════════════════════════════
