@@ -76,6 +76,12 @@ AGENT_CFG = dict(
     rag_db_path       = "rag/chroma_db",
 )
 
+# Extended config for support agents that accept output_root
+AGENT_CFG_WITH_OUTPUT = dict(
+    **AGENT_CFG,
+    output_root = str(OUTPUT_DIR),   # ← ensures support agents write to output_rag_dspy/
+)
+
 # Map agent_type → glob pattern to find generated files under OUTPUT_DIR
 _FILE_PATTERNS: dict[str, str] = {
     "aidl":           "**/*.aidl",
@@ -271,15 +277,15 @@ def _run_support_components(
             raise
 
     group_a = [
-        ("design_doc",  lambda: RAGDSPyDesignDocAgent(**AGENT_CFG).run(
+        ("design_doc",  lambda: RAGDSPyDesignDocAgent(**AGENT_CFG_WITH_OUTPUT).run(
                             module_signal_map, full_spec.properties, yaml_spec),
                         ["design_doc", "puml"]),
         ("selinux",     lambda: RAGDSPySELinuxAgent(**AGENT_CFG).run(full_spec),
                         ["selinux"]),
-        ("android_app", lambda: RAGDSPyAndroidAppAgent(**AGENT_CFG).run(
+        ("android_app", lambda: RAGDSPyAndroidAppAgent(**AGENT_CFG_WITH_OUTPUT).run(
                             module_signal_map, full_spec.properties),
                         ["android_app", "android_layout"]),
-        ("backend",     lambda: RAGDSPyBackendAgent(**AGENT_CFG).run(
+        ("backend",     lambda: RAGDSPyBackendAgent(**AGENT_CFG_WITH_OUTPUT).run(
                             module_signal_map, full_spec.properties),
                         ["backend", "backend_model", "simulator"]),
     ]
