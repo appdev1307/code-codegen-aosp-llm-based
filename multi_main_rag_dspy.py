@@ -288,8 +288,7 @@ def _run_support_components(
     for stage, fn, atypes in group_a:
         print(f"  [SUPPORT] {stage}...")
         try:
-            fn()
-            _score_stage(stage, atypes)
+            _run(stage, fn, atypes)
             print(f"  [SUPPORT] {stage} -> OK")
         except Exception as e:
             print(f"  [SUPPORT] {stage} -> FAILED: {e}")

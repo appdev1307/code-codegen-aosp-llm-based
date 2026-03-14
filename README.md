@@ -23,16 +23,6 @@ Requirement → Code Generation → Validator → Output
 ollama pull qwen2.5-coder:32b
 ollama list
 
-#ollama run qwen2.5-coder:7b # RAM size > 32GB
-#ollama pull deepseek-coder:6.7b
-#ollama run deepseek-coder:6.7b
-# Differen terminal
-#export OLLAMA_NUM_PARALLEL=1
-#export OLLAMA_MAX_LOADED_MODELS=1
-#export OLLAMA_KEEP_ALIVE=15m
-#ollama run deepseek-coder:6.7b
-
-
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -40,40 +30,54 @@ pip install --upgrade pip
 
 pip install -r requirements.txt
 
-#python main.py
+# ══════════════════════════════════════════════════════════════
+# COMPLETE RUN — execute in this exact order, do not skip steps
+# ══════════════════════════════════════════════════════════════
+
+# 1. Apply ChromaDB fix for C3
+python apply_chroma_fix.py
+
+# 2. Re-run ALL THREE pipelines (with 7 fixes + ChromaDB fix applied)
 python multi_main.py
-
-# Adaptive learning
 python multi_main_adaptive.py
-
-# With RAG
-# Install tools that validators need
-sudo apt-get install -y clang checkpolicy
-
-# Clone AOSP source repos
-mkdir -p aosp_source
-git clone https://android.googlesource.com/platform/hardware/interfaces aosp_source/hardware
-git clone https://android.googlesource.com/platform/system/sepolicy aosp_source/sepolicy
-git clone https://android.googlesource.com/platform/packages/services/Car aosp_source/car
-
-# Build RAG index
-python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db
-
-# Run condition 2 first (generates labelled signals DSPy needs for training)
-python multi_main_adaptive.py
-
-# Optimise DSPy prompts
-python dspy_opt/optimizer.py
-
-# Run the pipeline
 python multi_main_rag_dspy.py
 
-# Do comparison
-python multi_main.py           # condition 1 → experiments/results/baseline.json
-python multi_main_adaptive.py  # condition 2 → experiments/results/adaptive.json
-python multi_main_rag_dspy.py  # condition 3 → experiments/results/rag_dspy.json
-python experiments/run_comparison.py
-python experiments/analyze_results.py
+# 3. Rescore all three conditions
+python rescore_all_conditions.py
+
+# 4. Run matched-agent comparison (fair subset)
+python compare_matched.py
+
+# 5. Run full analysis with statistics
+python analyze_final.py
+
+# 6. Run verification and test suite (65 test cases)
+python verify_and_test.py --standalone
+
+# 7. AOSP integration build test (on your AOSP source tree)
+#    For each condition (output/, output_adaptive/, output_rag_dspy/):
+#      cp hardware/interfaces/automotive/vehicle/* $AOSP/vendor/.../vhal/
+#      cp sepolicy/**/*.te $AOSP/device/.../sepolicy/vendor/
+#      cp packages/apps/VssDynamicApp/* $AOSP/packages/apps/.../
+#      source build/envsetup.sh && lunch target-userdebug
+#      mmm vendor/.../vhal/impl/
+
+# 8. App and backend testing
+#    Kotlin: cp *.kt into Android Studio project → ./gradlew assembleDebug
+#    Python: cd backend/vss_dynamic_server/ → pip install -r requirements.txt → python main.py
+
+# 9. Export results to local machine
+cd /content/code-codegen-aosp-llm-based
+zip -r /content/thesis_export.zip \
+    experiments/ output/ output_adaptive/ output_rag_dspy/ \
+    -x "*/.llm_draft/*" "*/latest/*"
+# Then: from google.colab import files; files.download('/content/thesis_export.zip')
+
+# 10. Fill [INSERT] placeholders in thesis_chapter4.docx with numbers from:
+#     experiments/results/final_analysis.md
+#     experiments/results/matched_analysis.md
+#     experiments/verification/verification_report.md
+#     experiments/results/latex_table.tex
 
 # Download output from colab
 !!zip -r /content/code-codegen-aosp-llm-based.zip /content/code-codegen-aosp-llm-based/output
