@@ -45,13 +45,15 @@ CONDITIONS = {
 
 # ── scoring weights (must match thesis) ───────────────────────────
 WEIGHTS = {
-    "aidl":        {"struct": 0.30, "syntax": 0.50, "coverage": 0.20},
-    "cpp":         {"struct": 0.35, "syntax": 0.45, "coverage": 0.20},
-    "selinux":     {"struct": 0.25, "syntax": 0.65, "coverage": 0.10},
-    "build":       {"struct": 0.35, "syntax": 0.55, "coverage": 0.10},
-    "design_doc":  {"struct": 0.50, "syntax": 0.30, "coverage": 0.20},
-    "android_app": {"struct": 0.30, "syntax": 0.40, "coverage": 0.30},
-    "backend":     {"struct": 0.25, "syntax": 0.50, "coverage": 0.25},
+    "aidl":           {"struct": 0.30, "syntax": 0.50, "coverage": 0.20},
+    "cpp":            {"struct": 0.35, "syntax": 0.45, "coverage": 0.20},
+    "selinux":        {"struct": 0.25, "syntax": 0.65, "coverage": 0.10},
+    "build":          {"struct": 0.35, "syntax": 0.55, "coverage": 0.10},
+    "design_doc":     {"struct": 0.50, "syntax": 0.30, "coverage": 0.20},
+    "android_app":    {"struct": 0.30, "syntax": 0.40, "coverage": 0.30},
+    "android_layout": {"struct": 0.35, "syntax": 0.45, "coverage": 0.20},
+    "backend":        {"struct": 0.25, "syntax": 0.50, "coverage": 0.25},
+    "vintf":          {"struct": 0.40, "syntax": 0.50, "coverage": 0.10},
 }
 
 # Dirs/files to always skip
@@ -59,7 +61,7 @@ SKIP_DIRS = {".llm_draft", "__pycache__", ".git", "latest"}
 SKIP_FILES = {"file_contexts", "PLAN.json", "MODULE_PLAN.json"}
 SKIP_PREFIXES = ("SPEC_FROM_VSS", "VHAL_AIDL_RAW", "VHAL_SERVICE_RAW",
                  "VHAL_AIDL_BP_RAW", "VHAL_SERVICE_BP_RAW", "OLLAMA_HTTP")
-SKIP_EXTENSIONS = {".txt", ".json", ".yaml", ".xml", ".puml", ".h", ".java", ".rc"}
+SKIP_EXTENSIONS = {".txt", ".json", ".yaml", ".puml", ".h", ".java", ".rc"}
 
 
 def classify_file(filepath: Path, output_root: Path) -> Optional[str]:
@@ -104,6 +106,16 @@ def classify_file(filepath: Path, output_root: Path) -> Optional[str]:
 
     if suffix == ".kt":
         return "android_app"
+
+    if suffix == ".xml":
+        # Android layout XMLs (fragment_*.xml, activity_*.xml)
+        if "layout" in rel.lower() or name.startswith("fragment_") or name.startswith("activity_"):
+            return "android_layout"
+        # VINTF manifest
+        if name == "manifest.xml" or "vintf" in rel.lower():
+            return "vintf"
+        # Skip other XMLs (AndroidManifest.xml, strings.xml, etc.)
+        return None
 
     if suffix == ".py":
         # Only score backend service files, not utility scripts
@@ -168,6 +180,17 @@ def score_structure(content: str, agent_type: str) -> float:
         checks = ["import ", "class ", "fun ", "override ", "Activity"]
         hits = sum(1 for c in checks if c in content)
         return round(min(hits / 4, 1.0), 4)
+    elif agent_type == "android_layout":
+        checks = ["<LinearLayout", "<RelativeLayout", "<ConstraintLayout",
+                   "<FrameLayout", "<ScrollView", "<TextView", "<Button",
+                   "xmlns:android", "android:layout_width", "android:id"]
+        hits = sum(1 for c in checks if c in content)
+        return round(min(hits / 4, 1.0), 4)
+    elif agent_type == "vintf":
+        checks = ["<manifest", "<hal", "format=", "android.hardware.automotive",
+                   "<name>", "<version>", "<interface>"]
+        hits = sum(1 for c in checks if c in content)
+        return round(min(hits / 4, 1.0), 4)
     elif agent_type == "backend":
         checks = ["import ", "def ", "class ", "return "]
         hits = sum(1 for c in checks if c in content)
@@ -188,6 +211,10 @@ def score_syntax(content: str, agent_type: str) -> float:
         return _syntax_markdown(content)
     elif agent_type == "android_app":
         return _syntax_kotlin(content)
+    elif agent_type == "android_layout":
+        return _syntax_xml(content)
+    elif agent_type == "vintf":
+        return _syntax_xml(content)
     elif agent_type == "backend":
         return _syntax_python(content)
     return 0.5
@@ -315,6 +342,22 @@ def _syntax_python(content: str) -> float:
         return 0.3
 
 
+def _syntax_xml(content: str) -> float:
+    """Validate XML with xml.etree."""
+    import xml.etree.ElementTree as ET
+    try:
+        ET.fromstring(content)
+        return 1.0
+    except ET.ParseError:
+        # Check if it's close to valid (common LLM issues)
+        issues = 0
+        if content.count("<") != content.count(">"):
+            issues += 2
+        if "<?xml" not in content and "</" not in content:
+            issues += 1
+        return round(max(0, 0.6 - issues * 0.15), 4)
+
+
 def score_coverage(content: str, agent_type: str) -> float:
     cl = content.lower()
     if agent_type == "aidl":
@@ -332,6 +375,12 @@ def score_coverage(content: str, agent_type: str) -> float:
     elif agent_type == "android_app":
         terms = ["vehicleproperty", "carpropertymanager", "car", "activity",
                  "viewmodel", "binding", "getproperty", "registercallback"]
+    elif agent_type == "android_layout":
+        terms = ["android:id", "android:text", "textview", "button", "switch",
+                 "seekbar", "layout_width", "layout_height", "vehicle", "property"]
+    elif agent_type == "vintf":
+        terms = ["manifest", "hal", "automotive", "vehicle", "interface",
+                 "version", "format", "aidl", "name"]
     elif agent_type == "backend":
         terms = ["flask", "fastapi", "route", "endpoint", "request", "response",
                  "json", "vehicle", "property", "vss"]
