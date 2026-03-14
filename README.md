@@ -34,50 +34,96 @@ pip install -r requirements.txt
 # COMPLETE RUN — execute in this exact order, do not skip steps
 # ══════════════════════════════════════════════════════════════
 
-# 1. Apply ChromaDB fix for C3
+# ══════════════════════════════════════════════════════════════
+# COMPLETE PROJECT RUN — NOTHING OMITTED
+# ══════════════════════════════════════════════════════════════
+
+# ── 1. DEPENDENCIES ─────────────────────────────────────────
+pip install chromadb dspy-ai sentence-transformers json5 scipy --break-system-packages
+
+# ── 2. GIT PULL + UPLOAD FIXED FILES ────────────────────────
+cd /content/code-codegen-aosp-llm-based
+git stash
+git pull origin main
+git stash pop  # or overwrite with fixed files if conflicts
+
+# Upload/overwrite these fixed files from Claude:
+#   agents/vhal_aidl_agent.py
+#   agents/vhal_service_agent.py
+#   agents/vhal_aidl_build_agent.py
+#   agents/vhal_service_build_agent.py
+#   agents/selinux_agent.py
+#   multi_main_adaptive.py
+#   multi_main_rag_dspy.py          (with _score_stage + output_root fixes)
+#   apply_chroma_fix.py
+#   fix_chroma_singleton.py
+#   rescore_all_conditions.py
+#   analyze_final.py
+#   compare_matched.py
+#   verify_and_test.py
+#   diagnose_outputs.py
+#   run_full_experiment.sh
+
+# ── 3. AOSP SOURCE FOR RAG CORPUS ───────────────────────────
+# Skip if aosp_source/ already exists
+git clone --depth=1 https://android.googlesource.com/platform/hardware/interfaces aosp_source/hardware
+git clone --depth=1 https://android.googlesource.com/platform/system/sepolicy     aosp_source/sepolicy
+git clone --depth=1 https://android.googlesource.com/platform/packages/services/Car aosp_source/car
+
+# ── 4. BUILD RAG VECTOR INDEX (~10 min) ─────────────────────
+# Skip if rag/chroma_db/ already has data
+python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db
+
+# ── 5. CHROMADB SINGLETON FIX ────────────────────────────────
 python apply_chroma_fix.py
 
-# 2. Re-run ALL THREE pipelines (with 7 fixes + ChromaDB fix applied)
+# ── 6. RUN C1 BASELINE ──────────────────────────────────────
 python multi_main.py
+
+# ── 7. RUN C2 ADAPTIVE ──────────────────────────────────────
 python multi_main_adaptive.py
+
+# ── 8. DSPy MIPROv2 OPTIMIZER (after C2, before C3) ─────────
+python dspy_opt/optimizer.py --mipro-auto light --train-size 2 --force
+ls dspy_opt/saved/*/program.json | wc -l   # should be 12
+
+# ── 9. RUN C3 RAG+DSPy ──────────────────────────────────────
 python multi_main_rag_dspy.py
 
-# 3. Rescore all three conditions
+# ── 10. VERIFY OUTPUT COMPLETENESS ──────────────────────────
+python diagnose_outputs.py
+
+# ── 11. RESCORE ALL THREE CONDITIONS ────────────────────────
 python rescore_all_conditions.py
 
-# 4. Run matched-agent comparison (fair subset)
+# ── 12. ANALYSIS ────────────────────────────────────────────
 python compare_matched.py
-
-# 5. Run full analysis with statistics
 python analyze_final.py
 
-# 6. Run verification and test suite (65 test cases)
+# ── 13. VERIFICATION & TESTING (65 test cases) ──────────────
 python verify_and_test.py --standalone
 
-# 7. AOSP integration build test (on your AOSP source tree)
-#    For each condition (output/, output_adaptive/, output_rag_dspy/):
-#      cp hardware/interfaces/automotive/vehicle/* $AOSP/vendor/.../vhal/
-#      cp sepolicy/**/*.te $AOSP/device/.../sepolicy/vendor/
-#      cp packages/apps/VssDynamicApp/* $AOSP/packages/apps/.../
-#      source build/envsetup.sh && lunch target-userdebug
-#      mmm vendor/.../vhal/impl/
+# ── 14. AOSP INTEGRATION BUILD ─────────────────────────────
+# For each condition dir (output/, output_adaptive/, output_rag_dspy/):
+#   Copy HAL files into AOSP tree → mmm build → record pass/fail
 
-# 8. App and backend testing
-#    Kotlin: cp *.kt into Android Studio project → ./gradlew assembleDebug
-#    Python: cd backend/vss_dynamic_server/ → pip install -r requirements.txt → python main.py
+# ── 15. APP & BACKEND TESTING ──────────────────────────────
+# Kotlin: copy .kt → Android Studio → ./gradlew assembleDebug
+# Python: cd backend/vss_dynamic_server/ → pip install -r requirements.txt → python main.py
 
-# 9. Export results to local machine
-cd /content/code-codegen-aosp-llm-based
+# ── 16. EXPORT TO LOCAL ────────────────────────────────────
 zip -r /content/thesis_export.zip \
     experiments/ output/ output_adaptive/ output_rag_dspy/ \
+    dspy_opt/saved/ adaptive_outputs/ \
     -x "*/.llm_draft/*" "*/latest/*"
-# Then: from google.colab import files; files.download('/content/thesis_export.zip')
+# from google.colab import files; files.download('/content/thesis_export.zip')
 
-# 10. Fill [INSERT] placeholders in thesis_chapter4.docx with numbers from:
-#     experiments/results/final_analysis.md
-#     experiments/results/matched_analysis.md
-#     experiments/verification/verification_report.md
-#     experiments/results/latex_table.tex
+# ── 17. THESIS WRITE-UP ───────────────────────────────────
+# Fill [INSERT] placeholders in thesis_chapter4.docx using:
+#   experiments/results/final_analysis.md
+#   experiments/results/matched_analysis.md
+#   experiments/results/latex_table.tex
+#   experiments/verification/verification_report.md
 
 # Download output from colab
 !!zip -r /content/code-codegen-aosp-llm-based.zip /content/code-codegen-aosp-llm-based/output
