@@ -466,9 +466,12 @@ def main():
     )
 
     limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
-    limited_path.write_text(
-        json.dumps(selected_signals, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    # Only rewrite limited file if content actually changed — preserves mtime for cache
+    new_limited = json.dumps(selected_signals, indent=2, ensure_ascii=False)
+    if limited_path.exists() and limited_path.read_text(encoding="utf-8") == new_limited:
+        pass  # unchanged — keep mtime so labelling cache stays valid
+    else:
+        limited_path.write_text(new_limited, encoding="utf-8")
 
     # ── 2. Label ──────────────────────────────────────────────────────────────
     labelled_path = PERSISTENT_CACHE_DIR / f"VSS_LABELLED_{TEST_SIGNAL_COUNT}.json"
