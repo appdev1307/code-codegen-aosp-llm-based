@@ -38,9 +38,10 @@ RESULTS_DIR = Path("experiments/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 CONDITIONS = {
-    "baseline":  {"output_dir": Path("output"),            "out_file": RESULTS_DIR / "baseline.json"},
-    "adaptive":  {"output_dir": Path("output_adaptive"),   "out_file": RESULTS_DIR / "adaptive.json"},
-    "rag_dspy":  {"output_dir": Path("output_rag_dspy"),   "out_file": RESULTS_DIR / "rag_dspy.json"},
+    "baseline":     {"output_dir": Path("output"),              "out_file": RESULTS_DIR / "baseline.json"},
+    "adaptive":     {"output_dir": Path("output_adaptive"),     "out_file": RESULTS_DIR / "adaptive.json"},
+    "rag_dspy":     {"output_dir": Path("output_rag_dspy"),     "out_file": RESULTS_DIR / "rag_dspy.json"},
+    "c4_feedback":  {"output_dir": Path("output_c4_feedback"),  "out_file": RESULTS_DIR / "c4_feedback.json"},
 }
 
 # ── scoring weights (must match thesis) ───────────────────────────
