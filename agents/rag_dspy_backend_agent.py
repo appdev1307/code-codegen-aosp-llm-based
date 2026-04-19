@@ -151,6 +151,7 @@ class RAGDSPyBackendAgent(RAGDSPyMixin):
                     aosp_context = model_context,
                 )
                 model_content = getattr(result, "models_code", "") or ""
+                model_content = self._clean_output(model_content)
                 self._write(f"models_{domain.lower()}.py", model_content, "model")
             except Exception as e:
                 self._log(f"Models generation failed for {domain}: {e}")
@@ -171,6 +172,7 @@ class RAGDSPyBackendAgent(RAGDSPyMixin):
                     aosp_context    = sim_context,
                 )
                 sim_content = getattr(result, "simulator_code", "") or ""
+                sim_content = self._clean_output(sim_content)
                 self._write(f"simulator_{domain.lower()}.py", sim_content, "simulator")
             except Exception as e:
                 self._log(f"Simulator generation failed for {domain}: {e}")
