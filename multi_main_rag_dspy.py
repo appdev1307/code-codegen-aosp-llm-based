@@ -206,7 +206,7 @@ def _generate_one_module(
     t0 = time.time()
 
     try:
-        agent = RAGDSPyArchitectAgent(**AGENT_CFG)
+        agent = RAGDSPyArchitectAgent(**AGENT_CFG, output_root=str(OUTPUT_DIR))
         agent.run(module_spec)
     except Exception as e:
         print(f" [MODULE {domain}] → FAILED: {e}")

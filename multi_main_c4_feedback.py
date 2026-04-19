@@ -484,7 +484,7 @@ def _generate_one_module(domain, module_props, run_metrics, tracker):
 
     try:
         # Use the architect agent but with feedback on each sub-agent
-        agent = RAGDSPyArchitectAgent(**AGENT_CFG)
+        agent = RAGDSPyArchitectAgent(**AGENT_CFG, output_root=str(OUTPUT_DIR))
 
         # Override: run sub-agents individually with feedback loop
         from agents.rag_dspy_aidl_agent    import RAGDSPyAIDLAgent
