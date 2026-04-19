@@ -455,7 +455,7 @@ def _score_files(agent_types: list[str], domain_filter: str = "") -> dict[str, f
         pattern = _FILE_PATTERNS.get(agent_type)
         if not pattern:
             continue
-        suffix = pattern.lstrip("**/")
+        suffix = pattern.removeprefix("**/")
         matches = list(OUTPUT_DIR.rglob(suffix))
         if domain_filter:
             matches = [f for f in matches
