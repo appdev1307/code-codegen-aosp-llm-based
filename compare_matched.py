@@ -2,14 +2,9 @@
 """
 compare_matched.py
 ──────────────────
-Fair 3-way comparison using only agents present in ALL three conditions.
+Fair 4-way comparison using only agents present in ALL four conditions.
 
-Problem: C3 (RAG+DSPy) only produced 5 files (aidl, build, cpp, selinux)
-while C1/C2 produced 19-20 files across all 7 agent types. Comparing
-raw averages is misleading because C3's score excludes the easier agents
-(design_doc, backend) that inflate C1/C2 averages.
-
-Solution: This script filters to only agents present in all 3 conditions,
+Filters to only agents present in all conditions (C1, C2, C3, C4),
 then compares apples-to-apples.
 
 Usage:
@@ -180,7 +175,7 @@ def main():
     # ── Build comparison tables ──
     report = []
     report.append("# VHAL — Matched-Agent Fair Comparison\n")
-    report.append(f"Only agents present in ALL three conditions: **{', '.join(sorted(matched))}**\n")
+    report.append(f"Only agents present in ALL four conditions: **{', '.join(sorted(matched))}**\n")
     if excluded:
         report.append(f"Excluded (missing from ≥1 condition): {', '.join(sorted(excluded))}\n")
 
@@ -212,8 +207,9 @@ def main():
 
     # Per-agent matched
     report.append("\n## 2. Per-Agent Scores (matched only)\n")
-    report.append("| Agent | C1 Baseline | C2 Adaptive | C3 RAG+DSPy |")
-    report.append("|---|---|---|---|")
+    header_cols = " | ".join(label for label in CONDITION_ORDER if label in filtered)
+    report.append(f"| Agent | {header_cols} |")
+    report.append("|---|" + "---|" * len([l for l in CONDITION_ORDER if l in filtered]))
 
     for agent in sorted(matched):
         row = [f"| {agent} "]
@@ -232,8 +228,9 @@ def main():
 
     # Per-dimension
     report.append("\n## 3. Per-Dimension Scores (matched only)\n")
-    report.append("| Dimension | C1 Baseline | C2 Adaptive | C3 RAG+DSPy |")
-    report.append("|---|---|---|---|")
+    dim_header = " | ".join(label for label in CONDITION_ORDER if label in filtered)
+    report.append(f"| Dimension | {dim_header} |")
+    report.append("|---|" + "---|" * len([l for l in CONDITION_ORDER if l in filtered]))
 
     for dim in ["struct", "syntax", "coverage"]:
         row = [f"| {dim} "]
@@ -270,14 +267,21 @@ def main():
         matched_n = json_summary[label]["num_files"]
         report.append(f"| {label} | {full_avg:.4f} | {matched_avg:.4f} | {delta:+.4f} | {full_n} | {matched_n} |")
 
-    report.append("\n## 6. Note on C3 Completeness\n")
+    # Dynamic note based on actual data
+    report.append("\n## 6. Notes\n")
+    n_conditions = len([l for l in CONDITION_ORDER if l in filtered])
+    min_n = min(len(filtered[l]) for l in CONDITION_ORDER if l in filtered) if filtered else 0
+    max_n = max(len(filtered[l]) for l in CONDITION_ORDER if l in filtered) if filtered else 0
     report.append(
-        "C3 (RAG+DSPy) produced only 5 files due to a ChromaDB singleton error that "
-        "caused most agents to fail. The matched comparison above is fair (same agents "
-        "compared across all conditions) but has low statistical power due to small n. "
-        "After fixing the ChromaDB issue and re-running C3, run `rescore_all_conditions.py` "
-        "and `analyze_final.py` for a complete comparison.\n"
+        f"Matched comparison across {n_conditions} conditions using {len(matched)} common agents. "
+        f"File counts range from {min_n} to {max_n} per condition. "
     )
+    if min_n < 20:
+        report.append(
+            "Statistical power is limited due to small sample sizes. "
+            "A larger evaluation with more signals would strengthen significance testing."
+        )
+    report.append("")
 
     # Write outputs
     report_path = RESULTS_DIR / "matched_analysis.md"
