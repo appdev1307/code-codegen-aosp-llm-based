@@ -7,6 +7,10 @@ Generates complete HAL layer code from VSS (Vehicle Signal Specification) signal
 AIDL interfaces, C++ implementations, SELinux policies, Android.bp build files,
 design documents, Android app fragments, and backend servers.
 
+**Target AOSP level: Android 14 (API 34)**
+All generated code targets the Android 14 Vehicle HAL API surface. Using a different
+AOSP version will cause AIDL interface mismatches and build failures.
+
 ## Architecture
 
 ```
@@ -35,7 +39,7 @@ VSS Signals → Labelling → YAML Spec → Module Planner → Code Generation �
 
 ## Quick Start (Colab)
 
-Use the Colab notebook `RAG_Codegen_aosp_llm_based_full_v6.ipynb` for a guided run.
+Use the Colab notebook `RAG_Codegen_aosp_llm_based_full_v7.ipynb` for a guided run.
 It handles setup, all 4 conditions, reporting, and Drive backup automatically.
 
 ---
@@ -49,7 +53,8 @@ It handles setup, all 4 conditions, reporting, and Drive backup automatically.
 apt-get update -y
 apt-get install -y clang checkpolicy zstd
 
-# Install Ollama
+# Install Ollama (with parallel inference for faster DSPy)
+export OLLAMA_NUM_PARALLEL=4
 curl -fsSL https://ollama.com/install.sh | sh
 nohup ollama serve > ollama.log 2>&1 &
 sleep 5
@@ -59,13 +64,15 @@ ollama pull qwen2.5-coder:32b
 git clone https://github.com/appdev1307/code-codegen-aosp-llm-based.git
 cd code-codegen-aosp-llm-based
 
-# Python dependencies
+# Python dependencies (optuna required for MIPROv2 Bayesian search)
 pip install -r requirements.txt
-pip install chromadb sentence-transformers dspy-ai
+pip install chromadb sentence-transformers dspy-ai optuna
 pip install pyyaml jinja2 fastapi uvicorn pydantic
 ```
 
 ### 2. Build RAG Index from AOSP Source
+
+ChromaDB **must** be built before DSPy so the optimizer bootstraps traces with RAG context.
 
 ```bash
 # Shallow-clone AOSP repos (~300 MB total)
@@ -80,6 +87,8 @@ python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db
 
 ### 3. Run All Conditions
 
+Execution order matters: C1 → C2 → ChromaDB → DSPy → C3 → C4.
+
 ```bash
 # ── C1: Baseline ────────────────────────────────────────────
 python multi_main.py
@@ -87,8 +96,8 @@ python multi_main.py
 # ── C2: Adaptive ────────────────────────────────────────────
 python multi_main_adaptive.py
 
-# ── DSPy Optimiser (after C2, before C3) ────────────────────
-python dspy_opt/optimizer.py --mipro-auto light --train-size 2 --force
+# ── DSPy Optimiser (after ChromaDB, before C3) ──────────────
+python dspy_opt/optimizer.py --mipro-auto light --train-size 8 --force
 ls dspy_opt/saved/*/program.json | wc -l   # expect: 12
 
 # ── ChromaDB fix (before C3) ───────────────────────────────
@@ -126,17 +135,51 @@ zip -r thesis_export.zip \
 
 ## AOSP Source Tree Validation
 
-Full build validation of generated HAL code against a real AOSP source tree
-using the Cuttlefish Automotive virtual device.
+Full build validation of generated HAL code against a real Android 14 AOSP source
+tree using the Cuttlefish Automotive virtual device.
+
+### Cloud Build with GCP (official AAOS cloud emulator support)
+
+Use a GCP VM with nested virtualization — no local hardware needed.
+32 vCPUs, 128 GB RAM, 500 GB SSD. Cost: ~$3-5 total with spot pricing.
+
+```bash
+# Create VM with nested virtualization for Cuttlefish
+gcloud compute instances create aosp-builder \
+    --zone=us-central1-a \
+    --machine-type=c2-standard-32 \
+    --boot-disk-size=500GB \
+    --boot-disk-type=pd-ssd \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --enable-nested-virtualization
+
+# SSH in and use screen (survives SSH disconnect)
+gcloud compute ssh aosp-builder --zone=us-central1-a
+screen -S aosp
+```
 
 ### Prerequisites
 
-- Linux x86_64 (Ubuntu 20.04 or 22.04)
-- 400+ GB free disk space
-- 32+ GB RAM (64 GB recommended)
-- ~4 hours for first full build
+- Linux x86_64 (Ubuntu 22.04 — GCP VM or local)
+- 400+ GB free disk, 32+ GB RAM
+- ~2 hours for first full build (GCP c2-standard-32)
 
-### Step 1 — Download AOSP Android 14
+### Step 1 — Install Build Dependencies
+
+```bash
+sudo apt-get install -y git-core gnupg flex bison build-essential \
+    zip curl zlib1g-dev libc6-dev-i386 lib32ncurses-dev \
+    x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
+    libxml2-utils xsltproc unzip fontconfig python3 \
+    bridge-utils libvirt-daemon-system
+```
+
+### Step 2 — Download AOSP Android 14
+
+**Important:** Use `android-14.0.0_r75`. The generated AIDL interfaces, Vehicle HAL
+API surface, and SELinux policy format all target `aosp_level = 14`.
+Using Android 13 or 15 will cause build failures.
 
 ```bash
 # Install repo tool
@@ -148,7 +191,7 @@ export PATH=~/bin:$PATH
 # Create AOSP directory
 mkdir ~/aosp-14-auto && cd ~/aosp-14-auto
 
-# Init Android 14 (matches pipeline's aosp_level = 14)
+# Init Android 14 — MUST match pipeline's aosp_level = 14
 repo init -u https://android.googlesource.com/platform/manifest \
     -b android-14.0.0_r75 --depth=1
 
@@ -156,143 +199,152 @@ repo init -u https://android.googlesource.com/platform/manifest \
 repo sync -c -j$(nproc) --no-tags
 ```
 
-### Step 2 — Build Cuttlefish Automotive Base Image
+### Step 3 — Build Cuttlefish Automotive Base Image
+
+The `aosp_cf_x86_64_auto` target includes the full AAOS stack:
+Car Service, Vehicle HAL framework, AAOS system UI.
 
 ```bash
 cd ~/aosp-14-auto
 source build/envsetup.sh
+
+# MUST use _auto target for automotive
 lunch aosp_cf_x86_64_auto-userdebug
+
+# First build (~2-4 hours)
 m -j$(nproc)
 ```
 
-This builds a complete AAOS image with Vehicle HAL that runs without hardware.
+### Step 4 — Copy Generated HAL Files
 
-### Step 3 — Copy Generated HAL Files
-
-Use C4 output (highest scoring condition):
+Use C4 output (highest scoring, 0.909 avg):
 
 ```bash
 export AOSP_ROOT=~/aosp-14-auto
 export C4_OUT=/path/to/output_c4_feedback
 
-# ── AIDL Interface ──────────────────────────────────────────
+# AIDL Interface
+mkdir -p $AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
 cp $C4_OUT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl \
    $AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
 
-# ── C++ Implementation ─────────────────────────────────────
+# C++ Implementation
 cp $C4_OUT/hardware/interfaces/automotive/vehicle/impl/VehicleHalServiceAdas.cpp \
    $AOSP_ROOT/hardware/interfaces/automotive/vehicle/impl/
 
-# ── Build Files ─────────────────────────────────────────────
-# Copy generated Android.bp (merge with existing, don't overwrite)
+# Build file (merge with existing, don't overwrite)
 cp $C4_OUT/hardware/interfaces/automotive/vehicle/impl/Android.bp \
    $AOSP_ROOT/hardware/interfaces/automotive/vehicle/impl/Android.bp.generated
 
-# ── SELinux Policy ──────────────────────────────────────────
+# SELinux Policy
+mkdir -p $AOSP_ROOT/system/sepolicy/vendor/
 cp $C4_OUT/sepolicy/vehicle_hal_adas.te \
    $AOSP_ROOT/system/sepolicy/vendor/
 
-# ── VINTF Manifest + Init ──────────────────────────────────
-# Copy if generated by BuildGlue:
+# VINTF + file_contexts (from BuildGlue)
 cp $C4_OUT/private/file_contexts $AOSP_ROOT/system/sepolicy/vendor/ 2>/dev/null
 ```
 
-### Step 4 — Apply Manual Fixes
-
-Three known issues from validation scoring need manual correction:
+### Step 5 — Apply Manual Fixes for Android 14
 
 ```bash
-# ── Fix 1: Android.bp — add vendor: true ────────────────────
-# Open the generated Android.bp and add to cc_binary block:
+# Fix 1: Android.bp — add vendor: true
+# Add to cc_binary block in Android.bp.generated:
 #   vendor: true,
 #   relative_install_path: "hw",
 
-# ── Fix 2: SELinux — add type declaration ────────────────────
-# The .te file starts with allow rules without declaring the type.
-# Prepend this line to vehicle_hal_adas.te:
+# Fix 2: SELinux — add type declaration before allow rules
+# Prepend to vehicle_hal_adas.te:
 #   type hal_vehicle_adas, domain;
 #   type hal_vehicle_adas_exec, exec_type, vendor_file_type, file_type;
 
-# ── Fix 3: C++ headers — verify AOSP include paths ──────────
-# Ensure includes match the AOSP tree structure:
-#   #include <android/hardware/automotive/vehicle/2.0/IVehicle.h>
-#   or for AIDL:
-#   #include <aidl/android/hardware/automotive/vehicle/IVehicle.h>
+# Fix 3: C++ — use Android 14 AIDL include paths (NOT HIDL)
+#   Correct:  #include <aidl/android/hardware/automotive/vehicle/IVehicle.h>
+#   Wrong:    #include <android/hardware/automotive/vehicle/2.0/IVehicle.h>
+
+# Fix 4: AIDL — use Android 14 package format
+#   Correct:  package android.hardware.automotive.vehicle;
+#   Wrong:    package android.hardware.automotive.vehicle.V2_0;
 ```
 
-### Step 5 — Build the HAL Module
+### Step 6 — Build HAL Module
 
 ```bash
 cd $AOSP_ROOT
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-userdebug
 
-# Build just the vehicle HAL module
+# Module build first
 mmm hardware/interfaces/automotive/vehicle/impl
 
-# If successful, build full image
+# Full image if module passes
 m -j$(nproc)
 ```
 
-### Step 6 — Launch Cuttlefish and Test
+### Step 7 — Launch Cuttlefish and Test
 
 ```bash
-# Install Cuttlefish host tools (first time only)
-sudo apt install -y bridge-utils libvirt-daemon-system
-# Follow: https://source.android.com/docs/devices/cuttlefish/get-started
+# Install Cuttlefish host packages (first time only)
+# https://source.android.com/docs/devices/cuttlefish/get-started
 
-# Launch virtual automotive device
+# Launch
 launch_cvd --daemon
 
-# Connect via WebUI at https://localhost:8443
-# Or via adb:
+# Connect
 adb connect vsock:3:5555
+adb wait-for-device
 
-# ── Test Vehicle HAL Properties ─────────────────────────────
+# Test Vehicle HAL
 adb shell dumpsys car_service
 adb shell cmd car_service list-properties | grep -i adas
 adb shell cmd car_service get-property PERF_VEHICLE_SPEED
 
-# ── Verify SELinux ──────────────────────────────────────────
-adb shell getenforce          # Should be "Enforcing"
-adb shell dmesg | grep avc    # Check for denials
+# Verify SELinux
+adb shell getenforce
+adb shell dmesg | grep avc
 
-# ── Run VTS Tests (if available) ────────────────────────────
+# Run VTS
+cd $AOSP_ROOT
 atest VtsHalAutomotiveVehicle
+
+# Shutdown
+stop_cvd
 ```
 
-### Step 7 — Test Android App and Backend
+### Step 8 — Test App and Backend
 
 ```bash
-# ── Kotlin App ──────────────────────────────────────────────
-# Copy .kt and .xml files to Android Studio project
+# Kotlin App (requires AAOS — uses CarPropertyManager API)
+# Copy AdasFragment.kt + fragment_adas.xml → Android Studio
 # Build: ./gradlew assembleDebug
 # Install: adb install app/build/outputs/apk/debug/app-debug.apk
 
-# ── FastAPI Backend ─────────────────────────────────────────
+# FastAPI Backend
 cd output_c4_feedback/backend/vss_dynamic_server
 pip install -r requirements.txt
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
-# Test: curl http://localhost:8000/health
-# Test: curl http://localhost:8000/api/data
+curl http://localhost:8000/health
+curl http://localhost:8000/properties/list
 ```
 
 ---
 
 ## Validation Checklist
 
-| Check | Tool | Pass Criteria |
-|-------|------|---------------|
-| AIDL syntax | `aidl --lang=java` | Compiles without errors |
-| C++ syntax | `clang++ --syntax-only` | No syntax errors |
-| SELinux policy | `checkpolicy -M -c 30` | Policy compiles |
-| Android.bp | `androidmk` / Soong | Module builds |
-| VINTF manifest | `assemble_vintf` | Schema validates |
-| Kotlin app | `./gradlew assembleDebug` | APK builds |
-| XML layout | `aapt2 compile` | Resources compile |
-| Python backend | `python -c "import main"` | No import errors |
-| Full AOSP build | `m -j$(nproc)` | Image builds |
-| VTS tests | `atest VtsHalAutomotiveVehicle` | Tests pass |
+| # | Check | Tool | Pass Criteria | Android 14 Notes |
+|---|-------|------|---------------|------------------|
+| 1 | AIDL syntax | `aidl --lang=java` | Compiles | AIDL package, not HIDL |
+| 2 | C++ syntax | `clang++` | No errors | AIDL include paths |
+| 3 | SELinux | `checkpolicy -M -c 30` | Compiles | Vendor partition context |
+| 4 | Android.bp | Soong (`mmm`) | Builds | `vendor: true` required |
+| 5 | VINTF | `assemble_vintf` | Validates | AIDL transport |
+| 6 | Kotlin app | `./gradlew assembleDebug` | APK builds | CarPropertyManager API |
+| 7 | XML layout | `aapt2 compile` | Compiles | `xmlns:android` required |
+| 8 | Backend | `python -c "import main"` | No errors | — |
+| 9 | HAL module | `mmm` | Builds in AOSP 14 | Android 14 tree only |
+| 10 | Full image | `m -j$(nproc)` | Builds | `aosp_cf_x86_64_auto` |
+| 11 | VTS | `atest VtsHalAutomotiveVehicle` | Passes | Cuttlefish |
+| 12 | Runtime | `dumpsys car_service` | Properties visible | Cuttlefish automotive |
 
 ---
 
@@ -312,7 +364,7 @@ code-codegen-aosp-llm-based/
 │   ├── rag_dspy_backend_agent.py
 │   └── ...
 ├── dspy_opt/                      # DSPy optimiser
-│   ├── optimizer.py               #   MIPROv2 runner
+│   ├── optimizer.py               #   MIPROv2 runner (requires optuna)
 │   ├── hal_modules.py             #   Module registry
 │   ├── metrics.py                 #   Scoring functions
 │   ├── validators.py              #   Syntax validators
@@ -320,9 +372,9 @@ code-codegen-aosp-llm-based/
 ├── rag/                           # RAG system
 │   ├── aosp_indexer.py            #   AOSP → ChromaDB indexer
 │   ├── aosp_retriever.py          #   Query retriever
-│   └── chroma_db/                 #   Vector database (7 collections)
+│   └── chroma_db/                 #   Vector database (7 collections, ~29K chunks)
 ├── dataset/
-│   └── vss.json                   # Vehicle Signal Specification
+│   └── vss.json                   # Vehicle Signal Specification (1571 signals)
 ├── experiments/results/           # Analysis outputs
 │   ├── matched_analysis.md        #   4-condition comparison
 │   ├── comparison.json
@@ -340,6 +392,7 @@ code-codegen-aosp-llm-based/
 - **SELinux in C4:** Missing `service_name` input field causes score=0.300 in feedback loop
 - **C++ clang validation:** `--syntax-only` flag not supported on some clang versions; code quality is higher than score suggests
 - **android_layout XML:** Occasional missing namespace declaration (`xmlns:android`)
+- **AOSP version:** Generated code targets Android 14 only — do not use Android 13 or 15 source trees
 
 ## License
 
