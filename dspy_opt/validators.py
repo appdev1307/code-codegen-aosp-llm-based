@@ -239,7 +239,7 @@ def validate_cpp(code: str) -> ValidatorResult:
     What it does NOT catch:  missing VHAL method implementations,
       wrong property enum values, link-time errors.
     """
-    tool = "clang++ --syntax-only"
+    tool = "clang++ -fsyntax-only"
     if not code.strip():
         return ValidatorResult(ok=False, score=0.0, errors=["Empty output"], tool=tool)
 
@@ -254,7 +254,7 @@ def validate_cpp(code: str) -> ValidatorResult:
         os.write(fd, combined.encode())
         os.close(fd)
         rc, _, stderr = _run([
-            clang, "--syntax-only", "-x", "c++", "-std=c++17",
+            clang, "-fsyntax-only", "-x", "c++", "-std=c++17",
             "-Wno-unknown-pragmas", "-Wno-unused-variable",
             "-Wno-unused-function", "-Wno-error",
             tmp,
@@ -607,6 +607,24 @@ def validate_layout_xml(xml_str: str) -> ValidatorResult:
         return ValidatorResult(ok=False, score=0.0, errors=["Empty XML"], tool=tool)
 
     errors, score = [], 0.0
+
+    # Auto-inject xmlns:android if missing (common LLM omission)
+    if 'xmlns:android=' not in xml_str and 'android:' in xml_str:
+        xml_str = xml_str.replace(
+            '<' + xml_str.strip().lstrip('<').split()[0],
+            '<' + xml_str.strip().lstrip('<').split()[0]
+            + ' xmlns:android="http://schemas.android.com/apk/res/android"',
+            1,
+        )
+    # Also inject xmlns:app if missing
+    if 'xmlns:app=' not in xml_str and 'app:' in xml_str:
+        xml_str = xml_str.replace(
+            'xmlns:android="http://schemas.android.com/apk/res/android"',
+            'xmlns:android="http://schemas.android.com/apk/res/android"'
+            ' xmlns:app="http://schemas.android.com/apk/res-auto"',
+            1,
+        )
+
     try:
         root = ET.fromstring(xml_str)
         score += 0.35
@@ -794,7 +812,7 @@ def validator_availability_report() -> dict[str, dict]:
         "aidl":           {"tool": "Python AIDL grammar parser",
                            "available": True,
                            "note": "Host-native; no AOSP toolchain needed"},
-        "cpp":            {"tool": "clang++ --syntax-only",
+        "cpp":            {"tool": "clang++ -fsyntax-only",
                            "available": bool(_tool("clang++") or _tool("clang")),
                            "fallback": "cpp-regex",
                            "note": "Syntax only; AOSP headers stubbed in"},

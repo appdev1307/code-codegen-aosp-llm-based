@@ -243,7 +243,7 @@ def _syntax_cpp(content: str) -> float:
         tmp = Path(tempfile.mktemp(suffix=".cpp"))
         tmp.write_text(content)
         result = subprocess.run(
-            ["clang++", "--syntax-only", "-std=c++17", str(tmp)],
+            ["clang++", "-fsyntax-only", "-std=c++17", str(tmp)],
             capture_output=True, timeout=10
         )
         tmp.unlink(missing_ok=True)

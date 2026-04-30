@@ -125,7 +125,7 @@ class ValidatorFeedback:
             tmp = Path(tempfile.mktemp(suffix=".cpp"))
             tmp.write_text(code)
             result = subprocess.run(
-                ["clang++", "--syntax-only", "-std=c++17", str(tmp)],
+                ["clang++", "-fsyntax-only", "-std=c++17", str(tmp)],
                 capture_output=True, timeout=15
             )
             tmp.unlink(missing_ok=True)
@@ -517,6 +517,10 @@ def _generate_one_module(domain, module_props, run_metrics, tracker):
                 "properties": module_spec.to_llm_spec(),
                 "aosp_context": rag_context,
             }
+
+            # SELinux module requires service_name input field
+            if name == "selinux":
+                gen_kwargs["service_name"] = f"vendor.vss.{domain.lower()}"
 
             code, metrics = fb.generate_with_feedback(**gen_kwargs)
             tracker.record(name, metrics["final_passed"])
