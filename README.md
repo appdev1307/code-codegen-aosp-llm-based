@@ -141,9 +141,32 @@ tree using the Cuttlefish Automotive virtual device.
 ### Cloud Build with GCP (official AAOS cloud emulator support)
 
 Use a GCP VM with nested virtualization — no local hardware needed.
-32 vCPUs, 128 GB RAM, 500 GB SSD. Cost: ~$3-5 total with spot pricing.
+
+#### GCP Account & Billing
+
+New Google Cloud customers get **$300 in free credits** (valid 90 days) — more than
+enough for the entire AOSP build (~$6 total). No charges unless you manually upgrade.
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com)
+2. Click **"Start Free"** → sign in with your Google account
+3. Enter a credit card for identity verification (you won't be charged)
+4. $300 credits are available immediately
+
+| Resource | Cost/hr | Time needed | Subtotal |
+|----------|---------|-------------|----------|
+| c2-standard-32 (repo sync) | ~$1.50 | ~1.5 hrs | ~$2.25 |
+| c2-standard-32 (build) | ~$1.50 | ~1.5 hrs | ~$2.25 |
+| c2-standard-32 (test) | ~$1.50 | ~1 hr | ~$1.50 |
+| **Total** | | | **~$6** |
+
+> **Students:** Check if your university offers Google Cloud for Education credits
+> ($50-$100 additional). GitHub Student Developer Pack also includes cloud credits.
+
+#### Create the VM
 
 ```bash
+# Install gcloud CLI if needed: https://cloud.google.com/sdk/docs/install
+
 # Create VM with nested virtualization for Cuttlefish
 gcloud compute instances create aosp-builder \
     --zone=us-central1-a \
@@ -324,6 +347,29 @@ curl http://localhost:8000/health
 curl http://localhost:8000/properties/list
 ```
 
+### Step 8 — Clean Up (stop billing)
+
+**Important:** Delete the VM when done to stop charges against your $300 credits.
+
+```bash
+# On your local machine (not the VM):
+gcloud compute instances delete aosp-builder --zone=us-central1-a
+
+# Verify no VMs are running
+gcloud compute instances list
+```
+
+You can also stop the VM (without deleting) to pause billing for compute, but
+you'll still be charged ~$0.10/day for the 500 GB disk:
+
+```bash
+# Stop (keeps disk, pauses compute billing)
+gcloud compute instances stop aosp-builder --zone=us-central1-a
+
+# Restart later
+gcloud compute instances start aosp-builder --zone=us-central1-a
+```
+
 ---
 
 ## Validation Checklist
@@ -393,3 +439,4 @@ code-codegen-aosp-llm-based/
 ## License
 
 Research use only — MSE thesis project.
+
