@@ -390,15 +390,6 @@ code-codegen-aosp-llm-based/
 - **Batch labelling mismatch:** LLM returns 1 signal per batch instead of 4; remaining are padded. This is a prompt/parsing issue in the labelling code — the LLM returns a single JSON object instead of an array.
 - **AOSP version:** Generated code targets Android 14 only — do not use Android 13 or 15 source trees. AIDL interfaces and SELinux policy format differ across major versions.
 
-## Resolved Issues
-
-- ~~SELinux `service_name` missing in C4~~ → Fixed: `service_name` now passed to feedback loop
-- ~~C++ `--syntax-only` unsupported~~ → Fixed: changed to `-fsyntax-only` (standard clang flag)
-- ~~`xmlns:android` missing in XML layouts~~ → Fixed: validator auto-injects namespace before parsing
-- ~~HAL scores = 0.000~~ → Fixed: `lstrip("**/")` → `removeprefix("**/")` (glob pattern bug)
-- ~~Backend `SyntaxError line 1`~~ → Fixed: `_clean_output()` strips markdown fences
-- ~~HAL files in wrong directory~~ → Fixed: `output_root` passed to architect agent
-
 ## License
 
 Research use only — MSE thesis project.
