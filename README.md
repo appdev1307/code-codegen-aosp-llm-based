@@ -215,41 +215,37 @@ lunch aosp_cf_x86_64_auto-userdebug
 m -j$(nproc)
 ```
 
-### Step 4 — Copy Generated HAL Files
+### Step 4 — Copy Files & Apply Android 14 Fixes (automated)
 
-Use C4 output (highest scoring, 0.909 avg):
+The `apply_aosp14_fixes.sh` script copies generated files to the AOSP tree and
+automatically applies all required Android 14 compatibility fixes:
+
+1. Copies AIDL, C++, Android.bp, SELinux, file_contexts to correct AOSP paths
+2. Adds `vendor: true` to Android.bp
+3. Prepends SELinux type declarations (fixes `checkpolicy` syntax error)
+4. Converts HIDL include paths to AIDL (Android 14 format)
+5. Fixes AIDL package format and adds `@VintfStability` annotation
 
 ```bash
-export AOSP_ROOT=~/aosp-14-auto
-export C4_OUT=/path/to/output_c4_feedback
+# Upload the script and C4 output to the GCP VM
+gcloud compute scp apply_aosp14_fixes.sh aosp-builder:~ --zone=us-central1-a
+gcloud compute scp output_c4.zip aosp-builder:~ --zone=us-central1-a
 
-# AIDL Interface
-mkdir -p $AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
-cp $C4_OUT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl \
-   $AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
-
-# C++ Implementation
-cp $C4_OUT/hardware/interfaces/automotive/vehicle/impl/VehicleHalServiceAdas.cpp \
-   $AOSP_ROOT/hardware/interfaces/automotive/vehicle/impl/
-
-# Build file (merge with existing, don't overwrite)
-cp $C4_OUT/hardware/interfaces/automotive/vehicle/impl/Android.bp \
-   $AOSP_ROOT/hardware/interfaces/automotive/vehicle/impl/Android.bp.generated
-
-# SELinux Policy
-mkdir -p $AOSP_ROOT/system/sepolicy/vendor/
-cp $C4_OUT/sepolicy/vehicle_hal_adas.te \
-   $AOSP_ROOT/system/sepolicy/vendor/
-
-# VINTF + file_contexts (from BuildGlue)
-cp $C4_OUT/private/file_contexts $AOSP_ROOT/system/sepolicy/vendor/ 2>/dev/null
+# On the VM:
+unzip ~/output_c4.zip -d ~/output_c4_feedback
+chmod +x ~/apply_aosp14_fixes.sh
+~/apply_aosp14_fixes.sh ~/output_c4_feedback ~/aosp-14-auto
 ```
 
-### Step 5 — Apply Manual Fixes for Android 14
+The script is idempotent — running it twice won't break anything.
+It prints a summary showing how many fixes were applied.
+
+<details>
+<summary>Manual fixes (if not using the script)</summary>
 
 ```bash
 # Fix 1: Android.bp — add vendor: true
-# Add to cc_binary block in Android.bp.generated:
+# Add to cc_binary block:
 #   vendor: true,
 #   relative_install_path: "hw",
 
@@ -266,8 +262,9 @@ cp $C4_OUT/private/file_contexts $AOSP_ROOT/system/sepolicy/vendor/ 2>/dev/null
 #   Correct:  package android.hardware.automotive.vehicle;
 #   Wrong:    package android.hardware.automotive.vehicle.V2_0;
 ```
+</details>
 
-### Step 6 — Build HAL Module
+### Step 5 — Build HAL Module
 
 ```bash
 cd $AOSP_ROOT
@@ -281,7 +278,7 @@ mmm hardware/interfaces/automotive/vehicle/impl
 m -j$(nproc)
 ```
 
-### Step 7 — Launch Cuttlefish and Test
+### Step 6 — Launch Cuttlefish and Test
 
 ```bash
 # Install Cuttlefish host packages (first time only)
@@ -311,7 +308,7 @@ atest VtsHalAutomotiveVehicle
 stop_cvd
 ```
 
-### Step 8 — Test App and Backend
+### Step 7 — Test App and Backend
 
 ```bash
 # Kotlin App (requires AAOS — uses CarPropertyManager API)
@@ -381,6 +378,7 @@ code-codegen-aosp-llm-based/
 │   ├── comparison.json
 │   ├── latex_table.tex
 │   └── final_analysis.md
+├── apply_aosp14_fixes.sh          # Automated AOSP 14 integration fixes
 ├── output/                        # C1 output
 ├── output_adaptive/               # C2 output
 ├── output_rag_dspy/               # C3 output
