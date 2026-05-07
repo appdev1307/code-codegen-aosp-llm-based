@@ -303,6 +303,25 @@ cd ..
 
 # First build (~2-4 hours)
 m -j$(nproc)
+
+
+# Add yourself to the disk group
+sudo usermod -aG disk $USER
+
+# Reboot the VM (important for group change to take effect)
+sudo reboot
+
+gcloud compute instances list --filter="name=aosp-builder"
+
+gcloud compute ssh aosp-builder --zone=us-central1-a
+
+cd ~/aosp-14-auto
+. build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+
+m clean-openwrt_rootfs_customization_x86_64
+m -j$(nproc)
+
 ```
 
 ### Step 4 — Transfer outputs to GCP VM
