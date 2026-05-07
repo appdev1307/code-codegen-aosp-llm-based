@@ -182,6 +182,42 @@ gcloud compute ssh aosp-builder --zone=us-central1-a
 screen -S aosp
 ```
 
+#### Using `screen` (essential for long builds)
+
+The AOSP build takes 2-4 hours. Use `screen` so the build survives if your
+browser closes, laptop sleeps, or internet drops.
+
+```bash
+# SSH into the VM
+gcloud compute ssh aosp-builder --zone=us-central1-a
+
+# Start a named screen session
+screen -S aosp
+
+# Now run all build commands inside screen...
+# The build keeps running even if you disconnect.
+```
+
+**If you get disconnected:**
+
+```bash
+# Reconnect to the VM
+gcloud compute ssh aosp-builder --zone=us-central1-a
+
+# Reattach to the running build session
+screen -r aosp
+```
+
+**Screen cheat sheet:**
+
+| Action | Keys / Command |
+|--------|---------------|
+| Detach (leave running) | `Ctrl+A` then `D` |
+| Reattach | `screen -r aosp` |
+| List sessions | `screen -ls` |
+| Scroll up | `Ctrl+A` then `Esc`, then arrow keys |
+| Exit scroll | `Esc` |
+
 ### Prerequisites
 
 - Linux x86_64 (Ubuntu 22.04 — GCP VM or local)
@@ -238,33 +274,110 @@ lunch aosp_cf_x86_64_auto-userdebug
 m -j$(nproc)
 ```
 
-### Step 4 — Copy Files & Apply Android 14 Fixes (automated)
+### Step 4 — Transfer outputs to GCP VM
 
-The `apply_aosp14_fixes.sh` script copies generated files to the AOSP tree and
-automatically applies all required Android 14 compatibility fixes:
+The fix script comes directly from GitHub. Choose one method for the output zips:
 
-1. Copies AIDL, C++, Android.bp, SELinux, file_contexts to correct AOSP paths
-2. Adds `vendor: true` to Android.bp
-3. Prepends SELinux type declarations (fixes `checkpolicy` syntax error)
-4. Converts HIDL include paths to AIDL (Android 14 format)
-5. Fixes AIDL package format and adds `@VintfStability` annotation
+**Option A: Upload via GCS bucket in browser (simplest — no CLI needed)**
+
+1. Go to [console.cloud.google.com/storage](https://console.cloud.google.com/storage)
+2. Click **Create Bucket** → name it `aosp-thesis-temp` → Create
+3. Click the bucket → **Upload Files** → select `output_c1.zip`, `output_c2.zip`, `output_c3.zip`, `output_c4.zip`
+4. On the GCP VM:
 
 ```bash
-# Upload the script and C4 output to the GCP VM
-gcloud compute scp apply_aosp14_fixes.sh aosp-builder:~ --zone=us-central1-a
-gcloud compute scp output_c4.zip aosp-builder:~ --zone=us-central1-a
+# Download from GCS bucket
+gsutil cp gs://aosp-thesis-temp/*.zip ~/
 
-# On the VM:
-unzip ~/output_c4.zip -d ~/output_c4_feedback
-chmod +x ~/apply_aosp14_fixes.sh
-~/apply_aosp14_fixes.sh ~/output_c4_feedback ~/aosp-14-auto
+# Clean up bucket when done (avoid storage charges)
+# gsutil rm -r gs://aosp-thesis-temp
 ```
 
-The script is idempotent — running it twice won't break anything.
-It prints a summary showing how many fixes were applied.
+**Option B: SCP from local terminal**
+
+```bash
+# From your local terminal (adjust path to where you saved them)
+gcloud compute scp ~/Downloads/output_c1.zip aosp-builder:~ --zone=us-central1-a
+gcloud compute scp ~/Downloads/output_c2.zip aosp-builder:~ --zone=us-central1-a
+gcloud compute scp ~/Downloads/output_c3.zip aosp-builder:~ --zone=us-central1-a
+gcloud compute scp ~/Downloads/output_c4.zip aosp-builder:~ --zone=us-central1-a
+```
+
+**Then on the GCP VM (both options):**
+
+```bash
+# Get fix script from GitHub
+curl -o ~/apply_aosp14_fixes.sh \
+    https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/apply_aosp14_fixes.sh
+chmod +x ~/apply_aosp14_fixes.sh
+
+# Unzip all conditions
+unzip ~/output_c1.zip -d ~/output_c1
+unzip ~/output_c2.zip -d ~/output_c2
+unzip ~/output_c3.zip -d ~/output_c3
+unzip ~/output_c4.zip -d ~/output_c4
+```
+
+### Step 5 — Apply Fixes & Build
+
+```bash
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-userdebug
+
+# Helper: clean previous condition's files
+clean_hal() {
+    rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty*.aidl
+    rm -f hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.cpp
+    rm -f hardware/interfaces/automotive/vehicle/impl/Android.bp.generated
+    rm -f system/sepolicy/vendor/vehicle_hal_*.te
+}
+```
+
+**Option A: Build a single condition**
+
+```bash
+# Set condition: c1 (default), c2, c3, or c4
+COND1=c1
+
+clean_hal
+~/apply_aosp14_fixes.sh ~/output_$COND1 ~/aosp-14-auto
+mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
+echo "Result: $COND1 → exit code $?"
+```
+
+**Option B: Build all 4 conditions for thesis comparison**
+
+```bash
+for COND1 in c1 c2 c3 c4; do
+    echo "═══════════════════════════════════════════"
+    echo "  Building condition: $COND1"
+    echo "═══════════════════════════════════════════"
+    clean_hal
+    ~/apply_aosp14_fixes.sh ~/output_$COND1 ~/aosp-14-auto
+    mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
+    echo "  Result: $COND1 → exit code $?"
+    echo ""
+done
+
+echo "Build logs: ~/build_c1.log ~/build_c2.log ~/build_c3.log ~/build_c4.log"
+```
+
+### Step 6 — Full AOSP Image Build
+
+Build the full AOSP image with your chosen condition:
+
+```bash
+# Set condition: c4 (default — highest scoring), c1, c2, or c3
+COND2=c4
+
+clean_hal
+~/apply_aosp14_fixes.sh ~/output_$COND2 ~/aosp-14-auto
+m -j$(nproc) 2>&1 | tee ~/build_full_${COND2}.log
+```
 
 <details>
-<summary>Manual fixes (if not using the script)</summary>
+<summary>Manual fixes (if apply_aosp14_fixes.sh doesn't cover an edge case)</summary>
 
 ```bash
 # Fix 1: Android.bp — add vendor: true
@@ -287,21 +400,7 @@ It prints a summary showing how many fixes were applied.
 ```
 </details>
 
-### Step 5 — Build HAL Module
-
-```bash
-cd $AOSP_ROOT
-source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-userdebug
-
-# Module build first
-mmm hardware/interfaces/automotive/vehicle/impl
-
-# Full image if module passes
-m -j$(nproc)
-```
-
-### Step 6 — Launch Cuttlefish and Test
+### Step 7 — Launch Cuttlefish and Test
 
 ```bash
 # Install Cuttlefish host packages (first time only)
@@ -331,7 +430,7 @@ atest VtsHalAutomotiveVehicle
 stop_cvd
 ```
 
-### Step 7 — Test App and Backend
+### Step 8 — Test App and Backend
 
 ```bash
 # Kotlin App (requires AAOS — uses CarPropertyManager API)
@@ -347,7 +446,7 @@ curl http://localhost:8000/health
 curl http://localhost:8000/properties/list
 ```
 
-### Step 8 — Clean Up (stop billing)
+### Step 9 — Clean Up (stop billing)
 
 **Important:** Delete the VM when done to stop charges against your $300 credits.
 
@@ -372,22 +471,110 @@ gcloud compute instances start aosp-builder --zone=us-central1-a
 
 ---
 
-## Validation Checklist
+## Validation Metrics
 
-| # | Check | Tool | Pass Criteria | Android 14 Notes |
-|---|-------|------|---------------|------------------|
-| 1 | AIDL syntax | `aidl --lang=java` | Compiles | AIDL package, not HIDL |
-| 2 | C++ syntax | `clang++ -fsyntax-only` | No errors | AIDL include paths |
-| 3 | SELinux | `checkpolicy -M -c 30` | Compiles | Vendor partition context |
-| 4 | Android.bp | Soong (`mmm`) | Builds | `vendor: true` required |
-| 5 | VINTF | `assemble_vintf` | Validates | AIDL transport |
-| 6 | Kotlin app | `./gradlew assembleDebug` | APK builds | CarPropertyManager API |
-| 7 | XML layout | `aapt2 compile` | Compiles | `xmlns:android` auto-injected |
-| 8 | Backend | `python -c "import main"` | No errors | — |
-| 9 | HAL module | `mmm` | Builds in AOSP 14 | Android 14 tree only |
-| 10 | Full image | `m -j$(nproc)` | Builds | `aosp_cf_x86_64_auto` |
-| 11 | VTS | `atest VtsHalAutomotiveVehicle` | Passes | Cuttlefish |
-| 12 | Runtime | `dumpsys car_service` | Properties visible | Cuttlefish automotive |
+### Two-tier validation approach
+
+The pipeline uses two complementary validation methods:
+
+1. **Colab validation** — automated synthetic scoring during generation (structure + syntax + coverage)
+2. **AOSP build validation** — ground truth compilation in a real Android 14 source tree
+
+Comparing both reveals validator blind spots (scores high in Colab but fails AOSP build)
+and validator strictness (scores low in Colab but passes AOSP build).
+
+### Build validation scoring
+
+| Result | Score | Meaning |
+|--------|-------|---------|
+| Compiles without changes | 1.0 | Production-ready |
+| Compiles after automated fix (`apply_aosp14_fixes.sh`) | 0.8 | Needs predictable patches |
+| Compiles after manual fix | 0.5 | Structural issues |
+| Does not compile | 0.0 | Fundamental errors |
+
+### Validation checklist (core AOSP artifacts)
+
+| # | Artifact | Colab Tool | AOSP Build Tool | Auto-fix applied |
+|---|----------|------------|-----------------|------------------|
+| 1 | AIDL | Python AIDL parser | `aidl --lang=java` | Package format (V2_0 → flat) |
+| 2 | C++ | `clang++ -fsyntax-only` | `mmm` (Soong/clang) | HIDL → AIDL include paths |
+| 3 | SELinux | `checkpolicy -M -c 30` | Full policy compile | Type declaration prepended |
+| 4 | Android.bp | Python BP parser | `mmm` (Soong) | `vendor: true` injected |
+
+### Validation checklist (supporting artifacts)
+
+| # | Artifact | Tool | Pass Criteria |
+|---|----------|------|---------------|
+| 5 | VINTF manifest | `assemble_vintf` | Schema validates |
+| 6 | Kotlin app | `./gradlew assembleDebug` | APK builds |
+| 7 | XML layout | `aapt2 compile` | Resources compile |
+| 8 | Backend | `python -c "import main"` | No import errors |
+| 9 | Full image | `m -j$(nproc)` | `aosp_cf_x86_64_auto` builds |
+| 10 | VTS | `atest VtsHalAutomotiveVehicle` | Tests pass on Cuttlefish |
+
+### AOSP build validation script
+
+Run on the GCP VM after `apply_aosp14_fixes.sh` to generate a JSON report:
+
+```bash
+#!/bin/bash
+# validate_aosp_build.sh — produces build_validation_report.json
+
+AOSP_ROOT=~/aosp-14-auto
+REPORT="$HOME/build_validation_report.json"
+
+cd $AOSP_ROOT
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-userdebug
+
+echo '{"artifacts": [' > $REPORT
+
+# 1. AIDL
+AIDL_FILE=$(find hardware/interfaces/automotive/vehicle/aidl -name "*.aidl" | head -1)
+aidl --lang=java "$AIDL_FILE" 2>/tmp/aidl_err; AIDL_RC=$?
+echo "  {\"artifact\":\"aidl\",\"rc\":$AIDL_RC,\"errors\":$(grep -c error /tmp/aidl_err)}," >> $REPORT
+
+# 2. C++
+CPP_FILE=$(find hardware/interfaces/automotive/vehicle/impl -name "*.cpp" | head -1)
+clang++ -fsyntax-only -std=c++17 "$CPP_FILE" 2>/tmp/cpp_err; CPP_RC=$?
+echo "  {\"artifact\":\"cpp\",\"rc\":$CPP_RC,\"errors\":$(grep -c error /tmp/cpp_err)}," >> $REPORT
+
+# 3. SELinux
+SE_FILE=$(find system/sepolicy/vendor -name "*.te" | head -1)
+checkpolicy -M -c 30 -o /dev/null "$SE_FILE" 2>/tmp/se_err; SE_RC=$?
+echo "  {\"artifact\":\"selinux\",\"rc\":$SE_RC}," >> $REPORT
+
+# 4. Module build (AIDL + C++ + Android.bp together)
+mmm hardware/interfaces/automotive/vehicle/impl 2>/tmp/mmm_err; MMM_RC=$?
+echo "  {\"artifact\":\"module_build\",\"rc\":$MMM_RC,\"errors\":$(grep -c 'FAILED\|error:' /tmp/mmm_err)}," >> $REPORT
+
+# 5. Full AOSP build
+m -j$(nproc) 2>&1 | tail -5 > /tmp/full_err; FULL_RC=$?
+echo "  {\"artifact\":\"full_build\",\"rc\":$FULL_RC}" >> $REPORT
+
+echo ']}' >> $REPORT
+echo "Report: $REPORT"
+cat $REPORT
+```
+
+Download the report for thesis analysis:
+
+```bash
+gcloud compute scp aosp-builder:~/build_validation_report.json . --zone=us-central1-a
+```
+
+### Thesis results table format
+
+Present both metrics side by side in your thesis:
+
+| Artifact | Colab Score | AOSP Build | Auto-fix | Final Build Score |
+|----------|------------|------------|----------|-------------------|
+| AIDL | 1.000 | ✓ / ✗ | package format | 1.0 / 0.8 / 0.0 |
+| C++ | 0.878 | ✓ / ✗ | include paths | 1.0 / 0.8 / 0.0 |
+| SELinux | 0.747 | ✓ / ✗ | type declaration | 1.0 / 0.8 / 0.0 |
+| Android.bp | 0.710 | ✓ / ✗ | vendor: true | 1.0 / 0.8 / 0.0 |
+| Module build | — | ✓ / ✗ | — | 1.0 / 0.0 |
+| Full image | — | ✓ / ✗ | — | 1.0 / 0.0 |
 
 ---
 
@@ -425,6 +612,7 @@ code-codegen-aosp-llm-based/
 │   ├── latex_table.tex
 │   └── final_analysis.md
 ├── apply_aosp14_fixes.sh          # Automated AOSP 14 integration fixes
+├── validate_aosp_build.sh         # AOSP build validation → JSON report
 ├── output/                        # C1 output
 ├── output_adaptive/               # C2 output
 ├── output_rag_dspy/               # C3 output
