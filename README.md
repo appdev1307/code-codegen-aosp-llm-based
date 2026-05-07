@@ -177,6 +177,16 @@ gcloud compute instances create aosp-builder \
     --image-project=ubuntu-os-cloud \
     --enable-nested-virtualization
 
+# Free Account
+gcloud compute instances create aosp-builder \
+    --zone=us-central1-a \
+    --machine-type=n2-standard-8 \
+    --boot-disk-size=500GB \
+    --boot-disk-type=pd-standard \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --enable-nested-virtualization    
+
 # SSH in and use screen (survives SSH disconnect)
 gcloud compute ssh aosp-builder --zone=us-central1-a
 screen -S aosp
@@ -205,7 +215,7 @@ screen -S aosp
 gcloud compute ssh aosp-builder --zone=us-central1-a
 
 # Reattach to the running build session
-screen -r aosp
+screen -d -r aosp
 ```
 
 **Screen cheat sheet:**
@@ -247,6 +257,10 @@ curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
 chmod a+x ~/bin/repo
 export PATH=~/bin:$PATH
 
+# Configure git (change email/name if you want)
+git config --global user.name "Nguyen Ngoc Tam"
+git config --global user.email "nguyenngoctam1307@gmail.com"
+
 # Create AOSP directory
 mkdir ~/aosp-14-auto && cd ~/aosp-14-auto
 
@@ -268,7 +282,24 @@ cd ~/aosp-14-auto
 source build/envsetup.sh
 
 # MUST use _auto target for automotive
-lunch aosp_cf_x86_64_auto-userdebug
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+
+cd ~/aosp-14-auto/platform_testing
+
+# Replace the whole Automotive block with a clean one
+cat > build/tasks/tests/native_test_list.mk.tmp << EOF
+ifeq (\$(BOARD_IS_AUTOMOTIVE), true)
+native_tests += \\
+    libwatchdog_test \\
+    evsmanagerd_test
+endif
+EOF
+
+sed -i '/ifeq (\$(BOARD_IS_AUTOMOTIVE)/,/endif/d' build/tasks/tests/native_test_list.mk
+cat build/tasks/tests/native_test_list.mk.tmp >> build/tasks/tests/native_test_list.mk
+rm build/tasks/tests/native_test_list.mk.tmp
+
+cd ..
 
 # First build (~2-4 hours)
 m -j$(nproc)
