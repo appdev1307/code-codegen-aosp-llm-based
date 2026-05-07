@@ -354,7 +354,8 @@ unzip ~/output_c4.zip -d ~/output_c4
 ```bash
 cd ~/aosp-14-auto
 source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-userdebug
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+
 
 # Helper: clean previous condition's files
 clean_hal() {
@@ -556,7 +557,7 @@ REPORT="$HOME/build_validation_report.json"
 
 cd $AOSP_ROOT
 source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-userdebug
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
 echo '{"artifacts": [' > $REPORT
 
