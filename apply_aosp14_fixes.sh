@@ -51,18 +51,21 @@ SEPOLICY_DIR="$AOSP_ROOT/system/sepolicy/vendor"
 
 mkdir -p "$AIDL_DIR" "$IMPL_DIR" "$SEPOLICY_DIR"
 
-# AIDL
-AIDL_SRC=$(find "$C4_OUT" -name "*.aidl" -path "*/vehicle/*" | head -1)
-if [ -n "$AIDL_SRC" ]; then
-    cp "$AIDL_SRC" "$AIDL_DIR/"
-    ok "AIDL: $(basename $AIDL_SRC)"
+# AIDL — copy all .aidl files (C1 has 4, C3/C4 have 1)
+AIDL_COUNT=0
+while IFS= read -r f; do
+    cp "$f" "$AIDL_DIR/"
+    ((AIDL_COUNT++))
+done < <(find "$C4_OUT" -name "*.aidl" -path "*/vehicle/*" -not -path "*/.llm_draft/*")
+if [ $AIDL_COUNT -gt 0 ]; then
+    ok "AIDL: $AIDL_COUNT files copied"
 else
-    warn "No AIDL file found in $C4_OUT"
+    warn "No AIDL files found in $C4_OUT"
     ((WARNINGS++))
 fi
 
 # C++
-CPP_SRC=$(find "$C4_OUT" -name "*.cpp" -path "*/impl/*" | head -1)
+CPP_SRC=$(find "$C4_OUT" -name "*.cpp" -path "*/impl/*" -not -path "*/.llm_draft/*" | head -1)
 if [ -n "$CPP_SRC" ]; then
     cp "$CPP_SRC" "$IMPL_DIR/"
     ok "C++: $(basename $CPP_SRC)"
@@ -72,7 +75,7 @@ else
 fi
 
 # Android.bp
-BP_SRC=$(find "$C4_OUT" -name "Android.bp" -path "*/impl/*" | head -1)
+BP_SRC=$(find "$C4_OUT" -name "Android.bp" -path "*/impl/*" -not -path "*/.llm_draft/*" | head -1)
 if [ -n "$BP_SRC" ]; then
     cp "$BP_SRC" "$IMPL_DIR/Android.bp.generated"
     ok "Android.bp → Android.bp.generated"
@@ -82,7 +85,7 @@ else
 fi
 
 # SELinux
-TE_SRC=$(find "$C4_OUT" -name "*.te" | head -1)
+TE_SRC=$(find "$C4_OUT" -name "*.te" -not -path "*/.llm_draft/*" | head -1)
 if [ -n "$TE_SRC" ]; then
     cp "$TE_SRC" "$SEPOLICY_DIR/"
     ok "SELinux: $(basename $TE_SRC)"
@@ -92,7 +95,7 @@ else
 fi
 
 # file_contexts
-FC_SRC=$(find "$C4_OUT" -name "file_contexts" | head -1)
+FC_SRC=$(find "$C4_OUT" -name "file_contexts" -not -path "*/.llm_draft/*" | head -1)
 if [ -n "$FC_SRC" ]; then
     cp "$FC_SRC" "$SEPOLICY_DIR/"
     ok "file_contexts"

@@ -62,7 +62,7 @@ COLLECTION_DEFS: dict[str, dict] = {
     "aosp_selinux": {
         "extensions":  {".te"},
         "source_dirs": ["sepolicy"],
-        "description": "SELinux policy files",
+        "description": "SELinux policy files (Android 14 AIDL HAL)",
         # file_contexts, property_contexts, service_contexts have no suffix —
         # matched by name pattern below
         "name_patterns": [
@@ -70,6 +70,14 @@ COLLECTION_DEFS: dict[str, dict] = {
             r"property_contexts$",
             r"service_contexts$",
             r"hwservice_contexts$",
+        ],
+        # Exclude old API versions to avoid stale patterns
+        "exclude_patterns": [
+            "/prebuilts/api/29.0/",
+            "/prebuilts/api/30.0/",
+            "/prebuilts/api/31.0/",
+            "/prebuilts/api/32.0/",
+            "/prebuilts/api/33.0/",
         ],
     },
     "aosp_vintf": {
@@ -110,6 +118,20 @@ MIN_FILE_BYTES = 64
 
 # Maximum file size to index (bytes) — skip huge generated files
 MAX_FILE_BYTES = 200_000
+
+# ─────────────────────────────────────────────────────────────────
+# HIDL exclusion — Android 14 uses AIDL, not HIDL.
+# Excluding HIDL prevents the LLM from generating legacy V2_0
+# includes and patterns that don't compile in AIDL-based AOSP trees.
+# ─────────────────────────────────────────────────────────────────
+HIDL_EXCLUDE_PATTERNS = [
+    "/2.0/",        # HIDL vehicle HAL v2.0
+    "/1.0/",        # HIDL vehicle HAL v1.0
+    "/hidl/",       # Generic HIDL transport
+    "V2_0",         # HIDL namespace suffix in filenames
+    "V1_0",         # HIDL namespace suffix in filenames
+    "/2.0-",        # HIDL service binaries (e.g. vehicle@2.0-service)
+]
 
 
 class AOSPIndexer:
@@ -274,6 +296,7 @@ class AOSPIndexer:
         extensions = cfg.get("extensions", set())
         name_patterns = [re.compile(p) for p in cfg.get("name_patterns", [])]
         source_dirs = cfg.get("source_dirs", [])
+        exclude_patterns = cfg.get("exclude_patterns", [])
 
         for subdir in source_dirs:
             search_root = self.source_dir / subdir
@@ -283,6 +306,15 @@ class AOSPIndexer:
 
             for path in search_root.rglob("*"):
                 if not path.is_file():
+                    continue
+
+                # ── Exclude HIDL files (Android 14 uses AIDL only) ──
+                path_str = str(path)
+                if any(pat in path_str for pat in HIDL_EXCLUDE_PATTERNS):
+                    continue
+
+                # ── Exclude per-collection patterns ──
+                if any(pat in path_str for pat in exclude_patterns):
                     continue
 
                 # Check size

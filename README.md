@@ -74,15 +74,20 @@ pip install pyyaml jinja2 fastapi uvicorn pydantic
 
 ChromaDB **must** be built before DSPy so the optimizer bootstraps traces with RAG context.
 
+The indexer automatically **excludes HIDL files** (vehicle/2.0/, V2_0 namespaces) and only
+indexes AIDL-compatible code. This is critical — without this filter, the RAG corpus
+contains both HIDL and AIDL examples, and the LLM generates legacy HIDL includes
+(`hidl/Status.h`, `vehicle/2.0/IVehicle.h`) that don't compile in Android 14's AIDL-based tree.
+
 ```bash
 # Shallow-clone AOSP repos (~300 MB total)
 git clone --depth=1 https://android.googlesource.com/platform/hardware/interfaces aosp_source/hardware
 git clone --depth=1 https://android.googlesource.com/platform/system/sepolicy     aosp_source/sepolicy
 git clone --depth=1 https://android.googlesource.com/platform/packages/services/Car aosp_source/car
 
-# Index into ChromaDB (~2 min on GPU)
-python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db
-# Expected: 7 collections, ~29,119 chunks
+# Index into ChromaDB with AIDL-only filter (~2 min on GPU)
+python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db --force
+# Expected: 7 collections, AIDL-only (no HIDL/V2_0 content)
 ```
 
 ### 3. Run All Conditions
@@ -177,16 +182,6 @@ gcloud compute instances create aosp-builder \
     --image-project=ubuntu-os-cloud \
     --enable-nested-virtualization
 
-# Free Account
-gcloud compute instances create aosp-builder \
-    --zone=us-central1-a \
-    --machine-type=n2-standard-8 \
-    --boot-disk-size=500GB \
-    --boot-disk-type=pd-standard \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --enable-nested-virtualization    
-
 # SSH in and use screen (survives SSH disconnect)
 gcloud compute ssh aosp-builder --zone=us-central1-a
 screen -S aosp
@@ -215,7 +210,7 @@ screen -S aosp
 gcloud compute ssh aosp-builder --zone=us-central1-a
 
 # Reattach to the running build session
-screen -d -r aosp
+screen -r aosp
 ```
 
 **Screen cheat sheet:**
@@ -257,10 +252,6 @@ curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
 chmod a+x ~/bin/repo
 export PATH=~/bin:$PATH
 
-# Configure git (change email/name if you want)
-git config --global user.name "Nguyen Ngoc Tam"
-git config --global user.email "nguyenngoctam1307@gmail.com"
-
 # Create AOSP directory
 mkdir ~/aosp-14-auto && cd ~/aosp-14-auto
 
@@ -284,81 +275,44 @@ source build/envsetup.sh
 # MUST use _auto target for automotive
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-cd ~/aosp-14-auto/platform_testing
-
-# Replace the whole Automotive block with a clean one
-cat > build/tasks/tests/native_test_list.mk.tmp << EOF
-ifeq (\$(BOARD_IS_AUTOMOTIVE), true)
-native_tests += \\
-    libwatchdog_test \\
-    evsmanagerd_test
-endif
-EOF
-
-sed -i '/ifeq (\$(BOARD_IS_AUTOMOTIVE)/,/endif/d' build/tasks/tests/native_test_list.mk
-cat build/tasks/tests/native_test_list.mk.tmp >> build/tasks/tests/native_test_list.mk
-rm build/tasks/tests/native_test_list.mk.tmp
-
-cd ..
-
 # First build (~2-4 hours)
 m -j$(nproc)
-
-
-# Add yourself to the disk group
-sudo usermod -aG disk $USER
-
-# Reboot the VM (important for group change to take effect)
-sudo reboot
-
-gcloud compute instances list --filter="name=aosp-builder"
-
-gcloud compute ssh aosp-builder --zone=us-central1-a
-
-cd ~/aosp-14-auto
-. build/envsetup.sh
-lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-
-m clean-openwrt_rootfs_customization_x86_64
-m -j$(nproc)
-
 ```
 
-### Step 4 — Transfer outputs to GCP VM
+### Step 4 — Upload files to GCS bucket
 
-The fix script comes directly from GitHub. Choose one method for the output zips:
-
-**Option A: Upload via GCS bucket in browser (simplest — no CLI needed)**
+Upload output zips and the fix script to a GCS bucket via the **browser**.
 
 1. Go to [console.cloud.google.com/storage](https://console.cloud.google.com/storage)
 2. Click **Create Bucket** → name it `aosp-thesis-temp` → Create
-3. Click the bucket → **Upload Files** → select `output_c1.zip`, `output_c2.zip`, `output_c3.zip`, `output_c4.zip`
-4. On the GCP VM:
+3. Click the bucket → **Upload Files** → select:
+   - `output_c1.zip`, `output_c2.zip`, `output_c3.zip`, `output_c4.zip`
+   - `apply_aosp14_fixes.sh` (download from this repo first)
+4. Grant the VM access to the bucket:
+   - Click **Permissions** tab on the bucket
+   - Click **Grant Access**
+   - New principal: `YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com`
+     (find it in Cloud Shell: `gcloud projects describe $(gcloud config get-value project) --format="value(projectNumber)"`)
+   - Role: **Storage Object Viewer**
+   - Click **Save**
+
+### Step 5 — Download files on VM and build
+
+On the VM (already SSH'd in via `gcloud compute ssh`):
 
 ```bash
-# Download from GCS bucket
-gsutil cp gs://aosp-thesis-temp/*.zip ~/
+# Start screen if not already running
+screen -S aosp
 
-# Clean up bucket when done (avoid storage charges)
-# gsutil rm -r gs://aosp-thesis-temp
-```
+# Set project for GCS access
+gcloud config set project YOUR_PROJECT_ID
 
-**Option B: SCP from local terminal**
-
-```bash
-# From your local terminal (adjust path to where you saved them)
-gcloud compute scp ~/Downloads/output_c1.zip aosp-builder:~ --zone=us-central1-a
-gcloud compute scp ~/Downloads/output_c2.zip aosp-builder:~ --zone=us-central1-a
-gcloud compute scp ~/Downloads/output_c3.zip aosp-builder:~ --zone=us-central1-a
-gcloud compute scp ~/Downloads/output_c4.zip aosp-builder:~ --zone=us-central1-a
-```
-
-**Then on the GCP VM (both options):**
-
-```bash
-# Get fix script from GitHub
-curl -o ~/apply_aosp14_fixes.sh \
-    https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/apply_aosp14_fixes.sh
+# Download everything from the bucket
+gcloud storage cp gs://aosp-thesis-temp/output_c1.zip ~/
+gcloud storage cp gs://aosp-thesis-temp/output_c2.zip ~/
+gcloud storage cp gs://aosp-thesis-temp/output_c3.zip ~/
+gcloud storage cp gs://aosp-thesis-temp/output_c4.zip ~/
+gcloud storage cp gs://aosp-thesis-temp/apply_aosp14_fixes.sh ~/
 chmod +x ~/apply_aosp14_fixes.sh
 
 # Unzip all conditions
@@ -366,24 +320,43 @@ unzip ~/output_c1.zip -d ~/output_c1
 unzip ~/output_c2.zip -d ~/output_c2
 unzip ~/output_c3.zip -d ~/output_c3
 unzip ~/output_c4.zip -d ~/output_c4
+
+# Verify files exist
+find ~/output_c1 -name "*.aidl" -o -name "*.cpp" -o -name "*.te" | head -5
 ```
 
-### Step 5 — Apply Fixes & Build
+**Set up AOSP build environment:**
 
 ```bash
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-
-# Helper: clean previous condition's files
+# Helper: clean previous condition's generated files
 clean_hal() {
     rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty*.aidl
     rm -f hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.cpp
     rm -f hardware/interfaces/automotive/vehicle/impl/Android.bp.generated
     rm -f system/sepolicy/vendor/vehicle_hal_*.te
 }
+
+# Helper: restore AOSP tree to original state after a failed build
+# AOSP uses repo (not git) — each subdirectory is its own git repo
+restore_aosp() {
+    echo "Restoring AOSP tree to original state..."
+    cd ~/aosp-14-auto/hardware/interfaces && git checkout .
+    cd ~/aosp-14-auto/system/sepolicy && git checkout .
+    cd ~/aosp-14-auto
+    echo "✓ AOSP tree restored"
+}
 ```
+
+> **Important: C1/C2 vs C3/C4 behavior**
+>
+> C1/C2 (without RAG) generate **replacement** AIDL files that overwrite existing
+> AOSP files and break dependency chains (e.g. missing `VehiclePropertyStatus`).
+> C3/C4 (with RAG) generate **additive** files that complement existing code.
+> If a build fails, always run `restore_aosp` before trying the next condition.
 
 **Option A: Build a single condition**
 
@@ -391,6 +364,7 @@ clean_hal() {
 # Set condition: c1 (default), c2, c3, or c4
 COND1=c1
 
+restore_aosp    # always restore before each condition
 clean_hal
 ~/apply_aosp14_fixes.sh ~/output_$COND1 ~/aosp-14-auto
 mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
@@ -404,6 +378,7 @@ for COND1 in c1 c2 c3 c4; do
     echo "═══════════════════════════════════════════"
     echo "  Building condition: $COND1"
     echo "═══════════════════════════════════════════"
+    restore_aosp
     clean_hal
     ~/apply_aosp14_fixes.sh ~/output_$COND1 ~/aosp-14-auto
     mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
@@ -412,6 +387,23 @@ for COND1 in c1 c2 c3 c4; do
 done
 
 echo "Build logs: ~/build_c1.log ~/build_c2.log ~/build_c3.log ~/build_c4.log"
+```
+
+**If a build fails — recovery steps:**
+
+```bash
+# 1. Restore the AOSP tree (undo all generated file changes)
+restore_aosp
+
+# 2. Verify the tree is clean
+cd ~/aosp-14-auto/hardware/interfaces && git status
+cd ~/aosp-14-auto/system/sepolicy && git status
+
+# 3. Try the next condition or retry with manual fixes
+COND1=c3
+clean_hal
+~/apply_aosp14_fixes.sh ~/output_$COND1 ~/aosp-14-auto
+mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
 ```
 
 ### Step 6 — Full AOSP Image Build
@@ -504,6 +496,9 @@ curl http://localhost:8000/properties/list
 ```bash
 # On your local machine (not the VM):
 gcloud compute instances delete aosp-builder --zone=us-central1-a
+
+# Delete GCS bucket if you created one
+gsutil rm -r gs://aosp-thesis-temp 2>/dev/null
 
 # Verify no VMs are running
 gcloud compute instances list
@@ -674,6 +669,12 @@ code-codegen-aosp-llm-based/
 
 - **Batch labelling mismatch:** LLM returns 1 signal per batch instead of 4; remaining are padded. This is a prompt/parsing issue in the labelling code — the LLM returns a single JSON object instead of an array.
 - **AOSP version:** Generated code targets Android 14 only — do not use Android 13 or 15 source trees. AIDL interfaces and SELinux policy format differ across major versions.
+
+## Key Design Decisions
+
+- **HIDL exclusion in RAG corpus:** The AOSP source tree contains both HIDL (Android 12/13) and AIDL (Android 14) Vehicle HAL implementations. Without filtering, the RAG retriever returns HIDL examples that outnumber AIDL examples in simplicity, causing the LLM to generate legacy `#include <hidl/Status.h>` and `vehicle/2.0/IVehicle.h` patterns that don't compile in Android 14. The indexer now excludes all `/2.0/`, `/1.0/`, `V2_0`, and `/hidl/` paths, ensuring only AIDL-compatible patterns are retrieved.
+- **Additive vs replacement AIDL:** C1/C2 (without RAG) generate replacement AIDL files that overwrite existing AOSP interfaces and break dependency chains. C3/C4 (with RAG) generate additive files that complement existing code — a direct result of RAG context showing what already exists in the AOSP tree.
+- **Automated AOSP 14 fixes:** `apply_aosp14_fixes.sh` handles systematic integration gaps (vendor:true, SELinux type declarations, AIDL package format) that are predictable and automatable rather than code quality issues.
 
 ## License
 
