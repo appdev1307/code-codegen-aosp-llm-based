@@ -159,10 +159,10 @@ enough for the entire AOSP build (~$6 total). No charges unless you manually upg
 
 | Resource | Cost/hr | Time needed | Subtotal |
 |----------|---------|-------------|----------|
-| c2-standard-32 (repo sync) | ~$1.50 | ~1.5 hrs | ~$2.25 |
-| c2-standard-32 (build) | ~$1.50 | ~1.5 hrs | ~$2.25 |
-| c2-standard-32 (test) | ~$1.50 | ~1 hr | ~$1.50 |
-| **Total** | | | **~$6** |
+| n2-standard-8 (repo sync) | ~$0.40 | ~2 hrs | ~$0.80 |
+| n2-standard-8 (build) | ~$0.40 | ~4 hrs | ~$1.60 |
+| n2-standard-8 (test) | ~$0.40 | ~1 hr | ~$0.40 |
+| **Total** | | | **~$3** |
 
 > **Students:** Check if your university offers Google Cloud for Education credits
 > ($50-$100 additional). GitHub Student Developer Pack also includes cloud credits.
@@ -172,7 +172,21 @@ enough for the entire AOSP build (~$6 total). No charges unless you manually upg
 ```bash
 # Install gcloud CLI if needed: https://cloud.google.com/sdk/docs/install
 
-# Create VM with nested virtualization for Cuttlefish
+# Create VM with nested virtualization for Cuttlefish (free trial)
+gcloud compute instances create aosp-builder \
+    --zone=us-central1-a \
+    --machine-type=n2-standard-8 \
+    --boot-disk-size=500GB \
+    --boot-disk-type=pd-standard \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --enable-nested-virtualization
+```
+
+<details>
+<summary>Premium account: faster build with 32 cores + SSD</summary>
+
+```bash
 gcloud compute instances create aosp-builder \
     --zone=us-central1-a \
     --machine-type=c2-standard-32 \
@@ -181,7 +195,11 @@ gcloud compute instances create aosp-builder \
     --image-family=ubuntu-2204-lts \
     --image-project=ubuntu-os-cloud \
     --enable-nested-virtualization
+# Cost: ~$1.50/hr | Build time: ~1.5 hrs instead of ~4-5 hrs
+```
+</details>
 
+```bash
 # SSH in and use screen (survives SSH disconnect)
 gcloud compute ssh aosp-builder --zone=us-central1-a
 screen -S aosp
@@ -227,7 +245,7 @@ screen -r aosp
 
 - Linux x86_64 (Ubuntu 22.04 — GCP VM or local)
 - 400+ GB free disk, 32+ GB RAM
-- ~2 hours for first full build (GCP c2-standard-32)
+- ~4-5 hours for first full build (GCP n2-standard-8)
 
 ### Step 1 — Install Build Dependencies
 
@@ -293,15 +311,14 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 m -j$(nproc)
 ```
 
-### Step 4 — Upload files to GCS bucket
+### Step 4 — Upload output zips to GCS bucket
 
-Upload output zips and the fix script to a GCS bucket via the **browser**.
+Upload output zips to a GCS bucket via the **browser**.
 
 1. Go to [console.cloud.google.com/storage](https://console.cloud.google.com/storage)
 2. Click **Create Bucket** → name it `aosp-thesis-temp` → Create
 3. Click the bucket → **Upload Files** → select:
    - `output_c1.zip`, `output_c2.zip`, `output_c3.zip`, `output_c4.zip`
-   - `apply_aosp14_fixes.sh` (download from this repo first)
 4. Grant the VM access to the bucket:
    - Click **Permissions** tab on the bucket
    - Click **Grant Access**
@@ -321,12 +338,15 @@ screen -S aosp
 # Set project for GCS access (find your project ID with: gcloud config get-value project)
 gcloud config set project $(gcloud config get-value project)
 
-# Download everything from the bucket
+# Download output zips from the bucket
 gcloud storage cp gs://aosp-thesis-temp/output_c1.zip ~/
 gcloud storage cp gs://aosp-thesis-temp/output_c2.zip ~/
 gcloud storage cp gs://aosp-thesis-temp/output_c3.zip ~/
 gcloud storage cp gs://aosp-thesis-temp/output_c4.zip ~/
-gcloud storage cp gs://aosp-thesis-temp/apply_aosp14_fixes.sh ~/
+
+# Get fix script from GitHub
+curl -o ~/apply_aosp14_fixes.sh \
+    https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/apply_aosp14_fixes.sh
 chmod +x ~/apply_aosp14_fixes.sh
 
 # Unzip all conditions
