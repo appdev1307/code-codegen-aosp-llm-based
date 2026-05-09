@@ -1,8 +1,5 @@
 """
-rag/aosp_indexer.py
-────────────────────────────────────────────────────────────────────
-Crawls AOSP HAL source directories and builds a ChromaDB vector index.
-Improved HIDL exclusion for Android 14 AIDL-focused indexing.
+rag/aosp_indexer.py - AGGRESSIVE HIDL EXCLUSION
 """
 
 from __future__ import annotations
@@ -22,63 +19,22 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────
-# Collection definitions
-# ─────────────────────────────────────────────────────────────────
+# Collection definitions (same as before)
 COLLECTION_DEFS: dict[str, dict] = {
-    "aosp_aidl": {
-        "extensions":  {".aidl"},
-        "source_dirs": ["hardware"],
-        "description": "AIDL interface definitions",
-    },
-    "aosp_cpp": {
-        "extensions":  {".cpp", ".h", ".cc"},
-        "source_dirs": ["hardware"],
-        "description": "VHAL C++ implementation files",
-    },
-    "aosp_build": {
-        "extensions":  {".bp"},
-        "source_dirs": ["hardware", "car"],
-        "description": "Android.bp build files",
-    },
+    "aosp_aidl": {"extensions": {".aidl"}, "source_dirs": ["hardware"], "description": "AIDL interface definitions"},
+    "aosp_cpp": {"extensions": {".cpp", ".h", ".cc"}, "source_dirs": ["hardware"], "description": "VHAL C++ implementation files"},
+    "aosp_build": {"extensions": {".bp"}, "source_dirs": ["hardware", "car"], "description": "Android.bp build files"},
     "aosp_selinux": {
-        "extensions":  {".te"},
-        "source_dirs": ["sepolicy"],
-        "description": "SELinux policy files",
-        "name_patterns": [
-            r"file_contexts$",
-            r"property_contexts$",
-            r"service_contexts$",
-            r"hwservice_contexts$",
-        ],
-        "exclude_patterns": [
-            "/prebuilts/api/29.0/",
-            "/prebuilts/api/30.0/",
-            "/prebuilts/api/31.0/",
-            "/prebuilts/api/32.0/",
-            "/prebuilts/api/33.0/",
-        ],
+        "extensions": {".te"}, "source_dirs": ["sepolicy"], "description": "SELinux policy files",
+        "name_patterns": [r"file_contexts$", r"property_contexts$", r"service_contexts$", r"hwservice_contexts$"],
+        "exclude_patterns": ["/prebuilts/api/"],
     },
     "aosp_vintf": {
-        "extensions":  {".xml", ".rc"},
-        "source_dirs": ["hardware"],
-        "description": "VINTF manifest and init.rc files",
-        "name_patterns": [
-            r"manifest.*\.xml$",
-            r"compatibility_matrix.*\.xml$",
-            r".*\.rc$",
-        ],
+        "extensions": {".xml", ".rc"}, "source_dirs": ["hardware"], "description": "VINTF manifest and init.rc files",
+        "name_patterns": [r"manifest.*\.xml$", r"compatibility_matrix.*\.xml$", r".*\.rc$"],
     },
-    "aosp_car_api": {
-        "extensions":  {".kt", ".java"},
-        "source_dirs": ["car"],
-        "description": "Car API Kotlin/Java source files",
-    },
-    "aosp_docs": {
-        "extensions":  {".md", ".rst", ".txt"},
-        "source_dirs": ["hardware", "car"],
-        "description": "AOSP design documents and READMEs",
-    },
+    "aosp_car_api": {"extensions": {".kt", ".java"}, "source_dirs": ["car"], "description": "Car API Kotlin/Java"},
+    "aosp_docs": {"extensions": {".md", ".rst", ".txt"}, "source_dirs": ["hardware", "car"], "description": "Docs"},
 }
 
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
@@ -88,90 +44,56 @@ BATCH_SIZE = 256
 MIN_FILE_BYTES = 64
 MAX_FILE_BYTES = 200_000
 
-# ─────────────────────────────────────────────────────────────────
-# STRONGER HIDL EXCLUSION
-# ─────────────────────────────────────────────────────────────────
+# ==================== AGGRESSIVE HIDL EXCLUSION ====================
 HIDL_EXCLUDE_PATTERNS = [
-    "/2.0/", "/1.0/", "/3.0/", "/4.0/",
-    "/hidl/", "/hidl-generated/", "/V1_0/", "/V2_0/", "/V3_0/",
-    "@2.0", "@1.0", "@3.0", "@4.0",
-    "V2_0", "V1_0", "V3_0", "V4_0",
-    "vehicle@2", "vehicle@1", "vehicle@3",
-    "hidl::", "android.hardware.automotive.vehicle@",
+    "/2.0/", "/1.0/", "/3.0/", "/4.0/", "/hidl/", "/hidl-generated/",
+    "V2_0", "V1_0", "V3_0", "@2.0", "@1.0", "@3.0",
+    "vehicle@2", "vehicle@1", "hidl::"
 ]
 
 HIDL_CONTENT_KEYWORDS = [
-    "hidl::", "HIDL", "@2.0", "@1.0", "V2_0", "V1_0", "V3_0",
-    "android.hardware.automotive.vehicle@", "BpHw", "BnHw", "Hidl"
+    "hidl::", "@2.0", "@1.0", "V2_0", "V1_0", "BpHw", "BnHw", "Hidl",
+    "android.hardware.automotive.vehicle@", "IVehicle", "types.hidl"
 ]
 
 class AOSPIndexer:
-    def __init__(
-        self,
-        aosp_source_dir: str | Path = "aosp_source",
-        db_path: str | Path = "rag/chroma_db",
-        embedding_model: str = EMBEDDING_MODEL,
-        force_reindex: bool = False,
-    ):
+    def __init__(self, aosp_source_dir: str | Path = "aosp_source", db_path: str | Path = "rag/chroma_db",
+                 embedding_model: str = EMBEDDING_MODEL, force_reindex: bool = False):
         self.source_dir = Path(aosp_source_dir)
         self.db_path = Path(db_path)
         self.force_reindex = force_reindex
-
         self.db_path.mkdir(parents=True, exist_ok=True)
 
-        self.client = chromadb.PersistentClient(
-            path=str(self.db_path),
-            settings=Settings(anonymized_telemetry=False),
-        )
-
-        logger.info(f"[RAG Indexer] Loading embedding model: {embedding_model}")
+        self.client = chromadb.PersistentClient(path=str(self.db_path), settings=Settings(anonymized_telemetry=False))
         self.embedder = SentenceTransformer(embedding_model)
         self._stats: dict[str, dict] = {}
 
-    def index(self) -> dict[str, dict]:
+    def index(self):
         if not self.source_dir.exists():
-            raise FileNotFoundError(f"AOSP source dir not found: {self.source_dir}")
+            raise FileNotFoundError(f"AOSP source not found: {self.source_dir}")
 
-        t_start = time.time()
-        print(f"\n[RAG Indexer] Starting AOSP source indexing")
-        print(f"  Source: {self.source_dir.resolve()}")
-        print(f"  DB:     {self.db_path.resolve()}")
-        print()
+        print(f"\n[RAG Indexer] Starting indexing...")
+        for name, cfg in COLLECTION_DEFS.items():
+            self._index_collection(name, cfg)
 
-        for collection_name, cfg in COLLECTION_DEFS.items():
-            self._index_collection(collection_name, cfg)
-
-        elapsed = time.time() - t_start
-        self._print_summary(elapsed)
+        self._print_summary()
         self._save_index_manifest()
-        return self._stats
 
-    def _index_collection(self, name: str, cfg: dict) -> None:
-        print(f"[RAG Indexer] Collection: {name} ({cfg['description']})")
+    def _index_collection(self, name: str, cfg: dict):
+        print(f"[Collection] {name} ({cfg['description']})")
 
         if not self.force_reindex and self.collection_exists(name):
-            existing = self.client.get_collection(name).count()
-            print(f"  → Already indexed ({existing} chunks). Use --force to rebuild.\n")
-            self._stats[name] = {"files": 0, "chunks": existing, "skipped": 0, "cached": True}
+            print("  → Already indexed (use --force to rebuild)\n")
             return
 
         if self.force_reindex:
-            try:
-                self.client.delete_collection(name)
-            except Exception:
-                pass
+            try: self.client.delete_collection(name)
+            except: pass
 
-        collection = self.client.get_or_create_collection(
-            name=name, metadata={"hnsw:space": "cosine"}
-        )
+        collection = self.client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
 
         files = list(self._walk_files(cfg))
-        print(f"  → Found {len(files)} files to index")
-
-        if not files:
-            print("  → WARNING: No files found.\n")
-            self._stats[name] = {"files": 0, "chunks": 0, "skipped": 0, "cached": False}
-            return
+        print(f"  → Found {len(files)} files")
 
         all_docs, all_ids, all_metas = [], [], []
         file_count = skip_count = 0
@@ -182,9 +104,8 @@ class AOSPIndexer:
                 skip_count += 1
                 continue
             for i, (chunk, meta) in enumerate(zip(chunks, metas)):
-                chunk_id = self._make_id(path, i)
                 all_docs.append(chunk)
-                all_ids.append(chunk_id)
+                all_ids.append(self._make_id(path, i))
                 all_metas.append(meta)
             file_count += 1
 
@@ -195,79 +116,56 @@ class AOSPIndexer:
         if all_docs:
             self._flush_batch(collection, all_docs, all_ids, all_metas)
 
-        total_chunks = collection.count()
-        print(f"  → Indexed {file_count} files → {total_chunks} chunks (skipped {skip_count})\n")
-
-        self._stats[name] = {
-            "files": file_count,
-            "chunks": total_chunks,
-            "skipped": skip_count,
-            "cached": False,
-        }
+        print(f"  → Indexed {file_count} files → {collection.count()} chunks (skipped {skip_count})\n")
 
     def _walk_files(self, cfg: dict) -> Iterator[Path]:
-        extensions = cfg.get("extensions", set())
-        name_patterns = [re.compile(p) for p in cfg.get("name_patterns", [])]
-        source_dirs = cfg.get("source_dirs", [])
-        exclude_patterns = cfg.get("exclude_patterns", [])
+        for subdir in cfg.get("source_dirs", []):
+            root = self.source_dir / subdir
+            if not root.exists(): continue
 
-        for subdir in source_dirs:
-            search_root = self.source_dir / subdir
-            if not search_root.exists():
-                continue
+            for path in root.rglob("*"):
+                if not path.is_file(): continue
 
-            for path in search_root.rglob("*"):
-                if not path.is_file():
+                path_lower = path.as_posix().lower()
+
+                if any(pat.lower() in path_lower for pat in HIDL_EXCLUDE_PATTERNS):
                     continue
 
-                path_str = str(path)
-                path_posix = path.as_posix().lower()
-
-                # Path-based HIDL exclusion
-                if any(pat.lower() in path_posix for pat in HIDL_EXCLUDE_PATTERNS):
+                if any(pat in str(path) for pat in cfg.get("exclude_patterns", [])):
                     continue
 
-                # Collection-specific excludes
-                if any(pat in path_str for pat in exclude_patterns):
-                    continue
-
-                # Size filter
                 try:
                     size = path.stat().st_size
                     if size < MIN_FILE_BYTES or size > MAX_FILE_BYTES:
                         continue
-                except OSError:
+                except: continue
+
+                ext_match = path.suffix.lower() in cfg.get("extensions", set())
+                name_match = any(re.search(p, path.name) for p in cfg.get("name_patterns", []))
+
+                if not (ext_match or name_match):
                     continue
 
-                # Extension or name pattern match
-                ext_match = path.suffix.lower() in extensions
-                pattern_match = any(p.search(path.name) for p in name_patterns)
-
-                if not (ext_match or pattern_match):
-                    continue
-
-                # Content-based HIDL filtering (NEW)
-                if self._is_hidl_file(path):
+                # Aggressive content check
+                if self._contains_hidl_content(path):
                     continue
 
                 yield path
 
-    def _is_hidl_file(self, path: Path) -> bool:
-        """Exclude files containing strong HIDL signatures."""
+    def _contains_hidl_content(self, path: Path) -> bool:
         try:
             text = path.read_text(encoding="utf-8", errors="ignore").lower()
-            count = sum(1 for kw in HIDL_CONTENT_KEYWORDS if kw.lower() in text)
-            return count >= 2  # Exclude if 2 or more HIDL keywords found
-        except Exception:
-            return False
+            hits = [kw for kw in HIDL_CONTENT_KEYWORDS if kw.lower() in text]
+            if len(hits) >= 1:   # Lowered threshold to 1
+                return True
+        except:
+            pass
+        return False
 
-    def _process_file(self, path: Path, cfg: dict) -> tuple[list[str], list[dict]]:
+    def _process_file(self, path: Path, cfg: dict):
         try:
             text = path.read_text(encoding="utf-8", errors="ignore").strip()
-        except Exception:
-            return [], []
-
-        if not text:
+        except:
             return [], []
 
         text = self._clean_text(text)
@@ -275,93 +173,61 @@ class AOSPIndexer:
         if not chunks:
             return [], []
 
-        meta_base = {
-            "file":       str(path),
-            "filename":   path.name,
-            "suffix":     path.suffix,
-            "parent":     path.parent.name,
-            "collection": cfg["description"],
-        }
-
+        meta_base = {"file": str(path), "filename": path.name, "suffix": path.suffix,
+                     "parent": path.parent.name, "collection": cfg["description"]}
         metas = [{**meta_base, "chunk_index": i} for i in range(len(chunks))]
         return chunks, metas
 
     def _clean_text(self, text: str) -> str:
-        text = re.sub(
-            r"/\*\s*Copyright.*?(?:limitations under the License\.)\s*\*/",
-            "", text, flags=re.DOTALL | re.IGNORECASE
-        )
+        text = re.sub(r"/\*\s*Copyright.*?(?:License\.)\s*\*/", "", text, flags=re.DOTALL | re.IGNORECASE)
         lines = [l for l in text.splitlines() if not l.strip().startswith("//")]
         text = "\n".join(lines)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
 
     def _split_chunks(self, text: str) -> list[str]:
         words = text.split()
-        if not words:
-            return []
+        if not words: return []
         chunks = []
         step = CHUNK_SIZE_WORDS - CHUNK_OVERLAP_WORDS
         for i in range(0, len(words), step):
-            chunk = " ".join(words[i : i + CHUNK_SIZE_WORDS])
+            chunk = " ".join(words[i:i + CHUNK_SIZE_WORDS])
             if chunk.strip():
                 chunks.append(chunk)
         return chunks
 
     def _flush_batch(self, collection, docs, ids, metas):
-        embeddings = self.embedder.encode(
-            docs, batch_size=64, show_progress_bar=False, normalize_embeddings=True
-        ).tolist()
+        embeddings = self.embedder.encode(docs, batch_size=64, show_progress_bar=False, normalize_embeddings=True).tolist()
         collection.upsert(documents=docs, embeddings=embeddings, ids=ids, metadatas=metas)
 
     @staticmethod
     def _make_id(path: Path, chunk_index: int) -> str:
-        path_hash = hashlib.md5(str(path).encode()).hexdigest()[:12]
-        return f"{path_hash}_{chunk_index}"
+        return hashlib.md5(str(path).encode()).hexdigest()[:12] + f"_{chunk_index}"
 
-    def collection_exists(self, collection_name: str) -> bool:
+    def collection_exists(self, name: str) -> bool:
         try:
-            col = self.client.get_collection(collection_name)
-            return col.count() > 0
-        except Exception:
+            return self.client.get_collection(name).count() > 0
+        except:
             return False
 
-    def _print_summary(self, elapsed: float):
+    def _print_summary(self):
         print("=" * 60)
         print("[RAG Indexer] Indexing complete!")
-        print(f"  Total time: {elapsed:.1f}s")
-        total = sum(s["chunks"] for s in self._stats.values())
-        for name, s in self._stats.items():
-            status = "cached" if s.get("cached") else "indexed"
-            print(f"  {name:<25} {s['chunks']:>6} chunks  [{status}]")
-        print(f"  {'TOTAL':<25} {total:>6} chunks")
+        total = sum(s.get("chunks", 0) for s in self._stats.values())
+        print(f"  TOTAL {total} chunks")
         print("=" * 60)
 
     def _save_index_manifest(self):
-        manifest = {
-            "indexed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "embedding_model": EMBEDDING_MODEL,
-            "collections": self._stats,
-        }
         manifest_path = self.db_path / "index_manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        manifest_path.write_text(json.dumps({"indexed_at": time.strftime("%Y-%m-%dT%H:%M:%S")}, indent=2))
 
 
-# ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-    parser = argparse.ArgumentParser(description="Build ChromaDB vector index from AOSP HAL")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--source", default="aosp_source")
     parser.add_argument("--db", default="rag/chroma_db")
-    parser.add_argument("--model", default=EMBEDDING_MODEL)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
-    indexer = AOSPIndexer(
-        aosp_source_dir=args.source,
-        db_path=args.db,
-        embedding_model=args.model,
-        force_reindex=args.force,
-    )
+    indexer = AOSPIndexer(aosp_source_dir=args.source, db_path=args.db, force_reindex=args.force)
     indexer.index()
