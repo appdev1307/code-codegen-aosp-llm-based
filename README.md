@@ -79,11 +79,17 @@ indexes AIDL-compatible code. This is critical — without this filter, the RAG 
 contains both HIDL and AIDL examples, and the LLM generates legacy HIDL includes
 (`hidl/Status.h`, `vehicle/2.0/IVehicle.h`) that don't compile in Android 14's AIDL-based tree.
 
+**Important:** Clone the same AOSP tag (`android-14.0.0_r75`) used for the build tree.
+Mismatched versions cause the LLM to generate patterns that don't match the build system.
+
 ```bash
-# Shallow-clone AOSP repos (~300 MB total)
-git clone --depth=1 https://android.googlesource.com/platform/hardware/interfaces aosp_source/hardware
-git clone --depth=1 https://android.googlesource.com/platform/system/sepolicy     aosp_source/sepolicy
-git clone --depth=1 https://android.googlesource.com/platform/packages/services/Car aosp_source/car
+# Shallow-clone AOSP repos pinned to android-14.0.0_r75 (~300 MB total)
+git clone --depth=1 -b android-14.0.0_r75 \
+    https://android.googlesource.com/platform/hardware/interfaces aosp_source/hardware
+git clone --depth=1 -b android-14.0.0_r75 \
+    https://android.googlesource.com/platform/system/sepolicy     aosp_source/sepolicy
+git clone --depth=1 -b android-14.0.0_r75 \
+    https://android.googlesource.com/platform/packages/services/Car aosp_source/car
 
 # Index into ChromaDB with AIDL-only filter (~2 min on GPU)
 python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db --force
@@ -707,8 +713,9 @@ code-codegen-aosp-llm-based/
 ## Key Design Decisions
 
 - **HIDL exclusion in RAG corpus:** The AOSP source tree contains both HIDL (Android 12/13) and AIDL (Android 14) Vehicle HAL implementations. Without filtering, the RAG retriever returns HIDL examples that outnumber AIDL examples in simplicity, causing the LLM to generate legacy `#include <hidl/Status.h>` and `vehicle/2.0/IVehicle.h` patterns that don't compile in Android 14. The indexer now excludes all `/2.0/`, `/1.0/`, `V2_0`, and `/hidl/` paths, ensuring only AIDL-compatible patterns are retrieved.
+- **Version-pinned RAG corpus:** The RAG source must be cloned with the same tag (`android-14.0.0_r75`) as the AOSP build tree. Mismatched versions cause the LLM to generate patterns (Android.bp `srcs` lists, API freeze hashes, AIDL module structure) that don't match the build system's expectations.
 - **Additive vs replacement AIDL:** C1/C2 (without RAG) generate replacement AIDL files that overwrite existing AOSP interfaces and break dependency chains. C3/C4 (with RAG) generate additive files that complement existing code — a direct result of RAG context showing what already exists in the AOSP tree.
-- **Automated AOSP 14 fixes:** `apply_aosp14_fixes.sh` handles systematic integration gaps (vendor:true, SELinux type declarations, AIDL package format) that are predictable and automatable rather than code quality issues.
+- **Automated AOSP 14 fixes:** `apply_aosp14_fixes.sh` handles systematic integration gaps (vendor:true, SELinux type declarations) that are predictable and automatable rather than code quality issues.
 
 ## License
 
