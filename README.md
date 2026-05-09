@@ -386,13 +386,6 @@ clean_hal() {
     rm -f system/sepolicy/vendor/vehicle_hal_*.te
 }
 
-# Helper: restore AOSP tree after a failed build
-restore_aosp() {
-    cd ~/aosp-14-auto/hardware/interfaces && git checkout . && cd ~/aosp-14-auto
-    cd ~/aosp-14-auto/system/sepolicy && git checkout . && cd ~/aosp-14-auto
-    echo "✓ AOSP tree restored"
-}
-
 # Helper: restore AOSP tree to original state after a failed build
 # AOSP uses repo (not git) — each subdirectory is its own git repo
 restore_aosp() {
