@@ -270,6 +270,20 @@ Car Service, Vehicle HAL framework, AAOS system UI.
 
 ```bash
 cd ~/aosp-14-auto
+
+# Fix platform_testing build error (missing test targets)
+cd platform_testing
+cat > /tmp/automotive_fix.mk << 'EOF'
+ifeq ($(BOARD_IS_AUTOMOTIVE), true)
+native_tests += \
+    libwatchdog_test \
+    evsmanagerd_test
+endif
+EOF
+sed -i '/ifeq ($(BOARD_IS_AUTOMOTIVE)/,/endif/d' build/tasks/tests/native_test_list.mk
+cat /tmp/automotive_fix.mk >> build/tasks/tests/native_test_list.mk
+cd ~/aosp-14-auto
+
 source build/envsetup.sh
 
 # MUST use _auto target for automotive
@@ -304,8 +318,8 @@ On the VM (already SSH'd in via `gcloud compute ssh`):
 # Start screen if not already running
 screen -S aosp
 
-# Set project for GCS access
-gcloud config set project YOUR_PROJECT_ID
+# Set project for GCS access (find your project ID with: gcloud config get-value project)
+gcloud config set project $(gcloud config get-value project)
 
 # Download everything from the bucket
 gcloud storage cp gs://aosp-thesis-temp/output_c1.zip ~/
