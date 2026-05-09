@@ -1,5 +1,5 @@
 """
-rag/aosp_indexer.py - FINAL STRONG HIDL EXCLUSION (Focus on Clean VHAL)
+rag/aosp_indexer.py - STRONGEST HIDL EXCLUSION
 """
 
 from __future__ import annotations
@@ -17,23 +17,13 @@ import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
-logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────────────
 # Collection definitions
-# ─────────────────────────────────────────────────────────────────
 COLLECTION_DEFS: dict[str, dict] = {
     "aosp_aidl": {"extensions": {".aidl"}, "source_dirs": ["hardware"], "description": "AIDL"},
     "aosp_cpp": {"extensions": {".cpp", ".h", ".cc"}, "source_dirs": ["hardware"], "description": "VHAL C++"},
     "aosp_build": {"extensions": {".bp"}, "source_dirs": ["hardware", "car"], "description": "Build"},
-    "aosp_selinux": {
-        "extensions": {".te"}, "source_dirs": ["sepolicy"], "description": "SELinux",
-        "exclude_patterns": ["/prebuilts/api/"],
-    },
-    "aosp_vintf": {
-        "extensions": {".xml", ".rc"}, "source_dirs": ["hardware"], "description": "VINTF",
-        "name_patterns": [r"manifest.*\.xml$", r"compatibility_matrix.*\.xml$", r".*\.rc$"],
-    },
+    "aosp_selinux": {"extensions": {".te"}, "source_dirs": ["sepolicy"], "description": "SELinux", "exclude_patterns": ["/prebuilts/api/"]},
+    "aosp_vintf": {"extensions": {".xml", ".rc"}, "source_dirs": ["hardware"], "description": "VINTF", "name_patterns": [r"manifest.*\.xml$", r"compatibility_matrix.*\.xml$", r".*\.rc$"]},
     "aosp_car_api": {"extensions": {".kt", ".java"}, "source_dirs": ["car"], "description": "Car API"},
     "aosp_docs": {"extensions": {".md", ".rst", ".txt"}, "source_dirs": ["hardware", "car"], "description": "Docs"},
 }
@@ -45,9 +35,7 @@ BATCH_SIZE = 256
 MIN_FILE_BYTES = 64
 MAX_FILE_BYTES = 200_000
 
-# ─────────────────────────────────────────────────────────────────
-# VERY AGGRESSIVE HIDL + TEST FILE EXCLUSION
-# ─────────────────────────────────────────────────────────────────
+# ==================== STRONGEST EXCLUSION ====================
 HIDL_EXCLUDE_PATTERNS = [
     "/2.0/", "/1.0/", "/3.0/", "/4.0/", "/hidl/", "/hidl-generated/",
     "V2_0", "V1_0", "V3_0", "@2.0", "@1.0", "@3.0", "vehicle@2", "vehicle@1"
@@ -58,10 +46,11 @@ HIDL_CONTENT_KEYWORDS = [
     "android.hardware.automotive.vehicle@", "IVehicle", "types.hidl"
 ]
 
-# Block test, mock, fake, and VTS files aggressively
+# Block test/mock/fake files + known problematic files
 HIDL_BAD_FILENAMES = {
-    "test", "mock", "fake", "vts", "vts_", "obd2", "composer", "virtualizer", 
-    "mapper", "keymaster", "presetreverb", "authsecret"
+    "test", "mock", "fake", "vts", "obd2", "composer", "virtualizer", 
+    "mapper", "keymint", "identitycredential", "vehiclepropertystore", 
+    "vehicleobjectpool", "accessforvehicleproperty"
 }
 
 class AOSPIndexer:
@@ -135,31 +124,26 @@ class AOSPIndexer:
                 if not path.is_file(): continue
 
                 path_lower = path.as_posix().lower()
-                filename_lower = path.name.lower()
+                fname_lower = path.name.lower()
 
-                # Strong path exclusion
                 if any(pat.lower() in path_lower for pat in HIDL_EXCLUDE_PATTERNS):
                     continue
 
-                # Aggressive filename exclusion (tests, mocks, etc.)
-                if any(bad in filename_lower for bad in HIDL_BAD_FILENAMES):
+                if any(bad in fname_lower for bad in HIDL_BAD_FILENAMES):
                     continue
 
-                # Size filter
                 try:
                     size = path.stat().st_size
                     if size < MIN_FILE_BYTES or size > MAX_FILE_BYTES:
                         continue
                 except: continue
 
-                # Extension or name pattern match
                 ext_ok = path.suffix.lower() in cfg.get("extensions", set())
                 name_ok = any(re.search(p, path.name) for p in cfg.get("name_patterns", []))
 
                 if not (ext_ok or name_ok):
                     continue
 
-                # Final content check
                 if self._contains_hidl_content(path):
                     continue
 
@@ -168,24 +152,21 @@ class AOSPIndexer:
     def _contains_hidl_content(self, path: Path) -> bool:
         try:
             text = path.read_text(encoding="utf-8", errors="ignore").lower()
-            return any(kw.lower() in text for kw in HIDL_CONTENT_KEYWORDS)
+            return any(kw in text for kw in HIDL_CONTENT_KEYWORDS)
         except:
             return False
 
+    # === The rest of the methods (same as previous version) ===
     def _process_file(self, path: Path, cfg):
         try:
             text = path.read_text(encoding="utf-8", errors="ignore").strip()
         except:
             return [], []
-
         text = self._clean_text(text)
         chunks = self._split_chunks(text)
         if not chunks: return [], []
-
-        meta = {
-            "file": str(path), "filename": path.name, "suffix": path.suffix,
-            "parent": path.parent.name, "collection": cfg["description"]
-        }
+        meta = {"file": str(path), "filename": path.name, "suffix": path.suffix,
+                "parent": path.parent.name, "collection": cfg["description"]}
         metas = [{**meta, "chunk_index": i} for i in range(len(chunks))]
         return chunks, metas
 
