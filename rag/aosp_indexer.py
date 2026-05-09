@@ -1,5 +1,5 @@
 """
-rag/aosp_indexer.py - STRONGEST HIDL EXCLUSION
+rag/aosp_indexer.py - ULTIMATE HIDL EXCLUSION
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ BATCH_SIZE = 256
 MIN_FILE_BYTES = 64
 MAX_FILE_BYTES = 200_000
 
-# ==================== STRONGEST EXCLUSION ====================
+# ==================== ULTIMATE HIDL EXCLUSION ====================
 HIDL_EXCLUDE_PATTERNS = [
     "/2.0/", "/1.0/", "/3.0/", "/4.0/", "/hidl/", "/hidl-generated/",
     "V2_0", "V1_0", "V3_0", "@2.0", "@1.0", "@3.0", "vehicle@2", "vehicle@1"
@@ -46,11 +46,12 @@ HIDL_CONTENT_KEYWORDS = [
     "android.hardware.automotive.vehicle@", "IVehicle", "types.hidl"
 ]
 
-# Block test/mock/fake files + known problematic files
+# Very aggressive filename blocking
 HIDL_BAD_FILENAMES = {
-    "test", "mock", "fake", "vts", "obd2", "composer", "virtualizer", 
-    "mapper", "keymint", "identitycredential", "vehiclepropertystore", 
-    "vehicleobjectpool", "accessforvehicleproperty"
+    "fake", "mock", "test", "vts", "obd2", "composer", "virtualizer", 
+    "mapper", "keymint", "identitycredential", "presetreverb",
+    "vehiclepropertystore", "vehicleobjectpool", "accessforvehicleproperty",
+    "obd2sensorstore", "fakeobd2"
 }
 
 class AOSPIndexer:
@@ -68,7 +69,7 @@ class AOSPIndexer:
         if not self.source_dir.exists():
             raise FileNotFoundError(f"Source not found: {self.source_dir}")
 
-        print(f"\n[RAG Indexer] Starting indexing...")
+        print(f"\n[RAG Indexer] Starting indexing (Ultimate HIDL filter)...")
         for name, cfg in COLLECTION_DEFS.items():
             self._index_collection(name, cfg)
 
@@ -126,24 +127,29 @@ class AOSPIndexer:
                 path_lower = path.as_posix().lower()
                 fname_lower = path.name.lower()
 
+                # Path exclusion
                 if any(pat.lower() in path_lower for pat in HIDL_EXCLUDE_PATTERNS):
                     continue
 
+                # Filename exclusion (very aggressive)
                 if any(bad in fname_lower for bad in HIDL_BAD_FILENAMES):
                     continue
 
+                # Size filter
                 try:
                     size = path.stat().st_size
                     if size < MIN_FILE_BYTES or size > MAX_FILE_BYTES:
                         continue
                 except: continue
 
+                # Extension or name pattern
                 ext_ok = path.suffix.lower() in cfg.get("extensions", set())
                 name_ok = any(re.search(p, path.name) for p in cfg.get("name_patterns", []))
 
                 if not (ext_ok or name_ok):
                     continue
 
+                # Content check
                 if self._contains_hidl_content(path):
                     continue
 
@@ -156,7 +162,7 @@ class AOSPIndexer:
         except:
             return False
 
-    # === The rest of the methods (same as previous version) ===
+    # === Rest of methods (unchanged) ===
     def _process_file(self, path: Path, cfg):
         try:
             text = path.read_text(encoding="utf-8", errors="ignore").strip()
