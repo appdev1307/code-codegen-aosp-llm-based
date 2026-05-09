@@ -43,7 +43,7 @@ WARNINGS=0
 # ═══════════════════════════════════════════════════════════════
 # Step 1: Copy files to AOSP tree
 # ═══════════════════════════════════════════════════════════════
-echo "[1/5] Copying generated files to AOSP tree..."
+echo "[1/3] Copying generated files to AOSP tree..."
 
 AIDL_DIR="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
 IMPL_DIR="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/impl"
@@ -105,7 +105,7 @@ fi
 # Step 2: Fix Android.bp — add vendor: true
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[2/5] Fix Android.bp — adding vendor: true..."
+echo "[2/3] Fix Android.bp — adding vendor: true..."
 
 BP_FILE="$IMPL_DIR/Android.bp.generated"
 if [ -f "$BP_FILE" ]; then
@@ -138,7 +138,7 @@ fi
 # Step 3: Fix SELinux — add type declarations
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[3/5] Fix SELinux — adding type declarations..."
+echo "[3/3] Fix SELinux — adding type declarations..."
 
 TE_FILE=$(find "$SEPOLICY_DIR" -name "*.te" | head -1)
 if [ -n "$TE_FILE" ] && [ -f "$TE_FILE" ]; then
@@ -174,81 +174,6 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# Step 4: Fix C++ — HIDL → AIDL include paths
-# ═══════════════════════════════════════════════════════════════
-echo ""
-echo "[4/5] Fix C++ — converting HIDL includes to AIDL..."
-
-CPP_FILE=$(find "$IMPL_DIR" -name "*.cpp" | head -1)
-if [ -n "$CPP_FILE" ] && [ -f "$CPP_FILE" ]; then
-    CHANGED=0
-
-    # Fix HIDL-style includes → AIDL
-    if grep -q "android/hardware/automotive/vehicle/2\.0/" "$CPP_FILE"; then
-        sed -i 's|android/hardware/automotive/vehicle/2\.0/|aidl/android/hardware/automotive/vehicle/|g' "$CPP_FILE"
-        ok "Converted HIDL 2.0 includes to AIDL"
-        ((FIXES++))
-        ((CHANGED++))
-    fi
-
-    # Fix V2_0 namespace references
-    if grep -q "V2_0" "$CPP_FILE"; then
-        sed -i 's/::V2_0//g' "$CPP_FILE"
-        ok "Removed V2_0 namespace qualifiers"
-        ((FIXES++))
-        ((CHANGED++))
-    fi
-
-    # Fix using namespace with V2_0
-    if grep -q "namespace.*V2_0" "$CPP_FILE"; then
-        sed -i '/namespace.*V2_0/d' "$CPP_FILE"
-        ok "Removed V2_0 using namespace declarations"
-        ((FIXES++))
-        ((CHANGED++))
-    fi
-
-    if [ $CHANGED -eq 0 ]; then
-        ok "C++ includes already use AIDL paths"
-    fi
-else
-    warn "No C++ file found — skipping"
-    ((WARNINGS++))
-fi
-
-# ═══════════════════════════════════════════════════════════════
-# Step 5: Fix AIDL — package format
-# ═══════════════════════════════════════════════════════════════
-echo ""
-echo "[5/5] Fix AIDL — verifying Android 14 package format..."
-
-AIDL_FILE=$(find "$AIDL_DIR" -name "*.aidl" | head -1)
-if [ -n "$AIDL_FILE" ] && [ -f "$AIDL_FILE" ]; then
-    # Fix V2_0 in AIDL package declaration
-    if grep -q "package.*\.V2_0" "$AIDL_FILE"; then
-        sed -i 's/package android\.hardware\.automotive\.vehicle\.V2_0;/package android.hardware.automotive.vehicle;/' "$AIDL_FILE"
-        ok "Fixed AIDL package: removed V2_0 suffix"
-        ((FIXES++))
-    else
-        ok "AIDL package format already correct"
-    fi
-
-    # Verify @VintfStability annotation for Android 14
-    if ! grep -q "@VintfStability" "$AIDL_FILE"; then
-        # Add @VintfStability before interface declaration
-        sed -i '/^interface /i @VintfStability' "$AIDL_FILE"
-        if grep -q "@VintfStability" "$AIDL_FILE"; then
-            ok "Added @VintfStability annotation"
-            ((FIXES++))
-        fi
-    else
-        ok "@VintfStability already present"
-    fi
-else
-    warn "No AIDL file found — skipping"
-    ((WARNINGS++))
-fi
-
-# ═══════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════
 echo ""
@@ -269,6 +194,6 @@ echo ""
 echo " Next steps:"
 echo "   cd $AOSP_ROOT"
 echo "   source build/envsetup.sh"
-echo "   lunch aosp_cf_x86_64_auto-userdebug"
+echo "   lunch aosp_cf_x86_64_auto-trunk_staging-userdebug"
 echo "   mmm hardware/interfaces/automotive/vehicle/impl"
 echo "═══════════════════════════════════════════════════════════"
