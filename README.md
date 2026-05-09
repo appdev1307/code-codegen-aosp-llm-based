@@ -367,17 +367,30 @@ find ~/output_c1 -name "*.aidl" -o -name "*.cpp" -o -name "*.te" | head -5
 
 **Set up AOSP build environment:**
 
+> **Warning:** Do not clone RAG `aosp_source/` inside the AOSP build tree.
+> Soong will pick up duplicate `Android.bp` files and fail with "module already defined".
+> If this happens: `mv ~/aosp-14-auto/aosp_source ~/aosp_source_rag`
+
 ```bash
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
 # Helper: clean previous condition's generated files
+# IMPORTANT: only remove generated files — NOT AOSP originals like VehiclePropertyStatus.aidl
 clean_hal() {
-    rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty*.aidl
+    rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl
+    rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyVss.aidl
     rm -f hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.cpp
     rm -f hardware/interfaces/automotive/vehicle/impl/Android.bp.generated
     rm -f system/sepolicy/vendor/vehicle_hal_*.te
+}
+
+# Helper: restore AOSP tree after a failed build
+restore_aosp() {
+    cd ~/aosp-14-auto/hardware/interfaces && git checkout . && cd ~/aosp-14-auto
+    cd ~/aosp-14-auto/system/sepolicy && git checkout . && cd ~/aosp-14-auto
+    echo "✓ AOSP tree restored"
 }
 
 # Helper: restore AOSP tree to original state after a failed build
@@ -709,6 +722,8 @@ code-codegen-aosp-llm-based/
 
 - **Batch labelling mismatch:** LLM returns 1 signal per batch instead of 4; remaining are padded. This is a prompt/parsing issue in the labelling code — the LLM returns a single JSON object instead of an array.
 - **AOSP version:** Generated code targets Android 14 only — do not use Android 13 or 15 source trees. AIDL interfaces and SELinux policy format differ across major versions.
+- **Do not clone `aosp_source/` inside the AOSP build tree.** Soong scans all directories for `Android.bp` files and will fail with "module already defined" if it finds duplicates.
+- **`clean_hal` must not glob `VehicleProperty*.aidl`** — this deletes AOSP originals like `VehiclePropertyStatus.aidl`, `VehiclePropertyAccess.aidl`, `VehiclePropertyChangeMode.aidl` which breaks the AIDL build. Only delete specific generated files (`VehiclePropertyAdas.aidl`, `VehiclePropertyVss.aidl`).
 
 ## Key Design Decisions
 
