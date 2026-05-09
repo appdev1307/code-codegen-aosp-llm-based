@@ -1,5 +1,5 @@
 """
-rag/aosp_indexer.py - FINAL AGGRESSIVE HIDL EXCLUSION
+rag/aosp_indexer.py - FINAL STRONG HIDL EXCLUSION (Focus on Clean VHAL)
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 COLLECTION_DEFS: dict[str, dict] = {
     "aosp_aidl": {"extensions": {".aidl"}, "source_dirs": ["hardware"], "description": "AIDL"},
     "aosp_cpp": {"extensions": {".cpp", ".h", ".cc"}, "source_dirs": ["hardware"], "description": "VHAL C++"},
-    "aosp_build": {"extensions": {".bp"}, "source_dirs": ["hardware", "car"], "description": "Build files"},
+    "aosp_build": {"extensions": {".bp"}, "source_dirs": ["hardware", "car"], "description": "Build"},
     "aosp_selinux": {
         "extensions": {".te"}, "source_dirs": ["sepolicy"], "description": "SELinux",
         "exclude_patterns": ["/prebuilts/api/"],
@@ -46,7 +46,7 @@ MIN_FILE_BYTES = 64
 MAX_FILE_BYTES = 200_000
 
 # ─────────────────────────────────────────────────────────────────
-# VERY AGGRESSIVE HIDL BLOCKING
+# VERY AGGRESSIVE HIDL + TEST FILE EXCLUSION
 # ─────────────────────────────────────────────────────────────────
 HIDL_EXCLUDE_PATTERNS = [
     "/2.0/", "/1.0/", "/3.0/", "/4.0/", "/hidl/", "/hidl-generated/",
@@ -55,12 +55,13 @@ HIDL_EXCLUDE_PATTERNS = [
 
 HIDL_CONTENT_KEYWORDS = [
     "hidl::", "@2.0", "@1.0", "V2_0", "V1_0", "BpHw", "BnHw", "Hidl",
-    "android.hardware.automotive.vehicle@", "IVehicle", "types.hidl", "hidl_version"
+    "android.hardware.automotive.vehicle@", "IVehicle", "types.hidl"
 ]
 
-# Extra file names to exclude (test files, fake generators, etc.)
+# Block test, mock, fake, and VTS files aggressively
 HIDL_BAD_FILENAMES = {
-    "fake", "test", "vts", "obd2", "composer", "virtualizer", "mapper", "keymaster"
+    "test", "mock", "fake", "vts", "vts_", "obd2", "composer", "virtualizer", 
+    "mapper", "keymaster", "presetreverb", "authsecret"
 }
 
 class AOSPIndexer:
@@ -78,7 +79,7 @@ class AOSPIndexer:
         if not self.source_dir.exists():
             raise FileNotFoundError(f"Source not found: {self.source_dir}")
 
-        print(f"\n[RAG Indexer] Starting indexing from {self.source_dir}")
+        print(f"\n[RAG Indexer] Starting indexing...")
         for name, cfg in COLLECTION_DEFS.items():
             self._index_collection(name, cfg)
 
@@ -123,7 +124,6 @@ class AOSPIndexer:
             self._flush_batch(collection, all_docs, all_ids, all_metas)
 
         print(f"  → Indexed {file_count} files → {collection.count()} chunks\n")
-
         self._stats[name] = {"files": file_count, "chunks": collection.count(), "skipped": skip_count}
 
     def _walk_files(self, cfg):
@@ -137,21 +137,22 @@ class AOSPIndexer:
                 path_lower = path.as_posix().lower()
                 filename_lower = path.name.lower()
 
-                # Path exclusion
+                # Strong path exclusion
                 if any(pat.lower() in path_lower for pat in HIDL_EXCLUDE_PATTERNS):
                     continue
 
-                # Bad filename exclusion
+                # Aggressive filename exclusion (tests, mocks, etc.)
                 if any(bad in filename_lower for bad in HIDL_BAD_FILENAMES):
                     continue
 
-                # Size
+                # Size filter
                 try:
-                    if not (MIN_FILE_BYTES <= path.stat().st_size <= MAX_FILE_BYTES):
+                    size = path.stat().st_size
+                    if size < MIN_FILE_BYTES or size > MAX_FILE_BYTES:
                         continue
                 except: continue
 
-                # Extension / name pattern
+                # Extension or name pattern match
                 ext_ok = path.suffix.lower() in cfg.get("extensions", set())
                 name_ok = any(re.search(p, path.name) for p in cfg.get("name_patterns", []))
 
@@ -199,7 +200,7 @@ class AOSPIndexer:
         if not words: return []
         chunks, step = [], CHUNK_SIZE_WORDS - CHUNK_OVERLAP_WORDS
         for i in range(0, len(words), step):
-            chunk = " ".join(words[i:i+CHUNK_SIZE_WORDS])
+            chunk = " ".join(words[i:i + CHUNK_SIZE_WORDS])
             if chunk.strip(): chunks.append(chunk)
         return chunks
 
