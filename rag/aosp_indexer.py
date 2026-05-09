@@ -2,6 +2,7 @@
 rag/aosp_indexer.py
 ────────────────────────────────────────────────────────────────────
 Crawls AOSP HAL source directories and builds a ChromaDB vector index.
+Improved HIDL exclusion for Android 14 AIDL-focused indexing.
 """
 
 from __future__ import annotations
@@ -88,18 +89,21 @@ MIN_FILE_BYTES = 64
 MAX_FILE_BYTES = 200_000
 
 # ─────────────────────────────────────────────────────────────────
-# STRONGER HIDL EXCLUSION (Android 14+ is AIDL only)
+# STRONGER HIDL EXCLUSION
 # ─────────────────────────────────────────────────────────────────
 HIDL_EXCLUDE_PATTERNS = [
     "/2.0/", "/1.0/", "/3.0/", "/4.0/",
-    "/hidl/", "/hidl-generated/",
-    "V2_0", "V1_0", "V3_0", "V4_0",
+    "/hidl/", "/hidl-generated/", "/V1_0/", "/V2_0/", "/V3_0/",
     "@2.0", "@1.0", "@3.0", "@4.0",
-    "vehicle@2", "vehicle@1",
-    "IVehicle.hidl", "hidl/",
-    "/prebuilts/",
+    "V2_0", "V1_0", "V3_0", "V4_0",
+    "vehicle@2", "vehicle@1", "vehicle@3",
+    "hidl::", "android.hardware.automotive.vehicle@",
 ]
 
+HIDL_CONTENT_KEYWORDS = [
+    "hidl::", "HIDL", "@2.0", "@1.0", "V2_0", "V1_0", "V3_0",
+    "android.hardware.automotive.vehicle@", "BpHw", "BnHw", "Hidl"
+]
 
 class AOSPIndexer:
     def __init__(
@@ -122,7 +126,6 @@ class AOSPIndexer:
 
         logger.info(f"[RAG Indexer] Loading embedding model: {embedding_model}")
         self.embedder = SentenceTransformer(embedding_model)
-
         self._stats: dict[str, dict] = {}
 
     def index(self) -> dict[str, dict]:
@@ -159,15 +162,14 @@ class AOSPIndexer:
                 pass
 
         collection = self.client.get_or_create_collection(
-            name=name,
-            metadata={"hnsw:space": "cosine"},
+            name=name, metadata={"hnsw:space": "cosine"}
         )
 
         files = list(self._walk_files(cfg))
         print(f"  → Found {len(files)} files to index")
 
         if not files:
-            print(f"  → WARNING: No files found.\n")
+            print("  → WARNING: No files found.\n")
             self._stats[name] = {"files": 0, "chunks": 0, "skipped": 0, "cached": False}
             return
 
@@ -221,9 +223,8 @@ class AOSPIndexer:
                 path_str = str(path)
                 path_posix = path.as_posix().lower()
 
-                # ==================== STRONG HIDL EXCLUSION ====================
+                # Path-based HIDL exclusion
                 if any(pat.lower() in path_posix for pat in HIDL_EXCLUDE_PATTERNS):
-                    # logger.debug(f"HIDL excluded: {path}")
                     continue
 
                 # Collection-specific excludes
@@ -242,10 +243,24 @@ class AOSPIndexer:
                 ext_match = path.suffix.lower() in extensions
                 pattern_match = any(p.search(path.name) for p in name_patterns)
 
-                if ext_match or pattern_match:
-                    yield path
+                if not (ext_match or pattern_match):
+                    continue
 
-    # (Rest of the class remains the same - _process_file, _clean_text, etc.)
+                # Content-based HIDL filtering (NEW)
+                if self._is_hidl_file(path):
+                    continue
+
+                yield path
+
+    def _is_hidl_file(self, path: Path) -> bool:
+        """Exclude files containing strong HIDL signatures."""
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore").lower()
+            count = sum(1 for kw in HIDL_CONTENT_KEYWORDS if kw.lower() in text)
+            return count >= 2  # Exclude if 2 or more HIDL keywords found
+        except Exception:
+            return False
+
     def _process_file(self, path: Path, cfg: dict) -> tuple[list[str], list[dict]]:
         try:
             text = path.read_text(encoding="utf-8", errors="ignore").strip()
@@ -297,7 +312,6 @@ class AOSPIndexer:
         embeddings = self.embedder.encode(
             docs, batch_size=64, show_progress_bar=False, normalize_embeddings=True
         ).tolist()
-
         collection.upsert(documents=docs, embeddings=embeddings, ids=ids, metadatas=metas)
 
     @staticmethod
@@ -333,7 +347,7 @@ class AOSPIndexer:
         manifest_path.write_text(json.dumps(manifest, indent=2))
 
 
-# CLI
+# ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
