@@ -595,8 +595,8 @@ and validator strictness (scores low in Colab but passes AOSP build).
 
 | # | Artifact | Colab Tool | AOSP Build Tool | Auto-fix applied |
 |---|----------|------------|-----------------|------------------|
-| 1 | AIDL | Python AIDL parser | `aidl --lang=java` | Package format (V2_0 → flat) |
-| 2 | C++ | `clang++ -fsyntax-only` | `mmm` (Soong/clang) | HIDL → AIDL include paths |
+| 1 | AIDL (VehiclePropertyAdas.aidl) | Python AIDL parser | `aidl --structured --stability vintf` | None (additive file) |
+| 2 | C++ | `clang++ -fsyntax-only` | `mmm` (Soong/clang) | None (AIDL-only prompts) |
 | 3 | SELinux | `checkpolicy -M -c 30` | Full policy compile | Type declaration prepended |
 | 4 | Android.bp | Python BP parser | `mmm` (Soong) | `vendor: true` injected |
 
