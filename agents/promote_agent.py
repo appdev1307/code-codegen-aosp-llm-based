@@ -59,26 +59,17 @@ class PromoteAgent:
         ]
 
         # Exact required files (minimal OEM-grade bringup set)
+        # NOTE: IVehicle.aidl, IVehicleCallback.aidl, VehiclePropValue.aidl are NOT listed
+        # because they already exist in AOSP — we only generate additive files.
         self.required_files = [
-            # AIDL core
-            "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/IVehicle.aidl",
-            "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/IVehicleCallback.aidl",
-            "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropValue.aidl",
-
-            # AIDL Soong
-            "hardware/interfaces/automotive/vehicle/aidl/Android.bp",
+            # AIDL additive enum
+            "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl",
 
             # Service C++
             "hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp",
             "hardware/interfaces/automotive/vehicle/impl/Android.bp",
 
-            # init + vintf
-            "hardware/interfaces/automotive/vehicle/impl/android.hardware.automotive.vehicle-service.rc",
-            "hardware/interfaces/automotive/vehicle/impl/android.hardware.automotive.vehicle-service.xml",
-
             # sepolicy (vendor)
-            "system/sepolicy/vendor/vehiclehal.te",
-            "system/sepolicy/vendor/vehiclehal_service.te",
             "system/sepolicy/vendor/file_contexts",
         ]
 
@@ -189,10 +180,8 @@ class PromoteAgent:
                     errors.append(f"Forbidden content '{s}' found in {rel}")
                     break
 
-        # Gate 2b: AIDL checks (hard)
-        errors.extend(self._check_aidl("hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/IVehicle.aidl"))
-        errors.extend(self._check_aidl("hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/IVehicleCallback.aidl"))
-        errors.extend(self._check_aidl("hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropValue.aidl", is_vehicle_prop_value=True))
+        # Gate 2b: AIDL checks (hard) — only check the additive enum file
+        errors.extend(self._check_aidl("hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl"))
 
         # Gate 2c: C++ checks (hard-ish)
         errors.extend(self._check_cpp("hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp"))
@@ -224,20 +213,13 @@ class PromoteAgent:
         if "package android.hardware.automotive.vehicle;" not in t:
             errs.append(f"{rel}: missing package android.hardware.automotive.vehicle;")
 
-        if is_vehicle_prop_value:
-            # Must define parcelable VehiclePropValue (can be empty)
-            if re.search(r"\bparcelable\s+VehiclePropValue\s*;", t) is None:
-                errs.append(f"{rel}: must declare 'parcelable VehiclePropValue;'")
-            return errs
-
-        if rel.endswith("IVehicle.aidl"):
-            # Must contain exact method signatures (order can vary)
-            required = [
-                r"\bVehiclePropValue\s+get\s*\(\s*int\s+propId\s*,\s*int\s+areaId\s*\)\s*;",
-                r"\bvoid\s+set\s*\(\s*in\s+VehiclePropValue\s+value\s*\)\s*;",
-                r"\bvoid\s+registerCallback\s*\(\s*in\s+IVehicleCallback\s+callback\s*\)\s*;",
-                r"\bvoid\s+unregisterCallback\s*\(\s*in\s+IVehicleCallback\s+callback\s*\)\s*;",
-            ]
+        if rel.endswith("VehiclePropertyAdas.aidl"):
+            # Must contain enum or interface declaration
+            if "VehiclePropertyAdas" not in t and "IVehicleAdas" not in t:
+                errs.append(f"{rel}: must declare VehiclePropertyAdas enum or IVehicleAdas interface")
+            # Must have @VintfStability
+            if "@VintfStability" not in t:
+                errs.append(f"{rel}: missing @VintfStability annotation")
             for pat in required:
                 if re.search(pat, t) is None:
                     errs.append(f"{rel}: missing required method signature matching: {pat}")

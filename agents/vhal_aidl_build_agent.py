@@ -59,7 +59,7 @@ REQUIREMENTS:
   android/hardware/automotive/vehicle/IVehicle.aidl
   android/hardware/automotive/vehicle/IVehicleCallback.aidl
   android/hardware/automotive/vehicle/VehiclePropValue.aidl
-  android/hardware/automotive/vehicle/VehiclePropertyVss.aidl
+  android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl
 
 RETURN JSON NOW.
 """.lstrip()
@@ -78,7 +78,7 @@ RETURN JSON NOW.
             + "\nREPAIR (MANDATORY):\n"
               "- Output ONLY JSON exactly matching schema.\n"
               "- Ensure path is exactly required.\n"
-              "- Make sure VehiclePropertyVss.aidl is included in srcs.\n"
+              "- Make sure VehiclePropertyAdas.aidl is included in srcs.\n"
               "\nPREVIOUS OUTPUT (for correction, do not repeat):\n"
               f"{out1}\n"
         )
@@ -150,7 +150,7 @@ RETURN JSON NOW.
         "android/hardware/automotive/vehicle/IVehicle.aidl",
         "android/hardware/automotive/vehicle/IVehicleCallback.aidl",
         "android/hardware/automotive/vehicle/VehiclePropValue.aidl",
-        "android/hardware/automotive/vehicle/VehiclePropertyVss.aidl",
+        "android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl",
     ],
     versions: ["1"],
     stability: "vintf",
