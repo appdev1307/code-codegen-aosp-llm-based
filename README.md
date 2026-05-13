@@ -386,6 +386,13 @@ clean_hal() {
     rm -f system/sepolicy/vendor/vehicle_hal_*.te
 }
 
+# Helper: restore AOSP tree after a failed build
+restore_aosp() {
+    cd ~/aosp-14-auto/hardware/interfaces && git checkout . && cd ~/aosp-14-auto
+    cd ~/aosp-14-auto/system/sepolicy && git checkout . && cd ~/aosp-14-auto
+    echo "✓ AOSP tree restored"
+}
+
 # Helper: restore AOSP tree to original state after a failed build
 # AOSP uses repo (not git) — each subdirectory is its own git repo
 restore_aosp() {
@@ -720,9 +727,10 @@ code-codegen-aosp-llm-based/
 
 ## Key Design Decisions
 
+- **AIDL-only agent prompts:** All code generation agents (AIDL, C++, SELinux, Android.bp) have explicit Android 14 AIDL constraints in their system prompts. This prevents HIDL pattern generation at the source — from C1 through C4. The AIDL agent generates additive `VehiclePropertyAdas.aidl` (not replacement files), the C++ agent requires `aidl::` namespace and `BnIVehicle`, the SELinux agent follows `hal_vehicle_default.te` structure, and the Android.bp agent requires `vendor: true` and AIDL libraries.
 - **HIDL exclusion in RAG corpus:** The AOSP source tree contains both HIDL (Android 12/13) and AIDL (Android 14) Vehicle HAL implementations. Without filtering, the RAG retriever returns HIDL examples that outnumber AIDL examples in simplicity, causing the LLM to generate legacy `#include <hidl/Status.h>` and `vehicle/2.0/IVehicle.h` patterns that don't compile in Android 14. The indexer now excludes all `/2.0/`, `/1.0/`, `V2_0`, and `/hidl/` paths, ensuring only AIDL-compatible patterns are retrieved.
 - **Version-pinned RAG corpus:** The RAG source must be cloned with the same tag (`android-14.0.0_r75`) as the AOSP build tree. Mismatched versions cause the LLM to generate patterns (Android.bp `srcs` lists, API freeze hashes, AIDL module structure) that don't match the build system's expectations.
-- **Additive vs replacement AIDL:** C1/C2 (without RAG) generate replacement AIDL files that overwrite existing AOSP interfaces and break dependency chains. C3/C4 (with RAG) generate additive files that complement existing code — a direct result of RAG context showing what already exists in the AOSP tree.
+- **Additive vs replacement AIDL:** C1/C2 (without RAG) previously generated replacement AIDL files that overwrote existing AOSP interfaces. With the prompt fix, all conditions now generate additive `VehiclePropertyAdas.aidl` that complements existing code.
 - **Automated AOSP 14 fixes:** `apply_aosp14_fixes.sh` handles systematic integration gaps (vendor:true, SELinux type declarations) that are predictable and automatable rather than code quality issues.
 
 ## License

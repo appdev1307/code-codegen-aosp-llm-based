@@ -27,7 +27,14 @@ class VHALServiceAgent:
             "You are an expert Android Automotive OS (AAOS) Vehicle HAL engineer.\n"
             "Generate a correct, realistic, production-grade C++ service using AIDL NDK backend.\n"
             "You MUST output ONLY valid JSON. No explanations, no markdown, no code blocks.\n"
-            "If you cannot produce perfect JSON, output exactly: {\"files\": []}"
+            "If you cannot produce perfect JSON, output exactly: {\"files\": []}\n\n"
+            "CRITICAL — ANDROID 14+ AIDL ONLY:\n"
+            "- Use AIDL includes: #include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>\n"
+            "- Use AIDL namespace: aidl::android::hardware::automotive::vehicle\n"
+            "- Use ndk::ScopedAStatus for return types\n"
+            "- Do NOT use HIDL: no #include <hidl/Status.h>, no <vehicle/VehicleHal.h>,\n"
+            "  no <android/hardware/automotive/vehicle/2.0/IVehicle.h>, no V2_0 namespace.\n"
+            "- Reference headers: VehicleHalTypes.h, VehicleUtils.h, DefaultVehicleHal.h"
         )
 
         self.base = "hardware/interfaces/automotive/vehicle/impl"
