@@ -218,7 +218,15 @@ browser closes, laptop sleeps, or internet drops.
 
 ```bash
 # SSH into the VM
-gcloud compute ssh aosp-builder --zone=us-central1-a
+gcloud compute instances start aosp-builder \
+  --project=$(gcloud config get-value project) \
+  --zone=us-central1-a
+
+
+gcloud compute ssh aosp-builder \
+  --project=$(gcloud config get-value project) \
+  --zone=us-central1-a
+
 
 # Start a named screen session
 screen -S aosp
