@@ -57,16 +57,34 @@ class RAGDSPyCppAgent(RAGDSPyMixin):
         domain     = module_spec.domain
         properties = module_spec.to_llm_spec()
 
-        # Use multi-query retrieval: one for service class, one for property types
-        prop_types = " ".join(
-            getattr(p, "type", "") for p in module_spec.properties[:5]
-        )
+        # Use multi-query retrieval for Android 14 AIDL-based VHAL patterns
         queries = [
-            f"{domain} VHAL C++ service IVehicleHardware implementation",
-            f"getAllPropertyConfigs getValues setValues {prop_types} VehiclePropValue",
-            f"android automotive vehicle hal {domain.lower()} cpp header",
+            f"DefaultVehicleHal IVehicleHardware getAllPropertyConfigs AIDL",
+            f"VehiclePropValue getValues setValues ndk aidl automotive vehicle",
+            f"VehiclePropertyStore onSetProperty onGetProperty android 14",
         ]
         aosp_context = self._retrieve_multi(queries)
+
+        # ── Inject Android 14 AIDL C++ constraint ────────────────
+        cpp_constraint = (
+            "\n=== CRITICAL: Android 14 AIDL C++ Rules ===\n"
+            "You MUST follow these rules for the generated .cpp file:\n"
+            "- Use AIDL namespace: aidl::android::hardware::automotive::vehicle\n"
+            "- Use ndk::ScopedAStatus (NOT Return<void>, NOT hidl Return)\n"
+            "- Use std::vector (NOT hidl_vec)\n"
+            "- DO NOT include <hidl/Status.h> or any hidl/ headers\n"
+            "- DO NOT use Void(), _hidl_cb, HIDL_FETCH_*, BpHw, BnHw\n"
+            "- DO NOT use Return<> template (that is HIDL)\n"
+            "- Include <aidl/android/hardware/automotive/vehicle/BnVehicle.h>\n"
+            "- Include <VehicleHalTypes.h> and <VehicleUtils.h>\n"
+            "- Use VehiclePropConfig for property definitions\n"
+            "- Property IDs should reference VehiclePropertyAdas enum values\n"
+            "- Extend IVehicleHardware or DefaultVehicleHal\n"
+            "- Module name: vendor.vss.adas (NOT android.hardware.automotive.vehicle-service)\n"
+            "- This is Android 14 AIDL C++ — NOT HIDL C++\n"
+            "=== END RULES ===\n"
+        )
+        aosp_context = cpp_constraint + aosp_context
 
         output = self._generate(
             domain       = domain,

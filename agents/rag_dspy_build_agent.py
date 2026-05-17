@@ -71,6 +71,22 @@ class RAGDSPyBuildAgent(RAGDSPyMixin):
         ]
         aosp_context = self._retrieve_multi(queries)
 
+        # ── Inject Android.bp constraint ──────────────────────────
+        bp_constraint = (
+            "\n=== CRITICAL: Android.bp Rules ===\n"
+            f"- Module name MUST be: vendor.vss.{domain.lower()} "
+            f"(NOT android.hardware.automotive.vehicle-service, "
+            f"that name already exists in AOSP and will cause 'module already defined')\n"
+            "- MUST include: vendor: true\n"
+            "- MUST include: relative_install_path: \"hw\"\n"
+            "- shared_libs MUST include: libbinder_ndk, libbase, liblog, libutils\n"
+            "- static_libs MUST include the AIDL generated library: "
+            "android.hardware.automotive.vehicle-V3-ndk\n"
+            "- DO NOT use HIDL library names (android.hardware.automotive.vehicle@2.0)\n"
+            "=== END RULES ===\n"
+        )
+        aosp_context = bp_constraint + aosp_context
+
         output = self._generate(
             module_name  = module_name,
             dependencies = self._STANDARD_DEPS,
