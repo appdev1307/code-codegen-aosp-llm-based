@@ -42,8 +42,9 @@ HIDL_EXCLUDE_PATTERNS = [
 ]
 
 HIDL_CONTENT_KEYWORDS = [
-    "hidl::", "@2.0", "@1.0", "V2_0", "V1_0", "BpHw", "BnHw", "Hidl",
-    "android.hardware.automotive.vehicle@", "IVehicle", "types.hidl"
+    "hidl::", "@2.0", "@1.0", "v2_0", "v1_0", "bphw", "bnhw", "hidl",
+    "android.hardware.automotive.vehicle@", "ivehicle", "types.hidl",
+    "oneway void", "generates (", "vehicle@2", "vehicle@1",
 ]
 
 # Very aggressive filename blocking
