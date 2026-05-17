@@ -71,22 +71,35 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
         aosp_context = self._retrieve(query)
 
         # ── Inject explicit Android 14 AIDL-only constraint ──────
-        # This prevents the LLM from generating HIDL patterns even if
-        # its training data or (leaked) RAG context contains HIDL examples.
+        # The AIDL file defines a PROPERTY ENUM (constant IDs), NOT a
+        # service interface. The IVehicle interface already exists in AOSP.
+        # This file adds new property constants in the same pattern as
+        # VehicleProperty.aidl — an @Backing(type="int") enum.
         aidl_constraint = (
-            "\n=== CRITICAL: Android 14 AIDL-ONLY Rules ===\n"
+            "\n=== CRITICAL: Android 14 AIDL Property Enum Rules ===\n"
             "You MUST follow these rules for the generated .aidl file:\n"
             "- Package: android.hardware.automotive.vehicle (NO .V2_0 suffix)\n"
-            "- Use @VintfStability annotation on the interface\n"
-            "- Return types directly: boolean getX(); NOT void getX(out bool)\n"
-            "- NO 'oneway' keyword\n"
-            "- NO 'out' parameters\n"
-            "- NO 'throws RemoteException'\n"
-            "- NO 'import android.os.RemoteException'\n"
-            "- NO 'generates (...)' syntax (that is HIDL, not AIDL)\n"
-            "- Use 'boolean' not 'bool' for boolean types\n"
-            "- Use 'void setX(boolean val)' for setters\n"
+            "- Use @VintfStability annotation\n"
+            "- Use @Backing(type=\"int\") annotation\n"
+            "- Declare an ENUM, NOT an interface: 'enum VehiclePropertyAdas { ... }'\n"
+            "- The enum name MUST match the filename (VehiclePropertyAdas)\n"
+            "- Each enum constant is a property ID with hex value:\n"
+            "    ABS_IS_ENABLED = 0x1000,\n"
+            "    ABS_IS_ENGAGED = 0x1001,\n"
+            "- DO NOT generate 'interface IVehicleAdas' — that is WRONG\n"
+            "- DO NOT generate getter/setter methods (boolean getX(), void setX())\n"
+            "- DO NOT use 'oneway', 'out', 'throws', or 'import'\n"
+            "- This file defines PROPERTY IDs only, like VehicleProperty.aidl\n"
+            "- Access mode (READ/WRITE/READ_WRITE) goes in a comment, not in the enum\n"
             "- This is Android 14 AIDL — NOT HIDL, NOT Java\n"
+            "\nExample of CORRECT output:\n"
+            "package android.hardware.automotive.vehicle;\n"
+            "@VintfStability\n"
+            "@Backing(type=\"int\")\n"
+            "enum VehiclePropertyAdas {\n"
+            "    ABS_IS_ENABLED = 0x1000, // READ_WRITE, GLOBAL, boolean\n"
+            "    ABS_IS_ENGAGED = 0x1001, // READ, GLOBAL, boolean\n"
+            "}\n"
             "=== END RULES ===\n"
         )
         aosp_context = aidl_constraint + aosp_context
