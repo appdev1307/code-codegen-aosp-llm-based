@@ -58,13 +58,13 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
         domain     = module_spec.domain
         properties = module_spec.to_llm_spec()
 
-        # Build a targeted RAG query using domain + property type mix
-        prop_types = " ".join(
-            getattr(p, "type", "") for p in module_spec.properties[:5]
-        )
+        # Build a targeted RAG query — request property ENUM examples,
+        # NOT interface definitions. The word "interface" biases retrieval
+        # toward IVehicle.aidl (the only interface), when we actually need
+        # VehicleProperty.aidl (the enum pattern).
         query = (
-            f"{domain} VHAL AIDL interface definition "
-            f"{prop_types} boolean int float android HAL"
+            f"VehicleProperty enum AIDL @Backing @VintfStability "
+            f"property constants {domain} android automotive vehicle"
         )
 
         # Retrieve AOSP .aidl examples as grounding context
