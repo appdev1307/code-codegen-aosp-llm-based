@@ -159,12 +159,32 @@ class RAGDSPyMixin:
     # RAG retrieval
     # ─────────────────────────────────────────────────────────────
 
+    # HIDL patterns that should never appear in RAG context or output.
+    # All lowercase — compared against .lower() text.
+    _HIDL_CONTAMINATION_PATTERNS = [
+        "v2_0", "v1_0", "@2.0", "@1.0", "hidl::", "bphw", "bnhw",
+        "vehicle@2", "vehicle@1", "types.hidl", "/2.0/", "/1.0/",
+        "hidl/status.h", "hidl/hiddensupport.h",
+        "oneway void get", "oneway void set",  # HIDL-style method signatures
+        "out bool", "out int", "out float",     # HIDL-style out params
+        "throws remoteexception",                # Java, not AIDL
+        "generates (",                           # HIDL return syntax
+    ]
+
+    @classmethod
+    def _has_hidl_contamination(cls, text: str) -> list[str]:
+        """Check text for HIDL patterns. Returns list of found patterns."""
+        text_lower = text.lower()
+        return [p for p in cls._HIDL_CONTAMINATION_PATTERNS if p in text_lower]
+
     def _retrieve(self, query: str) -> str:
         """
         Retrieve relevant AOSP source chunks for the given query.
 
         Returns a formatted string ready to inject into the LLM prompt,
         or "" if RAG is unavailable or returns no relevant results.
+
+        HIDL-contaminated chunks are filtered out before prompt injection.
 
         Parameters
         ----------
@@ -182,18 +202,36 @@ class RAGDSPyMixin:
                 agent_type=self.AGENT_TYPE,
                 top_k=self._rag_top_k,
             )
+
+            # ── Filter out HIDL-contaminated chunks ──────────────
+            clean_results = []
+            hidl_filtered = 0
+            for r in results:
+                chunk_text = r.get("document", r.get("text", ""))
+                found = self._has_hidl_contamination(chunk_text)
+                if found:
+                    hidl_filtered += 1
+                else:
+                    clean_results.append(r)
+
+            if hidl_filtered:
+                self._log(
+                    f"RAG: filtered {hidl_filtered}/{len(results)} "
+                    f"HIDL-contaminated chunks"
+                )
+
             context  = self._rag_retriever.format_for_prompt(
-                results,
+                clean_results,
                 label=f"{self.AGENT_TYPE.upper()} AOSP Reference",
             )
             elapsed  = time.time() - t0
-            n        = len(results)
+            n        = len(clean_results)
             avg_score = (
-                round(sum(r["score"] for r in results) / n, 3)
-                if results else 0.0
+                round(sum(r["score"] for r in clean_results) / n, 3)
+                if clean_results else 0.0
             )
             self._log(
-                f"RAG: retrieved {n} chunks "
+                f"RAG: retrieved {n} clean chunks "
                 f"(avg_score={avg_score}, {elapsed:.2f}s)"
             )
             return context
@@ -334,6 +372,14 @@ class RAGDSPyMixin:
 
             # Clean markdown fences and preamble before returning
             output = self._clean_output(output)
+
+            # ── Check for HIDL contamination in output ───────────
+            hidl_found = self._has_hidl_contamination(output)
+            if hidl_found:
+                self._log(
+                    f"WARNING: Output contains HIDL patterns: "
+                    f"{hidl_found[:3]}... — may need re-generation"
+                )
 
             self._log(
                 f"DSPy generated {len(output)} chars "

@@ -70,6 +70,27 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
         # Retrieve AOSP .aidl examples as grounding context
         aosp_context = self._retrieve(query)
 
+        # ── Inject explicit Android 14 AIDL-only constraint ──────
+        # This prevents the LLM from generating HIDL patterns even if
+        # its training data or (leaked) RAG context contains HIDL examples.
+        aidl_constraint = (
+            "\n=== CRITICAL: Android 14 AIDL-ONLY Rules ===\n"
+            "You MUST follow these rules for the generated .aidl file:\n"
+            "- Package: android.hardware.automotive.vehicle (NO .V2_0 suffix)\n"
+            "- Use @VintfStability annotation on the interface\n"
+            "- Return types directly: boolean getX(); NOT void getX(out bool)\n"
+            "- NO 'oneway' keyword\n"
+            "- NO 'out' parameters\n"
+            "- NO 'throws RemoteException'\n"
+            "- NO 'import android.os.RemoteException'\n"
+            "- NO 'generates (...)' syntax (that is HIDL, not AIDL)\n"
+            "- Use 'boolean' not 'bool' for boolean types\n"
+            "- Use 'void setX(boolean val)' for setters\n"
+            "- This is Android 14 AIDL — NOT HIDL, NOT Java\n"
+            "=== END RULES ===\n"
+        )
+        aosp_context = aidl_constraint + aosp_context
+
         # Generate via DSPy optimised prompt
         output = self._generate(
             domain       = domain,
