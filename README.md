@@ -21,12 +21,22 @@ VSS Signals → Labelling → YAML Spec → Module Planner → Code Generation �
 
 ## Experimental Conditions
 
-| Condition | Script | Description | Avg Score |
-|-----------|--------|-------------|-----------|
-| C1 Baseline | `multi_main.py` | Vanilla LLM generation | 0.827 |
-| C2 Adaptive | `multi_main_adaptive.py` | RL-based prompt selection | 0.825 |
-| C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + optimised prompts | 0.878 |
-| C4 Feedback | `multi_main_c4_feedback.py` | C3 + generate→validate→refine loop | 0.909 |
+| Condition | Script | Description | Matched Avg | Full Avg |
+|-----------|--------|-------------|-------------|----------|
+| C1 Baseline | `multi_main.py` | Vanilla LLM generation | 0.819 | 0.819 |
+| C2 Adaptive | `multi_main_adaptive.py` | Thompson Sampling prompt selection | 0.833 | 0.841 |
+| C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | 0.852 | 0.863 |
+| C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop | **0.876** | **0.886** |
+
+C2 and C3 are independent enhancements over C1; C4 combines both with a validation feedback loop:
+
+```
+        C1 (baseline LLM)
+       /                \
+  C2 (+ Thompson)    C3 (+ RAG + DSPy)
+       \                /
+        C4 (both + feedback loop)
+```
 
 ## Requirements
 
@@ -701,9 +711,9 @@ code-codegen-aosp-llm-based/
 │   ├── validators.py              #   Syntax validators (clang, checkpolicy, etc.)
 │   └── saved/                     #   Optimised programs (12 JSON files)
 ├── rag/                           # RAG system
-│   ├── aosp_indexer.py            #   AOSP → ChromaDB indexer
+│   ├── aosp_indexer.py            #   AOSP → ChromaDB indexer (HIDL exclusion)
 │   ├── aosp_retriever.py          #   Query retriever
-│   └── chroma_db/                 #   Vector database (7 collections, ~29K chunks)
+│   └── chroma_db/                 #   Vector database (7 collections, ~17.6K chunks)
 ├── dataset/
 │   └── vss.json                   # Vehicle Signal Specification (1571 signals)
 ├── experiments/results/           # Analysis outputs
@@ -712,12 +722,37 @@ code-codegen-aosp-llm-based/
 │   ├── latex_table.tex
 │   └── final_analysis.md
 ├── apply_aosp14_fixes.sh          # Automated AOSP 14 integration fixes
+├── apply_chroma_fix.py            # Patches C3/C4 to use ChromaDB singleton
+├── fix_chroma_singleton.py        # ChromaDB singleton + monkey-patch
 ├── validate_aosp_build.sh         # AOSP build validation → JSON report
 ├── output/                        # C1 output
 ├── output_adaptive/               # C2 output
 ├── output_rag_dspy/               # C3 output
 └── output_c4_feedback/            # C4 output (use for AOSP validation)
 ```
+
+## Latest Results (50 signals, matched agents)
+
+| Condition | Avg Score | Syntax | Coverage | Effect vs C1 |
+|-----------|-----------|--------|----------|-------------|
+| C1 Baseline | 0.819 | 0.940 | 0.487 | — |
+| C2 Adaptive | 0.833 | 0.946 | 0.543 | r = 0.070 |
+| C3 RAG+DSPy | 0.852 | 0.942 | 0.663 | r = 0.137 |
+| C4 Feedback | **0.876** | **0.975** | **0.699** | r = 0.325 |
+
+Kruskal-Wallis H = 2.47, p = 0.48 (not significant at α = 0.05).
+C1 vs C4 pairwise: U = 81.0, p = 0.133, r = 0.325 (medium effect size).
+
+### Statistical significance
+
+The monotonic improvement C1 < C2 < C3 < C4 is consistent across all dimensions,
+but statistical significance was not achieved (p = 0.48). This is expected given
+the small sample sizes (12-22 scored files per condition). To achieve significance,
+run multiple independent trials (e.g., 3 runs × 50 signals) to increase the
+per-condition file count from ~12 to ~36+. Simply increasing signal count
+(e.g., 200 signals) does not help proportionally because the module planner
+groups signals into few modules (~1-4), producing roughly the same number of
+output files regardless of input signal count.
 
 ## Known Issues
 
@@ -729,7 +764,10 @@ code-codegen-aosp-llm-based/
 ## Key Design Decisions
 
 - **AIDL-only agent prompts:** All code generation agents (AIDL, C++, SELinux, Android.bp) have explicit Android 14 AIDL constraints in their system prompts. This prevents HIDL pattern generation at the source — from C1 through C4. The AIDL agent generates additive `VehiclePropertyAdas.aidl` (not replacement files), the C++ agent requires `aidl::` namespace and `BnIVehicle`, the SELinux agent follows `hal_vehicle_default.te` structure, and the Android.bp agent requires `vendor: true` and AIDL libraries.
-- **HIDL exclusion in RAG corpus:** The AOSP source tree contains both HIDL (Android 12/13) and AIDL (Android 14) Vehicle HAL implementations. Without filtering, the RAG retriever returns HIDL examples that outnumber AIDL examples in simplicity, causing the LLM to generate legacy `#include <hidl/Status.h>` and `vehicle/2.0/IVehicle.h` patterns that don't compile in Android 14. The indexer now excludes all `/2.0/`, `/1.0/`, `V2_0`, and `/hidl/` paths, ensuring only AIDL-compatible patterns are retrieved.
+- **3-layer HIDL defense:** Layer 1 (indexer) — `aosp_indexer.py` excludes HIDL files from ChromaDB using path patterns and lowercased content keywords. Layer 2 (mixin) — `rag_dspy_mixin.py` filters HIDL-contaminated chunks at retrieval time before they reach the LLM prompt. Layer 3 (agent) — `rag_dspy_aidl_agent.py` injects explicit AIDL-only constraints (`no V2_0`, `no oneway`, `no out params`, `boolean not bool`) into every generation call. This 3-layer approach ensures clean AIDL output regardless of RAG corpus quality or LLM training data.
+- **HIDL exclusion in RAG corpus:** The AOSP source tree contains both HIDL (Android 12/13) and AIDL (Android 14) Vehicle HAL implementations. Without filtering, the RAG retriever returns HIDL examples that outnumber AIDL examples in simplicity, causing the LLM to generate legacy `#include <hidl/Status.h>` and `vehicle/2.0/IVehicle.h` patterns that don't compile in Android 14. The indexer excludes all `/2.0/`, `/1.0/`, `V2_0`, and `/hidl/` paths, ensuring only AIDL-compatible patterns are retrieved.
+- **ChromaDB singleton:** Multiple agents sharing the same ChromaDB path causes "instance already exists" errors. `fix_chroma_singleton.py` monkey-patches `chromadb.PersistentClient` to return a shared singleton. Both C3 and C4 apply this patch at startup via `apply_chroma_fix.py`.
+- **C4 post-validation architecture:** C4 uses `architect.run()` identically to C3 for initial generation, then post-validates output files and retries only failed agents. Error feedback goes into a separate prompt field (not appended to `aosp_context`) to avoid polluting RAG context. This ensures C4's floor is always ≥ C3.
 - **Version-pinned RAG corpus:** The RAG source must be cloned with the same tag (`android-14.0.0_r75`) as the AOSP build tree. Mismatched versions cause the LLM to generate patterns (Android.bp `srcs` lists, API freeze hashes, AIDL module structure) that don't match the build system's expectations.
 - **Additive vs replacement AIDL:** C1/C2 (without RAG) previously generated replacement AIDL files that overwrote existing AOSP interfaces. With the prompt fix, all conditions now generate additive `VehiclePropertyAdas.aidl` that complements existing code.
 - **Automated AOSP 14 fixes:** `apply_aosp14_fixes.sh` handles systematic integration gaps (vendor:true, SELinux type declarations) that are predictable and automatable rather than code quality issues.
