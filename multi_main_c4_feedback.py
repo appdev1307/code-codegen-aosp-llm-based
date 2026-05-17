@@ -41,6 +41,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+# ── ChromaDB singleton fix (prevents "instance already exists" error) ──
+import fix_chroma_singleton
+fix_chroma_singleton.patch_chromadb()
+# ── End fix ──────────────────────────────────────────────────────────────
+
 # ── Configuration ─────────────────────────────────────────────────
 
 MAX_RETRIES        = 3     # retry attempts per file on validation failure
@@ -865,6 +870,7 @@ def _preflight_rag() -> bool:
               "--db rag/chroma_db")
         return False
     try:
+        # Use the monkey-patched singleton — do NOT create a new client
         import chromadb
         client = chromadb.PersistentClient(path=str(db_path))
         cols   = client.list_collections()
@@ -873,6 +879,7 @@ def _preflight_rag() -> bool:
               f"{total:,} chunks")
         for c in cols:
             print(f"             {c.name}: {c.count()} chunks")
+        del client  # release reference (singleton stays alive)
         return True
     except Exception as e:
         print(f"[PREFLIGHT] ✗ ChromaDB error: {e}")
