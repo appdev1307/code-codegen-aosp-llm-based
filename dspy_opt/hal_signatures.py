@@ -28,16 +28,32 @@ import dspy
 
 class AIDLSignature(dspy.Signature):
     """
-    Generate a complete, syntactically valid Android AIDL interface
-    definition for a VHAL HAL module targeting Android 14 (AOSP level 14).
+    Generate a complete, syntactically valid Android 14 AIDL property enum
+    file for a VHAL HAL module. This file defines property ID constants
+    (NOT a service interface).
+
+    The output MUST be an @Backing(type="int") enum following the pattern
+    of VehicleProperty.aidl in AOSP. The enum name MUST match the filename
+    (e.g. VehiclePropertyAdas for VehiclePropertyAdas.aidl).
 
     Requirements:
-    - Start with the correct package declaration
-    - Define one interface per HAL domain
-    - Include all properties as method signatures with correct AIDL types
-    - Use @VintfStability annotation for stability
-    - Oneway methods where appropriate for performance
-    - Follow the retrieved AOSP examples for structural conventions
+    - Package: android.hardware.automotive.vehicle (NO .V2_0, NO .adas)
+    - Use @VintfStability and @Backing(type="int") annotations
+    - Declare an ENUM (e.g. 'enum VehiclePropertyAdas'), NOT an interface
+    - Each property is an enum constant with a hex ID value
+    - Include comment with type, access mode, and area for each property
+    - DO NOT generate getter/setter methods, 'oneway', 'out' params, or 'throws'
+    - DO NOT generate 'interface' — only 'enum'
+    - Follow the retrieved AOSP VehicleProperty.aidl examples
+
+    Example output:
+    package android.hardware.automotive.vehicle;
+    @VintfStability
+    @Backing(type="int")
+    enum VehiclePropertyAdas {
+        ABS_IS_ENABLED = 0x1000, // boolean, READ_WRITE, GLOBAL
+        ABS_IS_ENGAGED = 0x1001, // boolean, READ, GLOBAL
+    }
     """
     domain:       str = dspy.InputField(
         desc="HAL domain name, e.g. ADAS, POWERTRAIN, BODY"
@@ -55,17 +71,22 @@ class AIDLSignature(dspy.Signature):
 
 class VHALCppSignature(dspy.Signature):
     """
-    Generate a complete VHAL C++ service implementation file for the given
-    HAL domain. The implementation must correctly extend IVehicleHardware
-    and register all properties with the VHAL framework.
+    Generate a complete Android 14 VHAL C++ service implementation file
+    for the given HAL domain. The implementation extends IVehicleHardware
+    and registers all properties defined in the VehiclePropertyAdas enum.
 
     Requirements:
-    - Include all necessary AOSP headers
-    - Implement getAllPropertyConfigs() returning configs for each property
-    - Implement getValues() and setValues() for READ/READ_WRITE properties
-    - Handle property type conversion correctly (int32, float, bool, string)
-    - Use correct AOSP namespace: android::hardware::automotive::vehicle
-    - Follow retrieved AOSP examples for method signatures and patterns
+    - Use AIDL namespace: aidl::android::hardware::automotive::vehicle
+    - Use ndk::ScopedAStatus for return types (NOT Return<void>, NOT HIDL)
+    - Use std::vector (NOT hidl_vec)
+    - Include AIDL headers: <aidl/android/hardware/automotive/vehicle/BnVehicle.h>
+    - DO NOT include <hidl/Status.h> or any hidl/ headers
+    - DO NOT use Return<>, Void(), _hidl_cb, HIDL_FETCH_*, BpHw, BnHw
+    - Implement getAllPropertyConfigs() returning VehiclePropConfig for each property
+    - Implement getValues() and setValues() dispatching by property ID
+    - Property IDs reference VehiclePropertyAdas enum constants
+    - Module binary name: vendor.vss.<domain> (NOT android.hardware.automotive.vehicle-service)
+    - Follow retrieved AOSP DefaultVehicleHal examples for AIDL patterns
     """
     domain:       str = dspy.InputField(
         desc="HAL domain name"
@@ -112,15 +133,18 @@ class SELinuxSignature(dspy.Signature):
 class BuildFileSignature(dspy.Signature):
     """
     Generate a complete Android.bp build file for a VHAL HAL module.
-    The build file must correctly declare the AIDL interface library and
-    the C++ implementation binary so the module can be compiled by Soong.
+    The build file declares a cc_binary for the C++ implementation
+    so the module can be compiled by Soong.
 
     Requirements:
-    - Declare aidl_interface block with correct name, srcs, and stability
-    - Declare cc_binary or cc_library_shared for the C++ implementation
-    - List all required shared_libs (libvhalclient, libbinder_ndk, etc.)
-    - Set vendor: true for vendor partition placement
-    - Follow retrieved Android.bp examples for block structure and options
+    - cc_binary name MUST be vendor.vss.<domain>-service
+      (NOT android.hardware.automotive.vehicle-service, that already exists in AOSP)
+    - MUST include: vendor: true
+    - MUST include: relative_install_path: "hw"
+    - List shared_libs: libbinder_ndk, libbase, liblog, libutils
+    - List static_libs: android.hardware.automotive.vehicle-V3-ndk
+    - DO NOT use HIDL library names (android.hardware.automotive.vehicle@2.0)
+    - Follow retrieved Android.bp examples for block structure
     """
     module_name:  str = dspy.InputField(
         desc="HAL module name, e.g. vendor.vss.adas"
