@@ -203,8 +203,8 @@ class ValidatorFeedback:
         issues = []
         if "package " not in code:
             issues.append("Missing package declaration")
-        if not re.search(r"(interface|parcelable)\s+\w+", code):
-            issues.append("Missing interface or parcelable declaration")
+        if not re.search(r"(interface|parcelable|enum)\s+\w+", code):
+            issues.append("Missing interface, enum, or parcelable declaration")
         if code.count("{") != code.count("}"):
             issues.append(f"Unbalanced braces: {code.count('{')} open, {code.count('}')} close")
         if "@VintfStability" not in code:

@@ -127,6 +127,10 @@ def validate_aidl(code: str) -> ValidatorResult:
     """
     Validate an AIDL file using a Python AIDL grammar parser.
 
+    Accepts both:
+      - interface pattern: interface IName { ReturnType method(args); }
+      - enum pattern: @Backing(type="int") enum Name { CONST = 0x1000, }
+
     Why not the real `aidl` binary?
     The AOSP `aidl` tool requires a full source tree for imports.
     Even a valid standalone file fails because 'android.hardware.*'
@@ -139,58 +143,106 @@ def validate_aidl(code: str) -> ValidatorResult:
 
     errors, score = [], 0.0
 
-    # 1. Package declaration
+    # 1. Package declaration (0.20)
     pkg = re.search(r"^\s*package\s+([\w.]+)\s*;", code, re.MULTILINE)
     if pkg:
         score += 0.20
         if not re.match(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*$", pkg.group(1)):
             errors.append(f"Package '{pkg.group(1)}' should be lowercase.dot.separated")
     else:
-        errors.append("Missing package declaration — e.g. 'package vendor.vss.adas;'")
+        errors.append("Missing package declaration — e.g. 'package android.hardware.automotive.vehicle;'")
 
-    # 2. Interface block with optional annotations
-    iface = re.search(r"(?:@\w+\s*)*interface\s+(\w+)\s*\{", code)
-    if iface:
+    # 2. Detect AIDL type: interface OR enum (0.25)
+    is_interface = bool(re.search(r"(?:@\w+[\s()\w=\"]*\s*)*interface\s+(\w+)\s*\{", code))
+    is_enum = bool(re.search(r"(?:@\w+[\s()\w=\"]*\s*)*enum\s+(\w+)\s*\{", code))
+    is_parcelable = bool(re.search(r"(?:@\w+[\s()\w=\"]*\s*)*parcelable\s+(\w+)\s*\{", code))
+
+    if is_interface:
+        iface = re.search(r"interface\s+(\w+)\s*\{", code)
         score += 0.25
-        if not iface.group(1).startswith("I"):
+        if iface and not iface.group(1).startswith("I"):
             errors.append(f"Interface '{iface.group(1)}' should start with 'I' per AIDL convention")
+    elif is_enum:
+        enum_match = re.search(r"enum\s+(\w+)\s*\{", code)
+        score += 0.25
+        # Check for @Backing annotation (required for typed enums)
+        if "@Backing" in code:
+            score += 0.05  # bonus for proper enum annotation
+    elif is_parcelable:
+        score += 0.25
     else:
-        errors.append("No interface block found — expected: 'interface IName { ... }'")
+        errors.append("No interface, enum, or parcelable block found")
 
-    # 3. Brace balance
+    # 3. Brace balance (0.10)
     if code.count("{") == code.count("}"):
         score += 0.10
     else:
         errors.append(f"Unbalanced braces: {code.count('{')} open, {code.count('}')} close")
 
-    # 4. Method signatures  (type name(params);)
-    methods = re.findall(
-        r"(?:oneway\s+)?(\w[\w<>\[\], ]*)\s+(\w+)\s*\(([^)]*)\)\s*;", code
-    )
-    if methods:
-        score += 0.20
-        bad_types = []
-        for ret, name, _ in methods:
-            base = ret.strip().split("<")[0].strip()
-            if base not in _AIDL_PRIMITIVE_TYPES and not base[0].isupper():
-                bad_types.append(f"'{base}' in '{name}'")
-        if not bad_types:
-            score += 0.15
+    # 4. Content validation — depends on AIDL type (0.35)
+    if is_interface:
+        # Interface: check method signatures
+        methods = re.findall(
+            r"(?:oneway\s+)?(\w[\w<>\[\], ]*)\s+(\w+)\s*\(([^)]*)\)\s*;", code
+        )
+        if methods:
+            score += 0.20
+            bad_types = []
+            for ret, name, _ in methods:
+                base = ret.strip().split("<")[0].strip()
+                if base not in _AIDL_PRIMITIVE_TYPES and not base[0].isupper():
+                    bad_types.append(f"'{base}' in '{name}'")
+            if not bad_types:
+                score += 0.15
+            else:
+                errors.extend([f"Suspicious AIDL type {t}" for t in bad_types[:3]])
         else:
-            errors.extend([f"Suspicious AIDL type {t}" for t in bad_types[:3]])
-    else:
-        errors.append("No method signatures found — expected: 'ReturnType method(args);'")
+            errors.append("No method signatures found in interface")
 
-    # 5. @VintfStability annotation
+    elif is_enum:
+        # Enum: check for constant definitions (NAME = value,)
+        constants = re.findall(
+            r"(\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+)", code
+        )
+        if constants:
+            score += 0.20
+            # Check that constants are UPPER_CASE
+            bad_names = [n for n, _ in constants if not re.match(r"^[A-Z][A-Z0-9_]*$", n)]
+            if not bad_names:
+                score += 0.15
+            else:
+                errors.extend([f"Enum constant '{n}' should be UPPER_CASE" for n in bad_names[:3]])
+        else:
+            errors.append("No enum constants found — expected: 'NAME = 0x1000,'")
+
+    elif is_parcelable:
+        # Parcelable: check for field declarations
+        fields = re.findall(r"(\w+)\s+(\w+)\s*;", code)
+        if fields:
+            score += 0.35
+        else:
+            errors.append("No field declarations found in parcelable")
+
+    # 5. @VintfStability annotation (0.10)
     if "@VintfStability" in code:
         score += 0.10
 
     ok = (score >= 0.70) and (len(errors) == 0)
+    detail = ""
+    if is_interface:
+        methods = re.findall(r"(?:oneway\s+)?\w[\w<>\[\], ]*\s+\w+\s*\([^)]*\)\s*;", code)
+        detail = f"interface, {len(methods)} methods"
+    elif is_enum:
+        constants = re.findall(r"\w+\s*=\s*(0x[0-9a-fA-F]+|\d+)", code)
+        detail = f"enum, {len(constants)} constants"
+    elif is_parcelable:
+        detail = "parcelable"
+
     return ValidatorResult(
         ok=ok,
         score=round(score, 3) if ok else round(score * 0.65, 3),
         errors=errors, tool=tool,
-        detail=f"{len(methods)} methods parsed",
+        detail=detail,
     )
 
 
