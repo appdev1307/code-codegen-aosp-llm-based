@@ -151,10 +151,22 @@ def discover_scoreable_files(output_dir: Path) -> list[tuple[str, Path]]:
 
 def score_structure(content: str, agent_type: str) -> float:
     if agent_type == "aidl":
-        checks = ["package ", "interface ", "@VintfStability"]
-        parcelable_checks = ["parcelable ", "prop", "status"]
+        checks = ["package ", "@VintfStability"]
+        # Accept interface, enum, or parcelable
+        has_type_decl = bool(re.search(r"(interface|parcelable|enum)\s+\w+", content))
         hits = sum(1 for c in checks if c in content)
-        hits += sum(1 for c in parcelable_checks if c in content)
+        if has_type_decl:
+            hits += 1
+        # Enum-specific bonus: @Backing annotation, hex constants
+        if "enum " in content:
+            if "@Backing" in content:
+                hits += 1
+            if re.search(r"= 0x[0-9a-fA-F]+", content):
+                hits += 1
+        else:
+            # Interface/parcelable: original checks
+            parcelable_checks = ["parcelable ", "prop", "status"]
+            hits += sum(1 for c in parcelable_checks if c in content)
         return round(min(hits / 5, 1.0), 4)
     elif agent_type == "cpp":
         checks = ["#include", "namespace", "class ", "getAllPropertyConfigs",
@@ -225,13 +237,14 @@ def _syntax_aidl(content: str) -> float:
     issues = 0
     total = 5
     if "package " not in content: issues += 1
-    if not re.search(r"(interface|parcelable)\s+\w+", content): issues += 1
+    if not re.search(r"(interface|parcelable|enum)\s+\w+", content): issues += 1
     if content.count("{") != content.count("}"): issues += 1
     if "@VintfStability" not in content: issues += 0.5
     decl_lines = [l for l in content.splitlines()
                   if any(t in l for t in ["int ", "float ", "byte", "String ", "long "])]
     for l in decl_lines:
-        if l.strip() and not l.strip().endswith(";") and not l.strip().endswith("{"):
+        stripped = l.strip()
+        if stripped and not stripped.endswith((";", "{", ",")):
             issues += 0.5
             break
     return round(max(0, (total - issues) / total), 4)
