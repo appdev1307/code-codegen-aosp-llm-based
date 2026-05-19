@@ -483,6 +483,72 @@ clean_hal
 m -j$(nproc) 2>&1 | tee ~/build_full_${COND2}.log
 ```
 
+### Step 6a — AIDL Frozen API Integration (required for new .aidl files)
+
+Adding a new `.aidl` file (like `VehiclePropertyAdas.aidl`) to the frozen
+`aidl_interface` module requires updating the API version. Without this,
+the build fails with `frozen: true` hash mismatch errors.
+
+**Proven approach (used for successful C4 build):**
+
+```bash
+cd ~/aosp-14-auto
+
+# 1. Copy generated AIDL enum file
+cp ~/output_c4/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl \
+   hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
+
+# 2. Add to srcs in aidl_interface Android.bp
+AIDL_BP=hardware/interfaces/automotive/vehicle/aidl/Android.bp
+LAST_AIDL=$(grep -n '\.aidl"' "$AIDL_BP" | tail -1 | cut -d: -f1)
+sed -i "${LAST_AIDL}a\\        \"android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl\"," "$AIDL_BP"
+
+# 3. Temporarily unfreeze the AIDL interface
+sed -i 's/frozen: true,/frozen: false,/' "$AIDL_BP"
+
+# 4. Clean build artifacts and update API
+rm -rf out/
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+m android.hardware.automotive.vehicle-update-api
+
+# 5. Re-freeze the interface
+sed -i 's/frozen: false,/frozen: true,/' "$AIDL_BP"
+
+# 6. Add new package to VINTF FCM exclude list (types-only package)
+sed -i '/static std::vector<std::string> excluded_exact{/a\            // LLM-generated types-only AIDL package\n            "android.hardware.automotive.vehicle@4",' \
+    hardware/interfaces/compatibility_matrices/exclude/fcm_exclude.cpp
+
+# 7. Clean and full build
+rm -rf out/
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
+```
+
+**Build result:**
+```
+[100% 4035/4035] touch out/soong/ndk_abi_diff.timestamp
+#### build completed successfully (04:52 (mm:ss)) ####
+```
+
+**Common pitfalls:**
+
+- **Never delete `aidl_api/`** — this removes frozen API snapshots and causes V3→V4 version cascade across the entire AOSP tree
+- **Never manually sed V3→V4 in Android.bp files** — hundreds of modules depend on V3
+- **Always `rm -rf out/`** between frozen/unfrozen transitions — stale ninja cache causes "multiple rules generate" errors
+- **Follow the AOSP error message** — when it says "set `frozen: false` then run `update-api`", that is the correct fix
+
+**Recovery if the tree gets into a bad state:**
+
+```bash
+cd ~/aosp-14-auto/hardware/interfaces && git checkout -- . && cd ~/aosp-14-auto
+cd ~/aosp-14-auto/packages/services/Car && git checkout -- . && cd ~/aosp-14-auto
+cd ~/aosp-14-auto/cts && git checkout -- . && cd ~/aosp-14-auto
+cd ~/aosp-14-auto/device/generic/car && git checkout -- . && cd ~/aosp-14-auto
+rm -rf out/
+```
+
 <details>
 <summary>Manual fixes (if apply_aosp14_fixes.sh doesn't cover an edge case)</summary>
 
