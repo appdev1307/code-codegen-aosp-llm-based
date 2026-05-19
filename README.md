@@ -173,15 +173,6 @@ enough for the entire AOSP build (~$6 total). No charges unless you manually upg
 3. Enter a credit card for identity verification (you won't be charged)
 4. $300 credits are available immediately
 
-| Resource | Cost/hr | Time needed | Subtotal |
-|----------|---------|-------------|----------|
-| n2-standard-8 (repo sync) | ~$0.40 | ~2 hrs | ~$0.80 |
-| n2-standard-8 (build) | ~$0.40 | ~4 hrs | ~$1.60 |
-| n2-standard-8 (test) | ~$0.40 | ~1 hr | ~$0.40 |
-| **Total** | | | **~$3** |
-
-> **Students:** Check if your university offers Google Cloud for Education credits
-> ($50-$100 additional). GitHub Student Developer Pack also includes cloud credits.
 
 #### Create the VM
 
@@ -214,12 +205,6 @@ gcloud compute instances create aosp-builder \
 # Cost: ~$1.50/hr | Build time: ~1.5 hrs instead of ~4-5 hrs
 ```
 </details>
-
-```bash
-# SSH in and use screen (survives SSH disconnect)
-gcloud compute ssh aosp-builder --zone=us-central1-a
-screen -S aosp
-```
 
 #### Using `screen` (essential for long builds)
 
@@ -254,7 +239,7 @@ gcloud compute ssh aosp-builder \
   --zone=us-central1-a
 
 # Reattach to the running build session
-screen -r -d aosp
+screen -r aosp
 ```
 
 **Screen cheat sheet:**
@@ -266,12 +251,6 @@ screen -r -d aosp
 | List sessions | `screen -ls` |
 | Scroll up | `Ctrl+A` then `Esc`, then arrow keys |
 | Exit scroll | `Esc` |
-
-### Prerequisites
-
-- Linux x86_64 (Ubuntu 22.04 — GCP VM or local)
-- 400+ GB free disk, 32+ GB RAM
-- ~4-5 hours for first full build (GCP n2-standard-8)
 
 ### Step 1 — Install Build Dependencies
 
@@ -437,24 +416,6 @@ mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
 echo "Result: $COND1 → exit code $?"
 ```
 
-**Option B: Build all 4 conditions for thesis comparison**
-
-```bash
-for COND1 in c1 c2 c3 c4; do
-    echo "═══════════════════════════════════════════"
-    echo "  Building condition: $COND1"
-    echo "═══════════════════════════════════════════"
-    restore_aosp
-    clean_hal
-    ~/apply_aosp14_fixes.sh ~/output_$COND1 ~/aosp-14-auto
-    mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
-    echo "  Result: $COND1 → exit code $?"
-    echo ""
-done
-
-echo "Build logs: ~/build_c1.log ~/build_c2.log ~/build_c3.log ~/build_c4.log"
-```
-
 **If a build fails — recovery steps:**
 
 ```bash
@@ -465,11 +426,6 @@ restore_aosp
 cd ~/aosp-14-auto/hardware/interfaces && git status
 cd ~/aosp-14-auto/system/sepolicy && git status
 
-# 3. Try the next condition or retry with manual fixes
-COND1=c3
-clean_hal
-~/apply_aosp14_fixes.sh ~/output_$COND1 ~/aosp-14-auto
-mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
 ```
 
 ### Step 6 — Full AOSP Image Build
@@ -533,6 +489,37 @@ m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 [100% 4035/4035] touch out/soong/ndk_abi_diff.timestamp
 #### build completed successfully (04:52 (mm:ss)) ####
 ```
+
+**Step 6b — Verify AIDL was compiled into the API surface:**
+
+```bash
+# 1. Prove the AOSP AIDL compiler accepted the enum
+cat out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl
+# Should show: @Backing(type="int") @VintfStability enum VehiclePropertyAdas { ... }
+
+# 2. Prove V4 frozen API snapshot contains the enum
+cat hardware/interfaces/automotive/vehicle/aidl/aidl_api/android.hardware.automotive.vehicle/4/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl
+# Should show same enum with all 50 property constants (0x1000–0x1031)
+
+# 3. Verify all API versions exist
+ls hardware/interfaces/automotive/vehicle/aidl/aidl_api/android.hardware.automotive.vehicle/
+# Should show: 1  2  3  4  current
+
+# 4. Save proof files for thesis
+cp out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl \
+   ~/VehiclePropertyAdas_compiled.aidl
+```
+
+**What this proves:** The AOSP AIDL toolchain (`aidl --dumpapi --structured --stability vintf`)
+successfully parsed the LLM-generated `VehiclePropertyAdas.aidl` enum, validated it against
+the AIDL grammar, and registered it as part of the `android.hardware.automotive.vehicle` V4
+API surface. The full system image build completed without errors, confirming the generated
+code integrates into the Android Automotive OS build system.
+
+> **Note:** V4 modules (Java, NDK, Rust bindings) are not compiled into the image because
+> no existing AOSP module depends on V4 yet. The V4 API surface is frozen and available for
+> any module that adds `android.hardware.automotive.vehicle-V4-java` (or `-ndk`, `-rust`)
+> to its dependencies. This is the standard AOSP workflow for new API versions.
 
 **Common pitfalls:**
 
@@ -843,4 +830,3 @@ output files regardless of input signal count.
 ## License
 
 Research use only — MSE thesis project.
-
