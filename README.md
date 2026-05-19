@@ -249,10 +249,12 @@ screen -S aosp
 
 ```bash
 # Reconnect to the VM
-gcloud compute ssh aosp-builder --zone=us-central1-a
+gcloud compute ssh aosp-builder \
+  --project=$(gcloud config get-value project) \
+  --zone=us-central1-a
 
 # Reattach to the running build session
-screen -r aosp
+screen -r -d aosp
 ```
 
 **Screen cheat sheet:**
