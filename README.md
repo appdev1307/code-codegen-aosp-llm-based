@@ -191,7 +191,7 @@ gcloud compute instances create aosp-builder \
 ```
 
 ```bash
-# Create VM with nested virtualization wihth pre-built Cuttlefish (use it)
+# Create VM with nested virtualization with pre-built Cuttlefish (use it)
 gcloud compute instances stop aosp-builder \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a
@@ -204,7 +204,27 @@ gcloud compute instances create cf-builder \
     --image-family=cf-google-cuttlefish \
     --image-project=cloud-android-testing \
     --enable-nested-virtualization
-```   
+```
+
+<details>
+<summary>Recommended: AMD Milan + SSD (better Cuttlefish nested virt support)</summary>
+
+Intel `n2` with nested virtualization can be flaky with Cuttlefish's `crosvm`.
+AMD Milan (`n2d`) handles nested KVM significantly better. `pd-ssd` instead of
+`pd-standard` saves hours on the I/O-bound AOSP build.
+
+```bash
+gcloud compute instances create aosp-builder \
+    --zone=us-central1-a \
+    --machine-type=n2d-standard-16 \
+    --boot-disk-size=500GB \
+    --boot-disk-type=pd-ssd \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --enable-nested-virtualization \
+    --min-cpu-platform="AMD Milan"
+```
+</details>
 
 <details>
 <summary>Premium account: faster build with 32 cores + SSD</summary>
@@ -660,27 +680,50 @@ rm -rf out/
 # Cuttlefish host packages must be installed first (see Step 3a above)
 # Verify: groups $USER | grep -o 'kvm\|cvdnetwork\|render'
 
-# Set up build environment and launch
+# Set up build environment (also adds adb to PATH)
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-launch_cvd --noresume --cpus=4 --memory_mb=4096
 
-# Connect
-adb connect vsock:3:5555
-adb wait-for-device
+# Launch Cuttlefish (in a screen session recommended)
+launch_cvd --noresume --cpus=4 --memory_mb=4096
+# Wait for: VIRTUAL_DEVICE_BOOT_COMPLETED
+```
+
+> **Note:** `adb` is not installed system-wide — it comes from the AOSP build output.
+> You must `source build/envsetup.sh` and `lunch` in every new terminal before using `adb`.
+> Do NOT run `apt install adb` — use the version from your build tree.
+
+```bash
+# In a new terminal (source the build env again)
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+
+# Check connected devices — Cuttlefish registers on two transports
+adb devices
+# Typical output:
+#   0.0.0.0:6520    device
+#   vsock:3:5555    device
+
+# Use -s flag to target one device (avoids "more than one device" error)
+adb -s 0.0.0.0:6520 shell getprop ro.build.characteristics
+# Should show: automotive
 
 # Test Vehicle HAL
-adb shell dumpsys car_service
-adb shell cmd car_service list-properties | grep -i adas
-adb shell cmd car_service get-property PERF_VEHICLE_SPEED
+adb -s 0.0.0.0:6520 shell dumpsys car_service
+adb -s 0.0.0.0:6520 shell cmd car_service list-properties | grep -i adas
+adb -s 0.0.0.0:6520 shell cmd car_service get-property PERF_VEHICLE_SPEED
 
 # Verify SELinux
-adb shell getenforce
-adb shell dmesg | grep avc
+adb -s 0.0.0.0:6520 shell getenforce
+adb -s 0.0.0.0:6520 shell dmesg | grep avc
+
+# Access the WebRTC display from your local machine:
+# gcloud compute ssh aosp-builder --zone=us-central1-a -- -L 8443:localhost:8443
+# Then open https://localhost:8443 in your browser
 
 # Run VTS
-cd $AOSP_ROOT
 atest VtsHalAutomotiveVehicle
 
 # Shutdown
@@ -693,7 +736,7 @@ stop_cvd
 # Kotlin App (requires AAOS — uses CarPropertyManager API)
 # Copy AdasFragment.kt + fragment_adas.xml → Android Studio
 # Build: ./gradlew assembleDebug
-# Install: adb install app/build/outputs/apk/debug/app-debug.apk
+# Install: adb -s 0.0.0.0:6520 install app/build/outputs/apk/debug/app-debug.apk
 
 # FastAPI Backend
 cd output_c4_feedback/backend/vss_dynamic_server
