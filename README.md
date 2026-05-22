@@ -702,23 +702,58 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
 # Check connected devices — Cuttlefish registers on two transports
 adb devices
-# Typical output:
+# Expected output:
 #   0.0.0.0:6520    device
 #   vsock:3:5555    device
-
 # Use -s flag to target one device (avoids "more than one device" error)
-adb -s 0.0.0.0:6520 shell getprop ro.build.characteristics
-# Should show: automotive
 
-# Test Vehicle HAL
-adb -s 0.0.0.0:6520 shell dumpsys car_service
-adb -s 0.0.0.0:6520 shell cmd car_service list-vhal-props
+# Verify VHAL backend is AIDL (required for Android 14)
+adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
+# Expected: Vehicle HAL backend: AIDL
+
+# Test Vehicle HAL read/write
 adb -s 0.0.0.0:6520 shell cmd car_service get-property-value PERF_VEHICLE_SPEED
-adb -s 0.0.0.0:6520 shell cmd car_service get-carpropertyconfig PERF_VEHICLE_SPEED
+# Expected: HalPropValue{..., Value: 0.0 METER_PER_SEC}
 
-# Verify SELinux
+adb -s 0.0.0.0:6520 shell cmd car_service get-carpropertyconfig PERF_VEHICLE_SPEED
+# Expected: access:READ, changeMode:CONTINUOUS, valueType:FLOAT
+
+# Verify ADAS properties are present in the base image
+adb -s 0.0.0.0:6520 shell cmd car_service get-property-value FORWARD_COLLISION_WARNING_ENABLED
+# Expected: HalPropValue{..., Value: TRUE}
+
+adb -s 0.0.0.0:6520 shell cmd car_service get-property-value CRUISE_CONTROL_ENABLED
+# Expected: HalPropValue{..., Value: TRUE}
+
+# Test VHAL event injection (simulate enabling/disabling a property)
+adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event CRUISE_CONTROL_ENABLED 0 true
+
+# List all VHAL property IDs (250+ properties in a full AAOS build)
+adb -s 0.0.0.0:6520 shell cmd car_service list-vhal-props
+
+# Dump all ADAS-related properties
+adb -s 0.0.0.0:6520 shell dumpsys car_service > ~/car_service_dump.txt
+grep -i "adas\|cruise\|lane\|collision\|emergency\|blind_spot" ~/car_service_dump.txt
+# Expected ADAS properties in base image:
+#   AUTOMATIC_EMERGENCY_BRAKING_ENABLED/STATE
+#   FORWARD_COLLISION_WARNING_ENABLED/STATE
+#   BLIND_SPOT_WARNING_ENABLED
+#   LANE_DEPARTURE_WARNING_ENABLED/STATE
+#   LANE_KEEP_ASSIST_ENABLED/STATE
+#   LANE_CENTERING_ASSIST_ENABLED/COMMAND
+#   EMERGENCY_LANE_KEEP_ASSIST_ENABLED
+#   CRUISE_CONTROL_ENABLED
+#   LOW_SPEED_COLLISION_WARNING_ENABLED
+#   LOW_SPEED_AUTOMATIC_EMERGENCY_BRAKING_ENABLED
+
+# Verify SELinux is enforcing (production mode)
 adb -s 0.0.0.0:6520 shell getenforce
+# Expected: Enforcing
+
+# Check SELinux denials (requires root on userdebug builds)
+adb -s 0.0.0.0:6520 root
 adb -s 0.0.0.0:6520 shell dmesg | grep avc
+# No Vehicle HAL related denials expected in base image
 
 # Access the WebRTC display from your local machine:
 # gcloud compute ssh aosp-builder --zone=us-central1-a -- -L 8443:localhost:8443
