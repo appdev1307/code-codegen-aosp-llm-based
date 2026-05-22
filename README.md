@@ -332,6 +332,82 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 m -j$(nproc)
 ```
 
+### Step 3a — Install Cuttlefish Host Packages
+
+Cuttlefish requires host-side packages (`crosvm`, `cvd` tools, networking) to launch
+virtual devices. These must be installed **before** running `launch_cvd`.
+
+> **Note:** The `ci.android.com` download URLs for `cvd-host_package.tar.gz` return
+> HTML redirect pages, not actual tarballs. Build the packages from source instead.
+
+```bash
+# Install build dependencies
+sudo apt install -y git devscripts equivs config-package-dev \
+    debhelper-compat golang libarchive-tools net-tools opus-tools \
+    xdg-utils iptables f2fs-tools ebtables
+
+# Clone and build cuttlefish host packages (use a stable tag)
+cd ~
+git clone https://github.com/google/android-cuttlefish.git
+cd android-cuttlefish
+git checkout v1.50.1    # pinned — main branch may have Rust build failures
+tools/buildutils/build_packages.sh
+
+# Install the .deb packages
+sudo dpkg -i ./cuttlefish-base_*.deb
+sudo apt-get install -f -y
+sudo dpkg -i ./cuttlefish-user_*.deb
+sudo apt-get install -f -y
+
+# Add user to required groups
+sudo usermod -aG kvm,cvdnetwork,render $USER
+
+# REBOOT (required for kernel modules and group changes)
+sudo reboot
+```
+
+**After reboot, verify the installation:**
+
+```bash
+# All three groups must appear
+groups $USER | grep -o 'kvm\|cvdnetwork\|render'
+
+# KVM device must exist (nested virt on GCP)
+ls -la /dev/kvm
+
+# Cuttlefish capability check must be found
+find /usr/lib/cuttlefish* -name "capability_query.py" 2>/dev/null
+```
+
+<details>
+<summary>Troubleshooting: build_packages.sh fails with Rust/virtio-media errors</summary>
+
+The `main` branch of `android-cuttlefish` may have Rust compilation errors
+(e.g. `v4l2_requestbuffers has no field named flags`). This is a mismatch between
+the `virtio-media` crate and the kernel headers on Ubuntu 22.04.
+
+**Fix:** Use a pinned stable tag as shown above (`v1.50.1`). Check available tags:
+
+```bash
+git tag -l | sort -V | tail -10
+```
+
+If `v1.50.1` also fails, try `v1.47.0` or the latest tag before `v1.51.0`.
+</details>
+
+<details>
+<summary>Troubleshooting: dpkg dependency errors</summary>
+
+On Ubuntu 22.04, some package names differ from what the `.deb` expects:
+
+| Error | Fix |
+|-------|-----|
+| `bsdtar` not found | `sudo apt install libarchive-tools` |
+| `ebtables` not found | `sudo apt install ebtables` |
+| `cvdnetwork` group missing | Cuttlefish-base not installed — check `dpkg -l \| grep cuttlefish` |
+| `capability_query.py` not found | Cuttlefish-base not installed or wrong version |
+</details>
+
 ### Step 4 — Upload output zips to GCS bucket
 
 Upload output zips to a GCS bucket via the **browser**.
@@ -581,11 +657,14 @@ rm -rf out/
 ### Step 7 — Launch Cuttlefish and Test
 
 ```bash
-# Install Cuttlefish host packages (first time only)
-# https://source.android.com/docs/devices/cuttlefish/get-started
+# Cuttlefish host packages must be installed first (see Step 3a above)
+# Verify: groups $USER | grep -o 'kvm\|cvdnetwork\|render'
 
-# Launch
-launch_cvd --daemon
+# Set up build environment and launch
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+launch_cvd --noresume --cpus=4 --memory_mb=4096
 
 # Connect
 adb connect vsock:3:5555
