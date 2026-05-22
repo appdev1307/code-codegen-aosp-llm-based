@@ -712,8 +712,9 @@ adb -s 0.0.0.0:6520 shell getprop ro.build.characteristics
 
 # Test Vehicle HAL
 adb -s 0.0.0.0:6520 shell dumpsys car_service
-adb -s 0.0.0.0:6520 shell cmd car_service list-properties | grep -i adas
-adb -s 0.0.0.0:6520 shell cmd car_service get-property PERF_VEHICLE_SPEED
+adb -s 0.0.0.0:6520 shell cmd car_service list-vhal-props
+adb -s 0.0.0.0:6520 shell cmd car_service get-property-value PERF_VEHICLE_SPEED
+adb -s 0.0.0.0:6520 shell cmd car_service get-carpropertyconfig PERF_VEHICLE_SPEED
 
 # Verify SELinux
 adb -s 0.0.0.0:6520 shell getenforce
