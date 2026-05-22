@@ -190,22 +190,6 @@ gcloud compute instances create aosp-builder \
     --enable-nested-virtualization
 ```
 
-```bash
-# Create VM with nested virtualization with pre-built Cuttlefish (use it)
-gcloud compute instances stop aosp-builder \
-  --project=$(gcloud config get-value project) \
-  --zone=us-central1-a
-
-gcloud compute instances create cf-builder \
-    --zone=us-central1-a \
-    --machine-type=n2-standard-8 \
-    --boot-disk-size=500GB \
-    --boot-disk-type=pd-standard \
-    --image-family=cf-google-cuttlefish \
-    --image-project=cloud-android-testing \
-    --enable-nested-virtualization
-```
-
 <details>
 <summary>Recommended: AMD Milan + SSD (better Cuttlefish nested virt support)</summary>
 
