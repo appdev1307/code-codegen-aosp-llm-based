@@ -262,7 +262,7 @@ def main():
     # ──────────────────────────────────────────────
     print("\n[PLAN] Running Module Planner...")
     try:
-        module_signal_map = plan_modules_from_spec(yaml_spec)
+        module_signal_map = plan_modules_from_spec(yaml_spec, use_fast_mode=True)
         total = sum(len(v) for v in module_signal_map.values())
         print(f" → {len(module_signal_map)} modules, {total} signals total")
         print(" Modules:", ", ".join(sorted(module_signal_map.keys())) or "(none)")
