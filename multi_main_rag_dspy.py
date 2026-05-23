@@ -58,7 +58,7 @@ from dspy_opt.validators import validate, print_availability_report
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-TEST_SIGNAL_COUNT      = 50
+TEST_SIGNAL_COUNT      = 500
 VSS_PATH               = "./dataset/vss.json"
 VENDOR_NAMESPACE       = "vendor.vss"
 PERSISTENT_CACHE_DIR   = Path("/content/vss_temp")
@@ -459,11 +459,14 @@ def main():
         print(f"[ERROR] {e}")
         return
 
-    selected_signals = dict(
-        list(sorted(all_leaves.items()))[:TEST_SIGNAL_COUNT]
-        if len(all_leaves) >= TEST_SIGNAL_COUNT
-        else all_leaves.items()
-    )
+    if len(all_leaves) >= TEST_SIGNAL_COUNT:
+        import random
+        random.seed(42)
+        sorted_items = sorted(all_leaves.items())
+        selected_items = random.sample(sorted_items, TEST_SIGNAL_COUNT)
+        selected_signals = dict(selected_items)
+    else:
+        selected_signals = dict(all_leaves.items())
 
     limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
     # Only rewrite limited file if content actually changed — preserves mtime for cache

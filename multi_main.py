@@ -38,7 +38,7 @@ from tools.aosp_layout import ensure_aosp_layout
 # ────────────────────────────────────────────────
 # Configurable parameters
 # ────────────────────────────────────────────────
-TEST_SIGNAL_COUNT = 50
+TEST_SIGNAL_COUNT = 500
 VSS_PATH = "./dataset/vss.json"
 VENDOR_NAMESPACE = "vendor.vss"
 
@@ -165,7 +165,9 @@ def main():
         selected_signals = all_leaves
     else:
         sorted_paths = sorted(all_leaves.keys())
-        selected_paths = sorted_paths[:TEST_SIGNAL_COUNT]
+        import random
+        random.seed(42)
+        selected_paths = random.sample(sorted_paths, TEST_SIGNAL_COUNT)
         selected_signals = {path: all_leaves[path] for path in selected_paths}
 
     print(f"Selected {len(selected_signals)} leaf signals for labelling & processing")

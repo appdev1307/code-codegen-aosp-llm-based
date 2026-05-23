@@ -51,7 +51,7 @@ fix_chroma_singleton.patch_chromadb()
 MAX_RETRIES        = 3     # retry attempts per file on validation failure
 OUTPUT_DIR         = Path("output_c4_feedback")
 RESULTS_DIR        = Path("experiments/results")
-TEST_SIGNAL_COUNT  = 50
+TEST_SIGNAL_COUNT  = 500
 VSS_PATH           = "./dataset/vss.json"
 VENDOR_NAMESPACE   = "vendor.vss"
 PERSISTENT_CACHE_DIR = Path("/content/vss_temp")
@@ -1005,10 +1005,14 @@ def main():
     all_leaves = flatten_vss(raw_vss)
     print(f"       {len(all_leaves)} leaf signals found")
 
-    selected_signals = dict(
-        list(sorted(all_leaves.items()))[:TEST_SIGNAL_COUNT]
-        if len(all_leaves) >= TEST_SIGNAL_COUNT else all_leaves.items()
-    )
+    if len(all_leaves) >= TEST_SIGNAL_COUNT:
+        import random
+        random.seed(42)
+        sorted_items = sorted(all_leaves.items())
+        selected_items = random.sample(sorted_items, TEST_SIGNAL_COUNT)
+        selected_signals = dict(selected_items)
+    else:
+        selected_signals = dict(all_leaves.items())
 
     limited_path = PERSISTENT_CACHE_DIR / f"VSS_LIMITED_{TEST_SIGNAL_COUNT}.json"
     new_limited = json.dumps(selected_signals, indent=2, ensure_ascii=False)
