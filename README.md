@@ -329,8 +329,23 @@ sed -i '/ifeq ($(BOARD_IS_AUTOMOTIVE)/,/endif/d' build/tasks/tests/native_test_l
 cat /tmp/automotive_fix.mk >> build/tasks/tests/native_test_list.mk
 cd ~/aosp-14-auto
 
-source build/envsetup.sh
 
+# Fixing sanbox
+# Add your user to the 'disk' group (this is the most common fix)
+sudo usermod -aG disk $USER
+
+# Reload groups (important)
+newgrp disk
+
+# Strong fix for loop device / sandbox issue
+export SOONG_GENRULE_SANDBOXING=false
+
+# Reload groups again
+sudo modprobe loop
+sudo chown root:disk /dev/loop* 2>/dev/null || true
+sudo chmod 666 /dev/loop* 2>/dev/null || true
+
+source build/envsetup.sh
 # MUST use _auto target for automotive
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
