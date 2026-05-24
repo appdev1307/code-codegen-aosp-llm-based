@@ -175,24 +175,7 @@ enough for the entire AOSP build (~$6 total). No charges unless you manually upg
 
 
 #### Create the VM
-
-```bash
-# Install gcloud CLI if needed: https://cloud.google.com/sdk/docs/install
-
-# Create VM with nested virtualization for Cuttlefish (free trial)
-gcloud compute instances create aosp-builder \
-    --zone=us-central1-a \
-    --machine-type=n2-standard-8 \
-    --boot-disk-size=500GB \
-    --boot-disk-type=pd-standard \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --enable-nested-virtualization
-```
-
-<details>
-<summary>Recommended: AMD Milan + SSD (better Cuttlefish nested virt support)</summary>
-
+Recommended: AMD Milan + SSD (better Cuttlefish nested virt support)</summary>
 Intel `n2` with nested virtualization can be flaky with Cuttlefish's `crosvm`.
 AMD Milan (`n2d`) handles nested KVM significantly better. `pd-ssd` instead of
 `pd-standard` saves hours on the I/O-bound AOSP build.
@@ -214,9 +197,7 @@ gcloud compute ssh aosp-builder-16 --zone=us-central1-a
 sudo growpart /dev/sda 1
 sudo resize2fs /dev/sda1
 df -h
-
 ```
-</details>
 
 <details>
 <summary>Premium account: faster build with 32 cores + SSD</summary>
@@ -241,12 +222,12 @@ browser closes, laptop sleeps, or internet drops.
 
 ```bash
 # SSH into the VM
-gcloud compute instances start aosp-builder \
+gcloud compute instances start aosp-builder-16 \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a
 
 
-gcloud compute ssh aosp-builder \
+gcloud compute ssh aosp-builder-16 \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a
 
@@ -261,24 +242,9 @@ screen -S aosp
 **If you get disconnected:**
 
 ```bash
-# Reconnect to the VM
-gcloud compute ssh aosp-builder \
-  --project=$(gcloud config get-value project) \
-  --zone=us-central1-a
-
 # Reattach to the running build session
 screen -r aosp
 ```
-
-**Screen cheat sheet:**
-
-| Action | Keys / Command |
-|--------|---------------|
-| Detach (leave running) | `Ctrl+A` then `D` |
-| Reattach | `screen -r aosp` |
-| List sessions | `screen -ls` |
-| Scroll up | `Ctrl+A` then `Esc`, then arrow keys |
-| Exit scroll | `Esc` |
 
 ### Step 1 — Install Build Dependencies
 
@@ -376,9 +342,6 @@ m -j$(nproc)
 
 Cuttlefish requires host-side packages (`crosvm`, `cvd` tools, networking) to launch
 virtual devices. These must be installed **before** running `launch_cvd`.
-
-> **Note:** The `ci.android.com` download URLs for `cvd-host_package.tar.gz` return
-> HTML redirect pages, not actual tarballs. Build the packages from source instead.
 
 ```bash
 # Install build dependencies
