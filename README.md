@@ -283,11 +283,27 @@ screen -r aosp
 ### Step 1 — Install Build Dependencies
 
 ```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
 sudo apt-get install -y git-core gnupg flex bison build-essential \
     zip curl zlib1g-dev libc6-dev-i386 lib32ncurses-dev \
     x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
     libxml2-utils xsltproc unzip fontconfig python3 \
     bridge-utils libvirt-daemon-system
+
+# Install required packages
+sudo apt install -y git repo git-lfs ccache libncurses5 libtinfo5 \
+    android-tools-adb android-tools-fastboot \
+    python3 python3-pip curl wget
+
+# Configure git
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
+
+# Increase ccache size (recommended)
+ccache -M 50G
+
 ```
 
 ### Step 2 — Download AOSP Android 14
