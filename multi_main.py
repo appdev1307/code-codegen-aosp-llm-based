@@ -336,7 +336,7 @@ def main():
             pool.submit(_generate_one_module, domain, props): domain
             for domain, props in tasks_to_submit
         }
-        FUTURE_TIMEOUT = 3600  # 1hr per module max — prevents infinite hang
+        FUTURE_TIMEOUT = 21600  # 1hr per module max — prevents infinite hang
         for future in as_completed(futures, timeout=FUTURE_TIMEOUT):
             try:
                 domain, success, error = future.result(timeout=60)
