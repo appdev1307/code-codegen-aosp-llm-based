@@ -332,6 +332,14 @@ repo init -u https://android.googlesource.com/platform/manifest \
 
 # Sync (~100 GB, 1-2 hours)
 repo sync -c -j$(nproc) --no-tags
+
+cd ~/aosp-14-auto
+
+# First try without the patch
+source build/envsetup.sh
+
+# Choose the target
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 ```
 
 ### Step 3 — Build Cuttlefish Automotive Base Image
@@ -423,21 +431,6 @@ the `virtio-media` crate and the kernel headers on Ubuntu 22.04.
 ```bash
 git tag -l | sort -V | tail -10
 ```
-
-If `v1.50.1` also fails, try `v1.47.0` or the latest tag before `v1.51.0`.
-</details>
-
-<details>
-<summary>Troubleshooting: dpkg dependency errors</summary>
-
-On Ubuntu 22.04, some package names differ from what the `.deb` expects:
-
-| Error | Fix |
-|-------|-----|
-| `bsdtar` not found | `sudo apt install libarchive-tools` |
-| `ebtables` not found | `sudo apt install ebtables` |
-| `cvdnetwork` group missing | Cuttlefish-base not installed — check `dpkg -l \| grep cuttlefish` |
-| `capability_query.py` not found | Cuttlefish-base not installed or wrong version |
 </details>
 
 ### Step 4 — Upload output zips to GCS bucket
