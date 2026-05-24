@@ -313,6 +313,10 @@ API surface, and SELinux policy format all target `aosp_level = 14`.
 Using Android 13 or 15 will cause build failures.
 
 ```bash
+git config --global user.name "nguyenngoctam1307"
+git config --global user.email "nguyenngoctam1307@gmail.com"
+git config --global color.ui true
+
 # Install repo tool
 mkdir -p ~/bin
 curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
