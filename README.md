@@ -198,15 +198,23 @@ AMD Milan (`n2d`) handles nested KVM significantly better. `pd-ssd` instead of
 `pd-standard` saves hours on the I/O-bound AOSP build.
 
 ```bash
-gcloud compute instances create aosp-builder \
+gcloud compute instances create aosp-builder-16 \
     --zone=us-central1-a \
     --machine-type=n2d-standard-16 \
     --boot-disk-size=500GB \
-    --boot-disk-type=pd-ssd \
+    --boot-disk-type=pd-standard \
     --image-family=ubuntu-2204-lts \
     --image-project=ubuntu-os-cloud \
     --enable-nested-virtualization \
-    --min-cpu-platform="AMD Milan"
+    --min-cpu-platform="AMD Milan" \
+    --quiet
+
+gcloud compute ssh aosp-builder-16 --zone=us-central1-a
+
+sudo growpart /dev/sda 1
+sudo resize2fs /dev/sda1
+df -h
+
 ```
 </details>
 
