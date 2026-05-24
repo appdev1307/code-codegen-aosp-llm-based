@@ -40,10 +40,10 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=12)
 # TIMEOUT CONFIGURATION - LLM-First (Generous)
 # ============================================================================
 TIMEOUT_STATIC_FILE = 90        # Static configs (manifest, build)
-TIMEOUT_LAYOUT_SMALL = 180      # Layouts with ≤20 properties
-TIMEOUT_LAYOUT_LARGE = 300      # Layouts with >20 properties
-TIMEOUT_FRAGMENT_SMALL = 240    # Fragments with ≤20 properties
-TIMEOUT_FRAGMENT_LARGE = 360    # Fragments with >20 properties
+TIMEOUT_LAYOUT_SMALL = 120      # Layouts with ≤20 properties
+TIMEOUT_LAYOUT_LARGE = 180      # Layouts with >20 properties
+TIMEOUT_FRAGMENT_SMALL = 150    # Fragments with ≤20 properties
+TIMEOUT_FRAGMENT_LARGE = 200    # Fragments with >20 properties
 TIMEOUT_MAIN_ACTIVITY = 240     # MainActivity
 TIMEOUT_PROGRESSIVE_BATCH = 120 # Per batch in progressive generation
 
@@ -51,7 +51,7 @@ TIMEOUT_PROGRESSIVE_BATCH = 120 # Per batch in progressive generation
 # CHUNKING CONFIGURATION - LLM-First (Larger chunks)
 # ============================================================================
 TRY_FULL_FIRST_THRESHOLD = 30   # Try full generation if ≤30 props
-MAX_PROPS_PER_CHUNK = 20        # Only chunk if >30 props
+MAX_PROPS_PER_CHUNK = 40        # Only chunk if >30 props
 PROGRESSIVE_BATCH_SIZE = 15     # Batch size for progressive generation
 
 # ============================================================================
