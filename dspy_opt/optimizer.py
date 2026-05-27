@@ -70,7 +70,7 @@ LLM_MODEL    = "ollama/qwen2.5-coder:32b"
 LLM_API_BASE = "http://localhost:11434"
 
 # Where labelled VSS signals are cached by multi_main_adaptive.py
-DEFAULT_LABELLED_PATH = "/content/vss_temp/VSS_LABELLED_50.json"
+DEFAULT_LABELLED_PATH = "/content/vss_temp/VSS_LABELLED_500.json"
 
 # Where optimised programs are saved
 DEFAULT_PROGRAMS_DIR  = "dspy_opt/saved"
