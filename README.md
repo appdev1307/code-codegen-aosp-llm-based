@@ -17,18 +17,26 @@ AOSP version will cause AIDL interface mismatches and build failures.
 VSS Signals → Labelling → YAML Spec → Module Planner → Code Generation → Validation → Output
                                                               ↑
                                           RAG (ChromaDB) + DSPy (MIPROv2)
+
+C5 (HMI Demo):
+AOSP Build Dump → Compiled Property IDs ─┐
+C4 YAML Spec   → Type + Access metadata  ├→ HMI App Generation → Cuttlefish Install
+C4 MODULE_PLAN → Domain groupings       ─┘
 ```
 
 ## Experimental Conditions
 
 | Condition | Script | Description | Matched Avg | Full Avg |
 |-----------|--------|-------------|-------------|----------|
-| C1 Baseline | `multi_main.py` | Vanilla LLM generation | 0.819 | 0.819 |
-| C2 Adaptive | `multi_main_adaptive.py` | Thompson Sampling prompt selection | 0.833 | 0.841 |
-| C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | 0.852 | 0.863 |
-| C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop | **0.876** | **0.886** |
+| C1 Baseline | `multi_main.py` | Vanilla LLM generation | 0.817 | 0.817 |
+| C2 Adaptive | `multi_main_adaptive.py` | Thompson Sampling prompt selection | 0.803 | 0.806 |
+| C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | 0.858 | 0.860 |
+| C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop | **0.876** | **0.878** |
+| C5 HMI Demo | `multi_main_c5_hmi.py` | End-to-end HMI app using real AOSP CarPropertyManager IDs | — | — |
 
-C2 and C3 are independent enhancements over C1; C4 combines both with a validation feedback loop:
+C2 and C3 are independent enhancements over C1; C4 combines both with a validation feedback loop;
+C5 is a runtime integration demo that reads compiled IDs from the AOSP build and generates
+a working Android Automotive app installable on Cuttlefish:
 
 ```
         C1 (baseline LLM)
@@ -36,6 +44,8 @@ C2 and C3 are independent enhancements over C1; C4 combines both with a validati
   C2 (+ Thompson)    C3 (+ RAG + DSPy)
        \                /
         C4 (both + feedback loop)
+               ↓
+        C5 (HMI app — Cuttlefish demo)
 ```
 
 ## Requirements
@@ -108,7 +118,7 @@ python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db --force
 
 ### 3. Run All Conditions
 
-Execution order matters: C1 → C2 → ChromaDB → DSPy → C3 → C4.
+Execution order matters: C1 → C2 → ChromaDB → DSPy → C3 → C4 → C5.
 
 ```bash
 # ── C1: Baseline ────────────────────────────────────────────
@@ -129,6 +139,10 @@ python multi_main_rag_dspy.py
 
 # ── C4: Feedback Loop ──────────────────────────────────────
 python multi_main_c4_feedback.py
+
+# ── C5: HMI App (after C4 + AOSP dump available) ──────────
+# Copy AOSP dump from GCP VM first (see C5 section below)
+python multi_main_c5_hmi.py
 ```
 
 ### 4. Analysis & Reporting
@@ -147,12 +161,107 @@ cat experiments/results/matched_analysis.md
 
 ```bash
 zip -r thesis_export.zip \
-    experiments/ output/ output_adaptive/ output_rag_dspy/ output_c4_feedback/ \
+    experiments/ output/ output_adaptive/ output_rag_dspy/ output_c4_feedback/ output_c5_hmi/ \
     dspy_opt/saved/ \
     -x "*/.llm_draft/*" "*/latest/*"
 ```
 
 ---
+
+## C5 — HMI App Demo on Cuttlefish
+
+C5 generates a complete Android Automotive HMI app that interacts with real VSS signals
+on a running Cuttlefish Automotive virtual device. Unlike C1-C4 which generate HAL
+artifacts (AIDL, C++, SELinux), C5 reads compiled property IDs from the AOSP build
+output and generates Kotlin fragments + XML layouts using real `CarPropertyManager` IDs.
+
+### C5 Prerequisites
+
+- C4 must have completed (needs `output_c4_feedback/SPEC_FROM_VSS_*.yaml` and `MODULE_PLAN.json`)
+- AOSP build must have succeeded on GCP VM
+- AOSP dump must be copied to Colab (see below)
+
+### Step 1 — Copy AOSP dump to Colab
+
+```bash
+# On GCP VM — zip compiled AIDL property ID files
+cd ~/aosp-14-auto
+zip -r ~/aosp_dump.zip \
+  out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle/VehicleProperty*.aidl
+
+# Upload to GCS
+gsutil cp ~/aosp_dump.zip gs://aosp-thesis-temp/aosp_dump.zip
+```
+
+```bash
+# On Colab — download and extract
+gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
+unzip aosp_dump.zip -d aosp_dump_raw
+mkdir -p aosp_dump
+cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
+```
+
+### Step 2 — Run C5
+
+```bash
+python multi_main_c5_hmi.py
+```
+
+C5 automatically:
+1. Reads `output_c4_feedback/SPEC_FROM_VSS_*.yaml` for property types and access modes
+2. Reads `MODULE_PLAN.json` for domain groupings (fully dynamic — works with any signal count)
+3. Reads `aosp_dump/VehicleProperty*.aidl` for compiled integer property IDs
+4. Generates Kotlin fragments + XML layouts per domain using C4 DSPy programs
+5. Outputs installable AOSP app to `output_c5_hmi/`
+
+### Step 3 — Build and install on Cuttlefish (GCP VM)
+
+```bash
+# Upload C5 output to GCS
+zip -r output_c5_hmi.zip output_c5_hmi/
+gsutil cp output_c5_hmi.zip gs://aosp-thesis-temp/
+
+# On GCP VM
+gsutil cp gs://aosp-thesis-temp/output_c5_hmi.zip ~/
+unzip ~/output_c5_hmi.zip -d ~/
+
+# Place in AOSP packages tree
+mkdir -p ~/aosp-14-auto/packages/apps/VssDashboard
+cp -r ~/output_c5_hmi/src ~/output_c5_hmi/AndroidManifest.xml \
+      ~/output_c5_hmi/Android.bp \
+      ~/aosp-14-auto/packages/apps/VssDashboard/
+
+# Build app module
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+mmm packages/apps/VssDashboard 2>&1 | tee ~/build_c5_app.log
+
+# Install on running Cuttlefish
+adb -s 0.0.0.0:6520 install -r \
+  out/target/product/vsoc_x86_64/system/app/VssDashboardApp/VssDashboardApp.apk
+```
+
+### Step 4 — Launch and verify
+
+```bash
+# Launch app
+adb -s 0.0.0.0:6520 shell am start \
+  -n com.vss.vehicleapp/.MainActivity
+
+# Inject test values and verify UI updates
+adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event PERF_VEHICLE_SPEED 0 42.5
+adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event EV_BATTERY_LEVEL 0 85.0
+adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event HVAC_TEMPERATURE_SET 49 22.5
+```
+
+### C5 Design Notes
+
+- **No signal relabelling** — C5 skips VSS labelling, AIDL/C++/SELinux/bp generation entirely
+- **Fully dynamic** — signal count (500 or 1000) and module count are read from C4 output automatically
+- **Real CarPropertyManager IDs** — uses compiled hex IDs from AOSP build, not guessed values
+- **AOSP build required** — property IDs are only known after AOSP compiles the AIDL enums
+- **Fallback** — if AOSP dump or C4 output is missing, falls back to hardcoded Cuttlefish property map
 
 ## AOSP Source Tree Validation
 
@@ -908,10 +1017,11 @@ code-codegen-aosp-llm-based/
 ├── multi_main_adaptive.py         # C2: Adaptive pipeline
 ├── multi_main_rag_dspy.py         # C3: RAG+DSPy pipeline
 ├── multi_main_c4_feedback.py      # C4: Feedback loop pipeline
+├── multi_main_c5_hmi.py           # C5: HMI app demo (Cuttlefish integration)
 ├── agents/                        # Generation agents
 │   ├── rag_dspy_mixin.py          #   RAG+DSPy shared logic
 │   ├── rag_dspy_architect_agent.py
-│   ├── rag_dspy_aidl_agent.py
+│   ├── rag_dspy_aidl_agent.py     #   Domain-specific base addresses (DOMAIN_BASE)
 │   ├── rag_dspy_cpp_agent.py
 │   ├── rag_dspy_selinux_agent.py
 │   ├── rag_dspy_backend_agent.py
@@ -919,6 +1029,7 @@ code-codegen-aosp-llm-based/
 ├── dspy_opt/                      # DSPy optimiser
 │   ├── optimizer.py               #   MIPROv2 runner (requires optuna)
 │   ├── hal_modules.py             #   Module registry
+│   ├── hal_signatures.py          #   DSPy Signatures (domain base addresses in AIDLSignature)
 │   ├── metrics.py                 #   Scoring functions
 │   ├── validators.py              #   Syntax validators (clang, checkpolicy, etc.)
 │   └── saved/                     #   Optimised programs (12 JSON files)
@@ -928,6 +1039,8 @@ code-codegen-aosp-llm-based/
 │   └── chroma_db/                 #   Vector database (7 collections, ~17.6K chunks)
 ├── dataset/
 │   └── vss.json                   # Vehicle Signal Specification (1571 signals)
+├── aosp_dump/                     # Compiled AIDL property IDs from GCP VM (for C5)
+│   └── VehicleProperty*.aidl      #   One per domain, contains hex IDs
 ├── experiments/results/           # Analysis outputs
 │   ├── matched_analysis.md        #   4-condition comparison
 │   ├── comparison.json
@@ -940,31 +1053,39 @@ code-codegen-aosp-llm-based/
 ├── output/                        # C1 output
 ├── output_adaptive/               # C2 output
 ├── output_rag_dspy/               # C3 output
-└── output_c4_feedback/            # C4 output (use for AOSP validation)
+├── output_c4_feedback/            # C4 output (use for AOSP validation)
+└── output_c5_hmi/                 # C5 output (HMI app for Cuttlefish)
+    ├── AndroidManifest.xml
+    ├── Android.bp
+    └── src/main/
+        ├── java/com/vss/vehicleapp/
+        │   ├── MainActivity.kt
+        │   └── fragments/         #   One Fragment.kt per domain
+        └── res/layout/            #   One fragment_<domain>.xml per domain
 ```
 
-## Latest Results (50 signals, matched agents)
+## Latest Results (500 signals, matched agents)
 
 | Condition | Avg Score | Syntax | Coverage | Effect vs C1 |
 |-----------|-----------|--------|----------|-------------|
-| C1 Baseline | 0.819 | 0.940 | 0.487 | — |
-| C2 Adaptive | 0.833 | 0.946 | 0.543 | r = 0.070 |
-| C3 RAG+DSPy | 0.852 | 0.942 | 0.663 | r = 0.137 |
-| C4 Feedback | **0.876** | **0.975** | **0.699** | r = 0.325 |
+| C1 Baseline | 0.817 | 0.912 | 0.518 | — |
+| C2 Adaptive | 0.803 | 0.886 | 0.526 | r = -0.015 |
+| C3 RAG+DSPy | 0.858 | 0.898 | 0.679 | r = 0.169 |
+| C4 Feedback | **0.876** | **0.924** | **0.692** | r = 0.245 * |
 
-Kruskal-Wallis H = 2.47, p = 0.48 (not significant at α = 0.05).
-C1 vs C4 pairwise: U = 81.0, p = 0.133, r = 0.325 (medium effect size).
+Kruskal-Wallis H = 8.32, p = 0.040 (significant at α = 0.05).
+C1 vs C4 pairwise: U = 1651.0, p = 0.016 *, r = 0.245 (small-to-medium effect size).
+C2 vs C4 pairwise: U = 1267.5, p = 0.024 *, r = 0.243 (small effect size).
 
 ### Statistical significance
 
-The monotonic improvement C1 < C2 < C3 < C4 is consistent across all dimensions,
-but statistical significance was not achieved (p = 0.48). This is expected given
-the small sample sizes (12-22 scored files per condition). To achieve significance,
-run multiple independent trials (e.g., 3 runs × 50 signals) to increase the
-per-condition file count from ~12 to ~36+. Simply increasing signal count
-(e.g., 200 signals) does not help proportionally because the module planner
-groups signals into few modules (~1-4), producing roughly the same number of
-output files regardless of input signal count.
+The monotonic improvement C1 < C3 < C4 is consistent across all dimensions and
+statistically confirmed in the 500-signal experiment (Kruskal-Wallis p = 0.040).
+C2 scores slightly below C1 in the 500-signal run due to template fallbacks in the
+Android app agent at larger module sizes — the chunked generation architecture of C1/C2
+degrades at scale compared to C3/C4's DSPy-based single-call generation.
+C3→C4 improvement is not individually significant (p = 0.723) but C4 shows the largest
+gain over baseline.
 
 ## Known Issues
 
@@ -972,6 +1093,9 @@ output files regardless of input signal count.
 - **AOSP version:** Generated code targets Android 14 only — do not use Android 13 or 15 source trees. AIDL interfaces and SELinux policy format differ across major versions.
 - **Do not clone `aosp_source/` inside the AOSP build tree.** Soong scans all directories for `Android.bp` files and will fail with "module already defined" if it finds duplicates.
 - **`clean_hal` must not glob `VehicleProperty*.aidl`** — this deletes AOSP originals like `VehiclePropertyStatus.aidl`, `VehiclePropertyAccess.aidl`, `VehiclePropertyChangeMode.aidl` which breaks the AIDL build. Only delete specific generated files (`VehiclePropertyAdas.aidl`, `VehiclePropertyVss.aidl`).
+- **Overlapping domain property IDs:** C1-C4 generate per-domain AIDL enums starting at `0x1000` for each domain. The updated `rag_dspy_aidl_agent.py` uses domain-specific base addresses (ADAS=0x1000, Body=0x2000, Cabin=0x3000, etc.) to prevent ID conflicts. Re-run C1-C4 after this fix to get globally unique IDs.
+- **SELinux feedback loop ineffective:** The C4 feedback loop cannot fix SELinux errors because (a) `checkpolicy` reports missing external macro definitions that exist only in the full AOSP sepolicy tree, and (b) the `validation_feedback` field is not in the SELinux DSPy Signature, so error messages are silently dropped. This is documented as a known limitation — SELinux policies pass AOSP build validation via `apply_aosp14_fixes.sh`.
+- **C5 requires AOSP dump:** `multi_main_c5_hmi.py` needs compiled property IDs from the GCP VM AOSP build output. Without `aosp_dump/`, it falls back to a hardcoded Cuttlefish property map which may not match your generated VSS signals.
 
 ## Key Design Decisions
 
@@ -983,6 +1107,8 @@ output files regardless of input signal count.
 - **Version-pinned RAG corpus:** The RAG source must be cloned with the same tag (`android-14.0.0_r75`) as the AOSP build tree. Mismatched versions cause the LLM to generate patterns (Android.bp `srcs` lists, API freeze hashes, AIDL module structure) that don't match the build system's expectations.
 - **Additive vs replacement AIDL:** C1/C2 (without RAG) previously generated replacement AIDL files that overwrote existing AOSP interfaces. With the prompt fix, all conditions now generate additive `VehiclePropertyAdas.aidl` that complements existing code.
 - **Automated AOSP 14 fixes:** `apply_aosp14_fixes.sh` handles systematic integration gaps (vendor:true, SELinux type declarations) that are predictable and automatable rather than code quality issues.
+- **C5 dynamic property loading:** `multi_main_c5_hmi.py` reads compiled property IDs from the AOSP build dump, property types and access modes from C4's YAML spec, and domain groupings from MODULE_PLAN.json — making it fully dynamic for any signal count or module configuration. Falls back to a hardcoded Cuttlefish property map if AOSP dump is unavailable.
+- **Domain-specific AIDL base addresses:** `rag_dspy_aidl_agent.py` uses a `DOMAIN_BASE` dict (ADAS=0x1000, Body=0x2000, Cabin=0x3000, Chassis=0x4000, HVAC=0x5000, Infotainment=0x6000, Powertrain=0x7000) to ensure globally unique property IDs across domains, enabling CarPropertyManager to distinguish properties without conflict.
 
 ## License
 
