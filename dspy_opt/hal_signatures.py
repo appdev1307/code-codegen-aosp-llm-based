@@ -41,18 +41,30 @@ class AIDLSignature(dspy.Signature):
     - Use @VintfStability and @Backing(type="int") annotations
     - Declare an ENUM (e.g. 'enum VehiclePropertyAdas'), NOT an interface
     - Each property is an enum constant with a hex ID value
+    - CRITICAL: Use domain-specific base address from aosp_context (e.g. 0x1000 for ADAS,
+      0x2000 for BODY, 0x3000 for CABIN, 0x4000 for CHASSIS, 0x5000 for HVAC,
+      0x6000 for INFOTAINMENT, 0x7000 for POWERTRAIN) for globally unique IDs
     - Include comment with type, access mode, and area for each property
     - DO NOT generate getter/setter methods, 'oneway', 'out' params, or 'throws'
     - DO NOT generate 'interface' — only 'enum'
     - Follow the retrieved AOSP VehicleProperty.aidl examples
 
-    Example output:
+    Example output (ADAS domain, base=0x1000):
     package android.hardware.automotive.vehicle;
     @VintfStability
     @Backing(type="int")
     enum VehiclePropertyAdas {
         ABS_IS_ENABLED = 0x1000, // boolean, READ_WRITE, GLOBAL
         ABS_IS_ENGAGED = 0x1001, // boolean, READ, GLOBAL
+    }
+
+    Example output (BODY domain, base=0x2000):
+    package android.hardware.automotive.vehicle;
+    @VintfStability
+    @Backing(type="int")
+    enum VehiclePropertyBody {
+        LIGHTS_BEAM_HIGH = 0x2000, // boolean, READ_WRITE, GLOBAL
+        LIGHTS_HAZARD    = 0x2001, // boolean, READ_WRITE, GLOBAL
     }
     """
     domain:       str = dspy.InputField(

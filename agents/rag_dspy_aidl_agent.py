@@ -15,6 +15,19 @@ Interface matches original VHALAIDLAgent.run(module_spec).
 from __future__ import annotations
 from agents.rag_dspy_mixin import RAGDSPyMixin
 
+# Domain-specific base addresses for globally unique property IDs.
+# Each domain occupies a non-overlapping hex range so CarPropertyManager
+# can distinguish properties across domains without conflict.
+DOMAIN_BASE = {
+    "adas":          0x1000,
+    "body":          0x2000,
+    "cabin":         0x3000,
+    "chassis":       0x4000,
+    "hvac":          0x5000,
+    "infotainment":  0x6000,
+    "powertrain":    0x7000,
+}
+
 
 class RAGDSPyAIDLAgent(RAGDSPyMixin):
     """
@@ -58,6 +71,11 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
         domain     = module_spec.domain
         properties = module_spec.to_llm_spec()
 
+        # Compute domain-specific base address for globally unique property IDs
+        base = DOMAIN_BASE.get(domain.lower(), 0x1000)
+        base_hex = hex(base)
+        base_next_hex = hex(base + 1)
+
         # Build a targeted RAG query — request property ENUM examples,
         # NOT interface definitions. The word "interface" biases retrieval
         # toward IVehicle.aidl (the only interface), when we actually need
@@ -81,24 +99,26 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
             "- Package: android.hardware.automotive.vehicle (NO .V2_0 suffix)\n"
             "- Use @VintfStability annotation\n"
             "- Use @Backing(type=\"int\") annotation\n"
-            "- Declare an ENUM, NOT an interface: 'enum VehiclePropertyAdas { ... }'\n"
-            "- The enum name MUST match the filename (VehiclePropertyAdas)\n"
+            f"- Declare an ENUM, NOT an interface: 'enum VehicleProperty{domain.capitalize()} {{ ... }}'\n"
+            f"- The enum name MUST match the filename (VehicleProperty{domain.capitalize()})\n"
             "- Each enum constant is a property ID with hex value:\n"
-            "    ABS_IS_ENABLED = 0x1000,\n"
-            "    ABS_IS_ENGAGED = 0x1001,\n"
+            f"    FIRST_PROPERTY = {base_hex},\n"
+            f"    SECOND_PROPERTY = {base_next_hex},\n"
+            f"- IMPORTANT: ALL property IDs MUST start at {base_hex} (domain base for {domain.upper()})\n"
+            f"- DO NOT use 0x1000 as base unless domain is ADAS — each domain has unique base\n"
             "- DO NOT generate 'interface IVehicleAdas' — that is WRONG\n"
             "- DO NOT generate getter/setter methods (boolean getX(), void setX())\n"
             "- DO NOT use 'oneway', 'out', 'throws', or 'import'\n"
             "- This file defines PROPERTY IDs only, like VehicleProperty.aidl\n"
             "- Access mode (READ/WRITE/READ_WRITE) goes in a comment, not in the enum\n"
             "- This is Android 14 AIDL — NOT HIDL, NOT Java\n"
-            "\nExample of CORRECT output:\n"
+            f"\nExample of CORRECT output (domain={domain.upper()}, base={base_hex}):\n"
             "package android.hardware.automotive.vehicle;\n"
             "@VintfStability\n"
             "@Backing(type=\"int\")\n"
-            "enum VehiclePropertyAdas {\n"
-            "    ABS_IS_ENABLED = 0x1000, // READ_WRITE, GLOBAL, boolean\n"
-            "    ABS_IS_ENGAGED = 0x1001, // READ, GLOBAL, boolean\n"
+            f"enum VehicleProperty{domain.capitalize()} {{\n"
+            f"    FIRST_PROPERTY = {base_hex}, // READ_WRITE, GLOBAL, boolean\n"
+            f"    SECOND_PROPERTY = {base_next_hex}, // READ, GLOBAL, boolean\n"
             "}\n"
             "=== END RULES ===\n"
         )
