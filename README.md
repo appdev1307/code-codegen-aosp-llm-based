@@ -290,22 +290,15 @@ AMD Milan (`n2d`) handles nested KVM significantly better. `pd-ssd` instead of
 `pd-standard` saves hours on the I/O-bound AOSP build.
 
 ```bash
-gcloud compute instances create aosp-builder-16 \
-    --zone=us-central1-a \
-    --machine-type=n2d-standard-16 \
-    --boot-disk-size=500GB \
-    --boot-disk-type=pd-standard \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --enable-nested-virtualization \
-    --min-cpu-platform="AMD Milan" \
-    --quiet
-
-gcloud compute ssh aosp-builder-16 --zone=us-central1-a
-
-sudo growpart /dev/sda 1
-sudo resize2fs /dev/sda1
-df -h
+gcloud compute instances create aosp-builder-cutterfish \
+  --zone=us-central1-a \
+  --machine-type=n2-standard-16 \
+  --boot-disk-size=500GB \
+  --image-family=ubuntu-2204-lts \
+  --image-project=ubuntu-os-cloud \
+  --enable-nested-virtualization \
+  --scopes=cloud-platform \
+  --quiet
 ```
 
 <details>
@@ -331,15 +324,17 @@ browser closes, laptop sleeps, or internet drops.
 
 ```bash
 # SSH into the VM
-gcloud compute instances start aosp-builder-16 \
+gcloud compute instances start aosp-builder-cutterfish \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a
 
-
-gcloud compute ssh aosp-builder-16 \
+gcloud compute ssh aosp-builder-cutterfish \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a
 
+sudo growpart /dev/sda 1
+sudo resize2fs /dev/sda1
+df -h  
 
 # Start a named screen session
 screen -S aosp
@@ -352,7 +347,7 @@ screen -S aosp
 
 ```bash
 # Reattach to the running build session
-screen -r aosp
+screen -r -d aosp
 ```
 
 ### Step 1 — Install Build Dependencies
