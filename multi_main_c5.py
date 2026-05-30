@@ -96,9 +96,21 @@ def _call_llm(prompt: str, timeout: int = 240) -> str:
 def _retrieve(query: str, collection: str = "aosp_cpp", top_k: int = RAG_TOP_K) -> str:
     try:
         from rag.aosp_retriever import get_retriever
-        retriever = get_retriever(db_path=RAG_DB_PATH, top_k=top_k)
-        chunks = retriever.retrieve(query, collection=collection)
-        return "\n\n".join(c.get("document", "") for c in chunks[:4])
+        # get_retriever signature may vary — try with top_k, fallback without
+        try:
+            retriever = get_retriever(db_path=RAG_DB_PATH, top_k=top_k)
+        except TypeError:
+            retriever = get_retriever(db_path=RAG_DB_PATH)
+        try:
+            chunks = retriever.retrieve(query, collection=collection)
+        except TypeError:
+            chunks = retriever.retrieve(query)
+        if isinstance(chunks, list):
+            return "\n\n".join(
+                c.get("document", c) if isinstance(c, dict) else str(c)
+                for c in chunks[:4]
+            )
+        return str(chunks)
     except Exception as e:
         print(f"  [RAG] Error: {e}")
         return ""
@@ -114,7 +126,14 @@ def _load_dspy_program(agent_type: str):
         entry = MODULE_REGISTRY.get(agent_type)
         if not entry:
             return None
-        module_cls = entry[2]
+        # MODULE_REGISTRY entry may be (signature, metric, module_cls)
+        # or (signature, module_cls) — handle both
+        if len(entry) >= 3:
+            module_cls = entry[2]
+        elif len(entry) >= 2:
+            module_cls = entry[1]
+        else:
+            return None
         prog = module_cls()
         prog.load(str(prog_path))
         print(f"  [DSPy] {agent_type}: loaded optimised program ✓")
