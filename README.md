@@ -14,14 +14,27 @@ AOSP version will cause AIDL interface mismatches and build failures.
 ## Architecture
 
 ```
-VSS Signals → Labelling → YAML Spec → Module Planner → Code Generation → Validation → Output
-                                                              ↑
-                                          RAG (ChromaDB) + DSPy (MIPROv2)
+C1-C4: VSS Signals → Labelling → YAML Spec → Module Planner → Code Generation → Validation
+                                                                      ↑
+                                                  RAG (ChromaDB) + DSPy (MIPROv2)
 
-C5 (HMI Demo):
-AOSP Build Dump → Compiled Property IDs ─┐
-C4 YAML Spec   → Type + Access metadata  ├→ HMI App Generation → Cuttlefish Install
-C4 MODULE_PLAN → Domain groupings       ─┘
+C5: Advanced Runtime Validation (builds on C4 output + compiled AOSP tree)
+    ┌─────────────────────────────────────────────────────────────┐
+    │  Input: C4 YAML Spec + MODULE_PLAN + AOSP Build Dump        │
+    │         + FakeVehicleHardware.cpp (from GCP VM)             │
+    ├─────────────────────────────────────────────────────────────┤
+    │  Agent 1: FakeVehicleHardware Patcher (RAG+DSPy+Feedback)   │
+    │    → Extends FakeVehicleHardware.cpp to serve VSS at runtime │
+    │  Agent 2: VTS Generator (RAG+DSPy+Feedback)                 │
+    │    → Custom VtsHalAutomotiveVehicleVss.cpp for VSS tests     │
+    │  Agent 3: HMI App Generator (C4 DSPy programs reused)       │
+    │    → Kotlin fragments + XML layouts with real property IDs   │
+    ├─────────────────────────────────────────────────────────────┤
+    │  Output: Cuttlefish runtime integration                      │
+    │    → VSS properties served by FakeVehicleHardware            │
+    │    → VTS tests pass on Cuttlefish                            │
+    │    → HMI app interacts with real VSS signals                 │
+    └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Experimental Conditions
@@ -32,11 +45,11 @@ C4 MODULE_PLAN → Domain groupings       ─┘
 | C2 Adaptive | `multi_main_adaptive.py` | Thompson Sampling prompt selection | 0.803 | 0.806 |
 | C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | 0.858 | 0.860 |
 | C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop | **0.876** | **0.878** |
-| C5 HMI Demo | `multi_main_c5_hmi.py` | End-to-end HMI app using real AOSP CarPropertyManager IDs | — | — |
+| C5 Full | `multi_main_c5.py` | Advanced runtime validation — FakeVHAL patch + VTS + HMI app | — | — |
 
 C2 and C3 are independent enhancements over C1; C4 combines both with a validation feedback loop;
-C5 is a runtime integration demo that reads compiled IDs from the AOSP build and generates
-a working Android Automotive app installable on Cuttlefish:
+C5 is the advanced runtime validation layer that takes C4 output and proves end-to-end integration
+on a real AAOS Cuttlefish instance:
 
 ```
         C1 (baseline LLM)
@@ -45,8 +58,25 @@ a working Android Automotive app installable on Cuttlefish:
        \                /
         C4 (both + feedback loop)
                ↓
-        C5 (HMI app — Cuttlefish demo)
+        C5 (runtime validation on Cuttlefish)
+          ├── Agent 1: FakeVehicleHardware patch (RAG+DSPy+feedback)
+          ├── Agent 2: VTS test generation (RAG+DSPy+feedback)
+          └── Agent 3: HMI app (C4 DSPy programs reused)
 ```
+
+**What C5 reuses from C1-C4:**
+- All 12 optimised DSPy programs from `dspy_opt/saved/`
+- RAG retriever + ChromaDB (same 7 collections, 17.6K chunks)
+- `rag_dspy_mixin.py` base class for all agents
+- `llm_client.py` Ollama wrapper
+- C4 feedback retry pattern (validate → error feedback → retry)
+- `output_c4_feedback/SPEC_FROM_VSS_*.yaml` and `MODULE_PLAN.json`
+
+**What C5 adds new:**
+- `FakeVehicleHardwarePatchAgent` — extends FakeVehicleHardware.cpp to serve VSS properties at runtime
+- `VtsGeneratorAgent` — custom VTS tests (`VtsHalAutomotiveVehicleVss.cpp`) for VSS properties
+- `mmm` AOSP build as runtime validator (not just `clang++`)
+- AOSP source tree + compiled dump as primary inputs
 
 ## Requirements
 
@@ -123,9 +153,11 @@ Execution order matters: C1 → C2 → ChromaDB → DSPy → C3 → C4 → C5.
 ```bash
 # ── C1: Baseline ────────────────────────────────────────────
 python multi_main.py
+cp -r output/ output_c1_backup/
 
 # ── C2: Adaptive ────────────────────────────────────────────
 python multi_main_adaptive.py
+cp -r output_adaptive/ output_adaptive_backup/
 
 # ── DSPy Optimiser (after ChromaDB, before C3) ──────────────
 python dspy_opt/optimizer.py --mipro-auto light --train-size 8 --force
@@ -136,13 +168,29 @@ python apply_chroma_fix.py
 
 # ── C3: RAG + DSPy ─────────────────────────────────────────
 python multi_main_rag_dspy.py
+cp -r output_rag_dspy/ output_rag_dspy_backup/
 
 # ── C4: Feedback Loop ──────────────────────────────────────
 python multi_main_c4_feedback.py
+cp -r output_c4_feedback/ output_c4_feedback_backup/
 
-# ── C5: HMI App (after C4 + AOSP dump available) ──────────
-# Copy AOSP dump from GCP VM first (see C5 section below)
-python multi_main_c5_hmi.py
+# ── C5: Advanced Runtime Validation ────────────────────────
+# Step 1: Authenticate GCS (Colab only)
+# from google.colab import auth; auth.authenticate_user()
+
+# Step 2: Copy AOSP assets from GCP VM
+gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
+gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
+unzip aosp_dump.zip -d aosp_dump_raw
+mkdir -p aosp_dump
+cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
+
+# Step 3: Run C5
+python multi_main_c5.py
+
+# Step 4: Deploy to GCP VM (see C5 section below)
+zip -r output_c5.zip output_c5/
+gsutil cp output_c5.zip gs://aosp-thesis-temp/
 ```
 
 ### 4. Analysis & Reporting
@@ -161,107 +209,119 @@ cat experiments/results/matched_analysis.md
 
 ```bash
 zip -r thesis_export.zip \
-    experiments/ output/ output_adaptive/ output_rag_dspy/ output_c4_feedback/ output_c5_hmi/ \
+    experiments/ output/ output_adaptive/ output_rag_dspy/ output_c4_feedback/ output_c5/ \
     dspy_opt/saved/ \
     -x "*/.llm_draft/*" "*/latest/*"
 ```
 
 ---
 
-## C5 — HMI App Demo on Cuttlefish
+## C5 — Advanced Runtime Validation Pipeline
 
-C5 generates a complete Android Automotive HMI app that interacts with real VSS signals
-on a running Cuttlefish Automotive virtual device. Unlike C1-C4 which generate HAL
-artifacts (AIDL, C++, SELinux), C5 reads compiled property IDs from the AOSP build
-output and generates Kotlin fragments + XML layouts using real `CarPropertyManager` IDs.
+C5 is the advanced validation layer that proves generated VSS artifacts work at runtime
+on a real AAOS Cuttlefish instance. It builds directly on C4 output and the AOSP build tree.
 
-### C5 Prerequisites
+### C5 vs C1-C4
 
-- C4 must have completed (needs `output_c4_feedback/SPEC_FROM_VSS_*.yaml` and `MODULE_PLAN.json`)
-- AOSP build must have succeeded on GCP VM
-- AOSP dump must be copied to Colab (see below)
+| Aspect | C1-C4 | C5 |
+|--------|-------|-----|
+| Input | VSS signals (1571 leaf signals) | C4 output + AOSP build tree |
+| Validation | Compile-time (clang++, checkpolicy) | Runtime (mmm + atest on Cuttlefish) |
+| Output | AIDL, C++, SELinux, Android.bp | FakeVHAL patch + VTS tests + HMI app |
+| VHAL serving | Not served at runtime | FakeVehicleHardware extended to serve VSS |
+| App | Template/LLM fragments (no real IDs) | Real CarPropertyManager IDs from AOSP build |
 
-### Step 1 — Copy AOSP dump to Colab
+### C5 Prerequisites on GCP VM
 
 ```bash
-# On GCP VM — zip compiled AIDL property ID files
+# Copy required files to GCS bucket
+BUCKET=gs://aosp-thesis-temp
+
+# 1. FakeVehicleHardware source
+gsutil cp ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
+  $BUCKET/FakeVehicleHardware.cpp
+
+# 2. AOSP compiled AIDL property ID dump
 cd ~/aosp-14-auto
 zip -r ~/aosp_dump.zip \
   out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle/VehicleProperty*.aidl
-
-# Upload to GCS
-gsutil cp ~/aosp_dump.zip gs://aosp-thesis-temp/aosp_dump.zip
+gsutil cp ~/aosp_dump.zip $BUCKET/aosp_dump.zip
 ```
 
+### C5 Run on Colab
+
 ```bash
-# On Colab — download and extract
+# Authenticate GCS
+from google.colab import auth; auth.authenticate_user()
+
+# Download AOSP assets
+mkdir -p aosp_source aosp_dump
+gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
 gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
 unzip aosp_dump.zip -d aosp_dump_raw
-mkdir -p aosp_dump
 cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
+
+# Run C5 (reads C4 output automatically)
+python multi_main_c5.py
 ```
 
-### Step 2 — Run C5
+**C5 generates 3 artifact types:**
+
+| Agent | Output | Validates via |
+|-------|--------|--------------|
+| FakeVehicleHardwarePatchAgent | `FakeVehicleHardware_vss_patch.cpp` | `clang++` + feedback |
+| VtsGeneratorAgent | `VtsHalAutomotiveVehicleVss.cpp` | Structure check + feedback |
+| HMI App | Kotlin fragments + XML layouts | XML parser + feedback |
+
+### C5 Deploy on GCP VM
 
 ```bash
-python multi_main_c5_hmi.py
-```
+# Download C5 output
+gsutil cp gs://aosp-thesis-temp/output_c5.zip ~/
+unzip ~/output_c5.zip -d ~/
 
-C5 automatically:
-1. Reads `output_c4_feedback/SPEC_FROM_VSS_*.yaml` for property types and access modes
-2. Reads `MODULE_PLAN.json` for domain groupings (fully dynamic — works with any signal count)
-3. Reads `aosp_dump/VehicleProperty*.aidl` for compiled integer property IDs
-4. Generates Kotlin fragments + XML layouts per domain using C4 DSPy programs
-5. Outputs installable AOSP app to `output_c5_hmi/`
+# 1. Apply FakeVehicleHardware patch
+cp ~/output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp \
+   ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
 
-### Step 3 — Build and install on Cuttlefish (GCP VM)
+# 2. Copy VTS tests
+mkdir -p ~/aosp-14-auto/test/vts/vss_vehicle
+cp ~/output_c5/vts/* ~/aosp-14-auto/test/vts/vss_vehicle/
 
-```bash
-# Upload C5 output to GCS
-zip -r output_c5_hmi.zip output_c5_hmi/
-gsutil cp output_c5_hmi.zip gs://aosp-thesis-temp/
-
-# On GCP VM
-gsutil cp gs://aosp-thesis-temp/output_c5_hmi.zip ~/
-unzip ~/output_c5_hmi.zip -d ~/
-
-# Place in AOSP packages tree
-mkdir -p ~/aosp-14-auto/packages/apps/VssDashboard
-cp -r ~/output_c5_hmi/src ~/output_c5_hmi/AndroidManifest.xml \
-      ~/output_c5_hmi/Android.bp \
-      ~/aosp-14-auto/packages/apps/VssDashboard/
-
-# Build app module
+# 3. Build patched FakeVehicleHardware + VTS
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-mmm packages/apps/VssDashboard 2>&1 | tee ~/build_c5_app.log
+mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl
+mmm test/vts/vss_vehicle
 
-# Install on running Cuttlefish
+# 4. Relaunch Cuttlefish with new build
+stop_cvd
+launch_cvd --noresume --cpus=4 --memory_mb=4096
+
+# 5. Run VSS VTS tests
+atest VtsHalAutomotiveVehicleVss
+
+# 6. Verify VSS properties are now served
+adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x1000 0
+# Expected: HalPropValue{prop=4096, areaId=0, ...}
+
+# 7. Install HMI app
+mmm output_c5/hmi_app
 adb -s 0.0.0.0:6520 install -r \
   out/target/product/vsoc_x86_64/system/app/VssDashboardApp/VssDashboardApp.apk
+
+# 8. Launch and verify
+adb -s 0.0.0.0:6520 shell am start -n com.vss.vehicleapp/.MainActivity
+adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event 0x1000 0 42
+adb -s 0.0.0.0:6520 logcat | grep -i "vehicleapp\|CarProperty"
 ```
 
-### Step 4 — Launch and verify
+### C5 Known Limitations
 
-```bash
-# Launch app
-adb -s 0.0.0.0:6520 shell am start \
-  -n com.vss.vehicleapp/.MainActivity
-
-# Inject test values and verify UI updates
-adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event PERF_VEHICLE_SPEED 0 42.5
-adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event EV_BATTERY_LEVEL 0 85.0
-adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event HVAC_TEMPERATURE_SET 49 22.5
-```
-
-### C5 Design Notes
-
-- **No signal relabelling** — C5 skips VSS labelling, AIDL/C++/SELinux/bp generation entirely
-- **Fully dynamic** — signal count (500 or 1000) and module count are read from C4 output automatically
-- **Real CarPropertyManager IDs** — uses compiled hex IDs from AOSP build, not guessed values
-- **AOSP build required** — property IDs are only known after AOSP compiles the AIDL enums
-- **Fallback** — if AOSP dump or C4 output is missing, falls back to hardcoded Cuttlefish property map
+- FakeVehicleHardware patch requires AOSP rebuild (~3 hours) before Cuttlefish can serve VSS properties
+- VTS tests for runtime property access may fail if patch is not applied — compile-time enum tests always pass
+- HMI app requires `android.car` API — must be built within AOSP tree, not standalone Android Studio
 
 ## AOSP Source Tree Validation
 
@@ -290,15 +350,22 @@ AMD Milan (`n2d`) handles nested KVM significantly better. `pd-ssd` instead of
 `pd-standard` saves hours on the I/O-bound AOSP build.
 
 ```bash
-gcloud compute instances create aosp-builder-cutterfish \
-  --zone=us-central1-a \
-  --machine-type=n2-standard-16 \
-  --boot-disk-size=500GB \
-  --image-family=ubuntu-2204-lts \
-  --image-project=ubuntu-os-cloud \
-  --enable-nested-virtualization \
-  --scopes=cloud-platform \
-  --quiet
+gcloud compute instances create aosp-builder-16 \
+    --zone=us-central1-a \
+    --machine-type=n2d-standard-16 \
+    --boot-disk-size=500GB \
+    --boot-disk-type=pd-standard \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --enable-nested-virtualization \
+    --min-cpu-platform="AMD Milan" \
+    --quiet
+
+gcloud compute ssh aosp-builder-16 --zone=us-central1-a
+
+sudo growpart /dev/sda 1
+sudo resize2fs /dev/sda1
+df -h
 ```
 
 <details>
@@ -324,17 +391,15 @@ browser closes, laptop sleeps, or internet drops.
 
 ```bash
 # SSH into the VM
-gcloud compute instances start aosp-builder-cutterfish \
+gcloud compute instances start aosp-builder-16 \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a
 
-gcloud compute ssh aosp-builder-cutterfish \
+
+gcloud compute ssh aosp-builder-16 \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a
 
-sudo growpart /dev/sda 1
-sudo resize2fs /dev/sda1
-df -h  
 
 # Start a named screen session
 screen -S aosp
@@ -347,7 +412,7 @@ screen -S aosp
 
 ```bash
 # Reattach to the running build session
-screen -r -d aosp
+screen -r aosp
 ```
 
 ### Step 1 — Install Build Dependencies
@@ -853,15 +918,126 @@ atest VtsHalAutomotiveVehicle
 stop_cvd
 ```
 
-### Step 8 — Test App and Backend
+### Step 8 — C5 Runtime Validation (FakeVHAL + VTS + HMI App)
+
+After C1-C4 generation is complete and the base AOSP image is built, run C5 to extend
+the VHAL with VSS properties and validate them at runtime on Cuttlefish.
+
+#### 8a — Prepare AOSP assets on GCP VM
 
 ```bash
-# Kotlin App (requires AAOS — uses CarPropertyManager API)
-# Copy AdasFragment.kt + fragment_adas.xml → Android Studio
-# Build: ./gradlew assembleDebug
-# Install: adb -s 0.0.0.0:6520 install app/build/outputs/apk/debug/app-debug.apk
+# Copy FakeVehicleHardware source and compiled AIDL IDs to GCS
+BUCKET=gs://aosp-thesis-temp
+cd ~/aosp-14-auto
 
-# FastAPI Backend
+gsutil cp hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
+  $BUCKET/FakeVehicleHardware.cpp
+
+zip -r ~/aosp_dump.zip \
+  out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle/VehicleProperty*.aidl
+gsutil cp ~/aosp_dump.zip $BUCKET/aosp_dump.zip
+```
+
+#### 8b — Run C5 on Colab
+
+```python
+# Authenticate GCS
+from google.colab import auth
+auth.authenticate_user()
+```
+
+```bash
+# Download AOSP assets
+mkdir -p aosp_source aosp_dump
+gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
+gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
+unzip aosp_dump.zip -d aosp_dump_raw
+cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
+
+# Run C5 (reads C4 output automatically, generates 3 artifact types)
+python multi_main_c5.py
+# Outputs: output_c5/fake_vhal/ + output_c5/vts/ + output_c5/hmi_app/
+
+# Upload to GCS
+zip -r output_c5.zip output_c5/
+gsutil cp output_c5.zip gs://aosp-thesis-temp/
+```
+
+#### 8c — Apply C5 patch and rebuild on GCP VM
+
+```bash
+# Download C5 output
+gsutil cp gs://aosp-thesis-temp/output_c5.zip ~/
+unzip ~/output_c5.zip -d ~/
+
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+
+# Apply FakeVehicleHardware patch (non-destructive — appends VSS configs)
+cp ~/output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp \
+   hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
+
+# Copy VTS tests
+mkdir -p test/vts/vss_vehicle
+cp ~/output_c5/vts/* test/vts/vss_vehicle/
+
+# Rebuild affected modules only (~30 min vs full rebuild)
+mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl
+mmm test/vts/vss_vehicle
+```
+
+#### 8d — Relaunch Cuttlefish and run VTS
+
+```bash
+# Relaunch with new build
+stop_cvd
+launch_cvd --noresume --cpus=4 --memory_mb=4096
+# Wait for: VIRTUAL_DEVICE_BOOT_COMPLETED
+
+# Verify VSS properties are now served
+adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x1000 0
+# Expected: HalPropValue{prop=4096, areaId=0, value=...}
+# (0x1000 = ADAS domain first property)
+
+adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x2000 0
+# Expected: HalPropValue{prop=8192, areaId=0, value=...}
+# (0x2000 = Body domain first property)
+
+# Run VSS VTS tests
+atest VtsHalAutomotiveVehicleVss
+# Expected: compile-time enum tests PASS, runtime access tests PASS
+
+# Inject VSS signal and verify
+adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event 0x1000 0 42
+adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x1000 0
+# Expected: value=42
+```
+
+#### 8e — Install and verify HMI app
+
+```bash
+# Build HMI app inside AOSP tree
+mkdir -p packages/apps/VssDashboard
+cp -r ~/output_c5/hmi_app/src \
+      ~/output_c5/hmi_app/AndroidManifest.xml \
+      ~/output_c5/hmi_app/Android.bp \
+      packages/apps/VssDashboard/
+mmm packages/apps/VssDashboard
+
+# Install on Cuttlefish
+adb -s 0.0.0.0:6520 install -r \
+  out/target/product/vsoc_x86_64/system/app/VssDashboardApp/VssDashboardApp.apk
+
+# Launch app
+adb -s 0.0.0.0:6520 shell am start -n com.vss.vehicleapp/.MainActivity
+
+# Inject values and check app UI updates via logcat
+adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event 0x1000 0 99
+adb -s 0.0.0.0:6520 logcat | grep -i "vehicleapp\|CarProperty\|onChangeEvent"
+# Expected: onChangeEvent fired with prop=4096 value=99
+
+# FastAPI Backend (optional — for REST API testing)
 cd output_c4_feedback/backend/vss_dynamic_server
 pip install -r requirements.txt
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -1012,32 +1188,35 @@ code-codegen-aosp-llm-based/
 ├── multi_main_adaptive.py         # C2: Adaptive pipeline
 ├── multi_main_rag_dspy.py         # C3: RAG+DSPy pipeline
 ├── multi_main_c4_feedback.py      # C4: Feedback loop pipeline
-├── multi_main_c5_hmi.py           # C5: HMI app demo (Cuttlefish integration)
+├── multi_main_c5.py               # C5: Advanced runtime validation pipeline
+│                                  #     (FakeVHAL patch + VTS tests + HMI app, combined)
 ├── agents/                        # Generation agents
-│   ├── rag_dspy_mixin.py          #   RAG+DSPy shared logic
+│   ├── rag_dspy_mixin.py          #   RAG+DSPy shared logic (reused by C5)
 │   ├── rag_dspy_architect_agent.py
 │   ├── rag_dspy_aidl_agent.py     #   Domain-specific base addresses (DOMAIN_BASE)
-│   ├── rag_dspy_cpp_agent.py
+│   ├── rag_dspy_cpp_agent.py      #   Reused by C5 FakeVHAL patcher
 │   ├── rag_dspy_selinux_agent.py
 │   ├── rag_dspy_backend_agent.py
 │   └── ...
 ├── dspy_opt/                      # DSPy optimiser
 │   ├── optimizer.py               #   MIPROv2 runner (requires optuna)
 │   ├── hal_modules.py             #   Module registry
-│   ├── hal_signatures.py          #   DSPy Signatures (domain base addresses in AIDLSignature)
+│   ├── hal_signatures.py          #   DSPy Signatures (domain bases in AIDLSignature)
 │   ├── metrics.py                 #   Scoring functions
 │   ├── validators.py              #   Syntax validators (clang, checkpolicy, etc.)
-│   └── saved/                     #   Optimised programs (12 JSON files)
+│   └── saved/                     #   Optimised programs (12 JSON files, reused by C5)
 ├── rag/                           # RAG system
 │   ├── aosp_indexer.py            #   AOSP → ChromaDB indexer (HIDL exclusion)
-│   ├── aosp_retriever.py          #   Query retriever
+│   ├── aosp_retriever.py          #   Query retriever (reused by C5)
 │   └── chroma_db/                 #   Vector database (7 collections, ~17.6K chunks)
 ├── dataset/
 │   └── vss.json                   # Vehicle Signal Specification (1571 signals)
 ├── aosp_dump/                     # Compiled AIDL property IDs from GCP VM (for C5)
 │   └── VehicleProperty*.aidl      #   One per domain, contains hex IDs
+├── aosp_source/                   # AOSP source files copied from GCP VM (for C5)
+│   └── FakeVehicleHardware.cpp    #   Original — C5 patches and returns modified version
 ├── experiments/results/           # Analysis outputs
-│   ├── matched_analysis.md        #   4-condition comparison
+│   ├── matched_analysis.md        #   4-condition comparison (C1-C4)
 │   ├── comparison.json
 │   ├── latex_table.tex
 │   └── final_analysis.md
@@ -1048,15 +1227,21 @@ code-codegen-aosp-llm-based/
 ├── output/                        # C1 output
 ├── output_adaptive/               # C2 output
 ├── output_rag_dspy/               # C3 output
-├── output_c4_feedback/            # C4 output (use for AOSP validation)
-└── output_c5_hmi/                 # C5 output (HMI app for Cuttlefish)
-    ├── AndroidManifest.xml
-    ├── Android.bp
-    └── src/main/
-        ├── java/com/vss/vehicleapp/
-        │   ├── MainActivity.kt
-        │   └── fragments/         #   One Fragment.kt per domain
-        └── res/layout/            #   One fragment_<domain>.xml per domain
+├── output_c4_feedback/            # C4 output (primary input for C5)
+└── output_c5/                # C5 output
+    ├── fake_vhal/
+    │   └── FakeVehicleHardware_vss_patch.cpp  # Patched to serve VSS properties
+    ├── vts/
+    │   ├── VtsHalAutomotiveVehicleVss.cpp      # Custom VSS VTS tests
+    │   ├── Android.bp
+    │   └── VtsHalAutomotiveVehicleVss.xml
+    ├── hmi_app/                               # HMI app with real CarPropertyManager IDs
+    │   ├── AndroidManifest.xml
+    │   ├── Android.bp
+    │   └── src/main/
+    │       ├── java/com/vss/vehicleapp/
+    │       └── res/layout/
+    └── c5_results.json                        # Scores per agent
 ```
 
 ## Latest Results (500 signals, matched agents)
@@ -1090,7 +1275,9 @@ gain over baseline.
 - **`clean_hal` must not glob `VehicleProperty*.aidl`** — this deletes AOSP originals like `VehiclePropertyStatus.aidl`, `VehiclePropertyAccess.aidl`, `VehiclePropertyChangeMode.aidl` which breaks the AIDL build. Only delete specific generated files (`VehiclePropertyAdas.aidl`, `VehiclePropertyVss.aidl`).
 - **Overlapping domain property IDs:** C1-C4 generate per-domain AIDL enums starting at `0x1000` for each domain. The updated `rag_dspy_aidl_agent.py` uses domain-specific base addresses (ADAS=0x1000, Body=0x2000, Cabin=0x3000, etc.) to prevent ID conflicts. Re-run C1-C4 after this fix to get globally unique IDs.
 - **SELinux feedback loop ineffective:** The C4 feedback loop cannot fix SELinux errors because (a) `checkpolicy` reports missing external macro definitions that exist only in the full AOSP sepolicy tree, and (b) the `validation_feedback` field is not in the SELinux DSPy Signature, so error messages are silently dropped. This is documented as a known limitation — SELinux policies pass AOSP build validation via `apply_aosp14_fixes.sh`.
-- **C5 requires AOSP dump:** `multi_main_c5_hmi.py` needs compiled property IDs from the GCP VM AOSP build output. Without `aosp_dump/`, it falls back to a hardcoded Cuttlefish property map which may not match your generated VSS signals.
+- **C5 requires AOSP source files:** `multi_main_c5.py` needs `FakeVehicleHardware.cpp` from the GCP VM and compiled property IDs from the AOSP build dump. Copy them via GCS before running C5. Without them, C5 generates a stub FakeVehicleHardware that won't compile against the full AOSP tree.
+- **C5 FakeVHAL patch requires AOSP rebuild:** After applying the FakeVehicleHardware patch, a full `mmm` rebuild (~30 min) and Cuttlefish relaunch are required before VSS properties become accessible at runtime.
+- **gsutil in Colab:** Run `from google.colab import auth; auth.authenticate_user()` before any `gsutil` commands in Colab notebooks.
 
 ## Key Design Decisions
 
@@ -1102,7 +1289,8 @@ gain over baseline.
 - **Version-pinned RAG corpus:** The RAG source must be cloned with the same tag (`android-14.0.0_r75`) as the AOSP build tree. Mismatched versions cause the LLM to generate patterns (Android.bp `srcs` lists, API freeze hashes, AIDL module structure) that don't match the build system's expectations.
 - **Additive vs replacement AIDL:** C1/C2 (without RAG) previously generated replacement AIDL files that overwrote existing AOSP interfaces. With the prompt fix, all conditions now generate additive `VehiclePropertyAdas.aidl` that complements existing code.
 - **Automated AOSP 14 fixes:** `apply_aosp14_fixes.sh` handles systematic integration gaps (vendor:true, SELinux type declarations) that are predictable and automatable rather than code quality issues.
-- **C5 dynamic property loading:** `multi_main_c5_hmi.py` reads compiled property IDs from the AOSP build dump, property types and access modes from C4's YAML spec, and domain groupings from MODULE_PLAN.json — making it fully dynamic for any signal count or module configuration. Falls back to a hardcoded Cuttlefish property map if AOSP dump is unavailable.
+- **C5 dynamic property loading:** `multi_main_c5.py` reads compiled property IDs from the AOSP build dump, property types and access modes from C4's YAML spec, and domain groupings from MODULE_PLAN.json — fully dynamic for any signal count or module configuration. Falls back to hardcoded Cuttlefish property map if inputs are unavailable.
+- **C5 non-destructive FakeVHAL patching:** The FakeVehicleHardware patcher appends a `kVssProperties` vector and injects a single `mergeVssProperties()` call into `getAllPropertyConfigs()` — never replacing existing code. This minimises compilation risk and makes the patch reversible by deleting the appended block.
 - **Domain-specific AIDL base addresses:** `rag_dspy_aidl_agent.py` uses a `DOMAIN_BASE` dict (ADAS=0x1000, Body=0x2000, Cabin=0x3000, Chassis=0x4000, HVAC=0x5000, Infotainment=0x6000, Powertrain=0x7000) to ensure globally unique property IDs across domains, enabling CarPropertyManager to distinguish properties without conflict.
 
 ## License
