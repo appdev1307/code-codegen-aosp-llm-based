@@ -80,6 +80,34 @@ DOMAIN_BASE = {
     "powertrain":    0x7000,
 }
 
+# ── VHAL property ID encoding ────────────────────────────────────
+# A VHAL property ID is a 32-bit value that packs four fields:
+#   group (0xF0000000) | area (0x0F000000) | type (0x00FF0000) | index (0x0000FFFF)
+# A bare per-domain index like 0x1000 has none of the high fields set, so VHAL
+# rejects it during config validation and the property silently never registers.
+# Every VSS property must therefore be encoded into a full, valid ID.
+VSS_GROUP = 0x20000000  # VehiclePropertyGroup::VENDOR
+VSS_AREA  = 0x01000000  # VehicleArea::GLOBAL  (matches .areaId = 0)
+VSS_TYPE_BITS = {
+    "STRING":  0x00100000,
+    "BOOLEAN": 0x00200000,
+    "INT32":   0x00400000,
+    "INT64":   0x00500000,
+    "FLOAT":   0x00600000,
+}
+
+def encode_prop_id(raw_index: int, vss_type: str) -> int:
+    """Turn a bare per-domain index into a valid VHAL property ID.
+
+    The VSS type is folded into the ID's type field, which is where VHAL and
+    CarPropertyManager read the value type from — it is not stored anywhere
+    else in VehiclePropConfig, so it must live in the ID.
+    """
+    if raw_index & 0xF0000000:                 # already a full ID — leave alone
+        return raw_index
+    type_bits = VSS_TYPE_BITS.get(vss_type, 0x00400000)   # default INT32
+    return VSS_GROUP | VSS_AREA | type_bits | (raw_index & 0xFFFF)
+
 # ── LLM client (reused from C1-C4) ───────────────────────────────
 def _call_llm(prompt: str, timeout: int = 240) -> str:
     try:
@@ -210,10 +238,11 @@ def load_vss_properties() -> dict:
         base  = DOMAIN_BASE.get(domain, 0x8000)
         props = []
         for idx, name in enumerate(prop_names):
-            prop_id = compiled_ids.get(name, base + idx)
             meta    = prop_meta.get(name, {})
             typ     = meta.get("type", "INT32")
             access  = meta.get("access", "READ")
+            raw_id  = compiled_ids.get(name, base + idx)
+            prop_id = encode_prop_id(raw_id, typ)   # encode group|area|type|index
             desc    = name.replace("VEHICLE_CHILDREN_", "").replace("_CHILDREN_", ".")[:50]
             props.append((name, prop_id, typ, access, desc))
         if props:
@@ -263,7 +292,7 @@ class FakeVehicleHardwarePatchAgent:
                 }.get(access, "VehiclePropertyAccess::READ")
 
                 entries.append(
-                    f"    {{.prop = {prop_id},  // {name[:40]}\n"
+                    f"    {{.prop = {hex(prop_id)},  // {name[:40]}\n"
                     f"     .access = {vaccess},\n"
                     f"     .changeMode = VehiclePropertyChangeMode::ON_CHANGE,\n"
                     f"     .areaConfigs = {{{{.areaId = 0}}}}}},  // {desc}"
