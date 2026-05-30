@@ -267,12 +267,16 @@ gcloud storage buckets add-iam-policy-binding gs://aosp-thesis-temp \
 BUCKET=gs://aosp-thesis-temp
 cd ~/aosp-14-auto
 
-# 1. FakeVehicleHardware source
+# 1. FakeVehicleHardware — restore from git first (may have been patched)
+git -C hardware/interfaces checkout \
+  automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
+
+# 2. FakeVehicleHardware source
 gsutil cp \
   hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
   $BUCKET/FakeVehicleHardware.cpp
 
-# 2. AOSP compiled AIDL property ID dump (-j stores filenames only, no directory path)
+# 3. AOSP compiled AIDL property ID dump (-j stores filenames only, no directory path)
 DUMP_DIR=out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle
 zip -j ~/aosp_dump.zip $DUMP_DIR/VehicleProperty*.aidl
 gsutil cp ~/aosp_dump.zip $BUCKET/aosp_dump.zip
