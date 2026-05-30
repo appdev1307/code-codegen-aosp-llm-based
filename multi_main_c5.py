@@ -570,12 +570,12 @@ cc_test {
 
             cpp_content = self._generate_vts_cpp(domain_map)
 
-            # Score
+            # Score — count both TEST_F() and TEST() macros
             has_fixture  = "VssVhalTest" in cpp_content
-            has_tests    = cpp_content.count("TEST_F(") >= 3
+            test_count   = cpp_content.count("TEST_F(") + cpp_content.count("TEST(")
+            has_tests    = test_count >= 3
             has_includes = "IVehicle.h" in cpp_content
             struct_score = 1.0 if (has_fixture and has_tests and has_includes) else 0.5
-            test_count   = cpp_content.count("TEST_F(")
             coverage     = min(1.0, test_count / 10.0)
             score        = 0.40 * struct_score + 0.40 * 1.0 + 0.20 * coverage
 
