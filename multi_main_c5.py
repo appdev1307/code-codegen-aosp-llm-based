@@ -317,13 +317,25 @@ static std::vector<VehiclePropConfig> mergeVssProperties(
         patched += using_decls + "\n" + vss_block
 
         # Step 3: Inject merge call into getAllPropertyConfigs
-        merge_call = "    configs = mergeVssProperties(configs);  // C5: add VSS properties\n"
+        # Find the DEFINITION (not declaration) — it has a function body with return configs;
+        merge_call = "    configs = mergeVssProperties(configs);  // C5: VSS properties\n"
         if "mergeVssProperties" not in patched:
-            func_start = patched.find("getAllPropertyConfigs")
-            if func_start > 0:
-                return_idx = patched.find("return configs;", func_start)
-                if return_idx > 0:
-                    patched = patched[:return_idx] + merge_call + patched[return_idx:]
+            # Find getAllPropertyConfigs with opening brace (definition not declaration)
+            search_start = 0
+            while True:
+                func_start = patched.find("getAllPropertyConfigs", search_start)
+                if func_start < 0:
+                    break
+                # Check if this is the definition (has a body with return configs;)
+                brace_idx = patched.find("{", func_start)
+                next_semi  = patched.find(";", func_start)
+                if brace_idx > 0 and (next_semi < 0 or brace_idx < next_semi):
+                    # This is a definition — find return configs; inside it
+                    return_idx = patched.find("return configs;", brace_idx)
+                    if return_idx > 0:
+                        patched = patched[:return_idx] + merge_call + patched[return_idx:]
+                        break
+                search_start = func_start + 1
 
         return patched
 
@@ -434,8 +446,39 @@ class VtsGeneratorAgent:
     def __init__(self):
         self.prog = _load_dspy_program("cpp")
 
+    def _load_compiled_first_names(self) -> dict:
+        """
+        Load the first compiled property name per domain directly from
+        AOSP dump AIDL files. These are the authoritative names that
+        the C++ compiler knows about — not the YAML spec names which
+        may differ slightly (missing _CHILDREN_ segments etc).
+        """
+        domain_files = {
+            "adas":          "VehiclePropertyAdas.aidl",
+            "body":          "VehiclePropertyBody.aidl",
+            "cabin":         "VehiclePropertyCabin.aidl",
+            "chassis":       "VehiclePropertyChassis.aidl",
+            "hvac":          "VehiclePropertyHvac.aidl",
+            "infotainment":  "VehiclePropertyInfotainment.aidl",
+            "powertrain":    "VehiclePropertyPowertrain.aidl",
+        }
+        first_names = {}
+        for domain, filename in domain_files.items():
+            fpath = AOSP_DUMP_DIR / filename
+            if not fpath.exists():
+                continue
+            for line in fpath.read_text().splitlines():
+                m = re.match(r'\s+(\w+)\s*=\s*(0x[0-9a-fA-F]+)', line)
+                if m:
+                    first_names[domain] = (m.group(1), int(m.group(2), 16))
+                    break  # only need first entry
+        return first_names
+
     def _generate_vts_cpp(self, domain_map: dict) -> str:
         """Generate VTS test C++ file with correct AIDL V4 API."""
+
+        # Load first property names from compiled AOSP dump — authoritative names
+        compiled_first = self._load_compiled_first_names()
 
         # Build enum include list
         includes = "\n".join(
@@ -444,16 +487,21 @@ class VtsGeneratorAgent:
             for d in domain_map.keys()
         )
 
-        # Build per-domain compile-time enum tests
-        # Use REAL first property name from domain_map (from compiled AOSP dump)
+        # Build per-domain compile-time enum tests using COMPILED names
         enum_tests = []
         for domain, props in domain_map.items():
             if not props:
                 continue
-            first_name, first_id, _, _, _ = props[0]
+            # Use compiled name from AOSP dump — not YAML spec name
+            if domain in compiled_first:
+                first_name, first_id = compiled_first[domain]
+            else:
+                first_name, first_id = props[0][0], props[0][1]
+
             enum_tests.append(f"""
 TEST(VssEnumTest, {domain.capitalize()}BaseAddress) {{
     // Compile-time check: enum value accessible and base ID correct
+    // Name sourced directly from compiled AOSP AIDL dump
     int base = static_cast<int>(
         VehicleProperty{domain.capitalize()}::{first_name});
     ASSERT_EQ(base, {first_id})
