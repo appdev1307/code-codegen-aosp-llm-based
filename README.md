@@ -1008,12 +1008,22 @@ launch_cvd --noresume --cpus=4 --memory_mb=4096
 # Wait for: VIRTUAL_DEVICE_BOOT_COMPLETED
 
 
-# In other VM terminal:
+# In other VM terminal (redeploy change to cutterfish):
 m android.hardware.automotive.vehicle@V3-default-service
-adb -s 0.0.0.0:6520 remount && adb -s 0.0.0.0:6520 sync vendor && adb -s 0.0.0.0:6520 reboot
+adb connect 0.0.0.0:6520
+adb -s 0.0.0.0:6520 wait-for-device
+adb -s 0.0.0.0:6520 root
+adb -s 0.0.0.0:6520 remount
+adb -s 0.0.0.0:6520 sync vendor
+adb -s 0.0.0.0:6520 reboot
+
 # wait for boot, reconnect, then:
 adb -s 0.0.0.0:6520 root
 adb -s 0.0.0.0:6520 shell dumpsys car_service | grep -iE "0x2[0-9a-f]{7}" | head
+
+#
+adb -s 0.0.0.0:6520 shell pgrep -f vehicle
+adb -s 0.0.0.0:6520 shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list | head -20
 
 # Verify VSS properties are now served
 adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x1000 0
