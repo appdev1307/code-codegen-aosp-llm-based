@@ -393,22 +393,15 @@ AMD Milan (`n2d`) handles nested KVM significantly better. `pd-ssd` instead of
 `pd-standard` saves hours on the I/O-bound AOSP build.
 
 ```bash
-gcloud compute instances create aosp-builder-16 \
-    --zone=us-central1-a \
-    --machine-type=n2d-standard-16 \
-    --boot-disk-size=500GB \
-    --boot-disk-type=pd-standard \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --enable-nested-virtualization \
-    --min-cpu-platform="AMD Milan" \
-    --quiet
-
-gcloud compute ssh aosp-builder-16 --zone=us-central1-a
-
-sudo growpart /dev/sda 1
-sudo resize2fs /dev/sda1
-df -h
+gcloud compute instances create aosp-builder-cutterfish \
+  --zone=us-central1-a \
+  --machine-type=n2-standard-16 \
+  --boot-disk-size=500GB \
+  --image-family=ubuntu-2204-lts \
+  --image-project=ubuntu-os-cloud \
+  --enable-nested-virtualization \
+  --scopes=cloud-platform \
+  --quiet
 ```
 
 <details>
@@ -434,15 +427,17 @@ browser closes, laptop sleeps, or internet drops.
 
 ```bash
 # SSH into the VM
-gcloud compute instances start aosp-builder-16 \
+gcloud compute instances start aosp-builder-cutterfish \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a
 
-
-gcloud compute ssh aosp-builder-16 \
+gcloud compute ssh aosp-builder-cutterfish \
   --project=$(gcloud config get-value project) \
-  --zone=us-central1-a
+  --zone=us-central1-a  
 
+sudo growpart /dev/sda 1
+sudo resize2fs /dev/sda1
+df -h
 
 # Start a named screen session
 screen -S aosp
@@ -702,27 +697,6 @@ restore_aosp() {
     echo "✓ AOSP tree restored"
 }
 ```
-
-> **Important: C1/C2 vs C3/C4 behavior**
->
-> C1/C2 (without RAG) generate **replacement** AIDL files that overwrite existing
-> AOSP files and break dependency chains (e.g. missing `VehiclePropertyStatus`).
-> C3/C4 (with RAG) generate **additive** files that complement existing code.
-> If a build fails, always run `restore_aosp` before trying the next condition.
-
-**Option A: Build a single condition**
-
-```bash
-# Set condition: c1 (default), c2, c3, or c4
-COND1=c1
-
-restore_aosp    # always restore before each condition
-clean_hal
-~/apply_aosp14_fixes.sh ~/output_$COND1 ~/aosp-14-auto
-mmm hardware/interfaces/automotive/vehicle/impl 2>&1 | tee ~/build_${COND1}.log
-echo "Result: $COND1 → exit code $?"
-```
-
 **If a build fails — recovery steps:**
 
 ```bash
@@ -1023,7 +997,7 @@ gsutil cp output_c5.zip gs://aosp-thesis-temp/
 ```bash
 # Download C5 output
 gsutil cp gs://aosp-thesis-temp/output_c5.zip ~/
-unzip ~/output_c5.zip -d ~/
+unzip ~/output_c5.zip -d ~/output_c5
 
 cd ~/aosp-14-auto
 source build/envsetup.sh
