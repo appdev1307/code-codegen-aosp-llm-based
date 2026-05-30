@@ -321,7 +321,7 @@ python multi_main_c5.py
 ```bash
 # Download C5 output
 gsutil cp gs://aosp-thesis-temp/output_c5.zip ~/
-unzip ~/output_c5.zip -d ~/
+unzip ~/output_c5.zip -d ~/output_c5
 
 # 1. Apply FakeVehicleHardware patch
 cp ~/output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp \
@@ -387,11 +387,6 @@ enough for the entire AOSP build (~$6 total). No charges unless you manually upg
 
 
 #### Create the VM
-Recommended: AMD Milan + SSD (better Cuttlefish nested virt support)</summary>
-Intel `n2` with nested virtualization can be flaky with Cuttlefish's `crosvm`.
-AMD Milan (`n2d`) handles nested KVM significantly better. `pd-ssd` instead of
-`pd-standard` saves hours on the I/O-bound AOSP build.
-
 ```bash
 gcloud compute instances create aosp-builder-cutterfish \
   --zone=us-central1-a \
@@ -403,22 +398,6 @@ gcloud compute instances create aosp-builder-cutterfish \
   --scopes=cloud-platform \
   --quiet
 ```
-
-<details>
-<summary>Premium account: faster build with 32 cores + SSD</summary>
-
-```bash
-gcloud compute instances create aosp-builder \
-    --zone=us-central1-a \
-    --machine-type=c2-standard-32 \
-    --boot-disk-size=500GB \
-    --boot-disk-type=pd-ssd \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --enable-nested-virtualization
-# Cost: ~$1.50/hr | Build time: ~1.5 hrs instead of ~4-5 hrs
-```
-</details>
 
 #### Using `screen` (essential for long builds)
 
