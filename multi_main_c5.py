@@ -172,10 +172,22 @@ def load_vss_properties() -> dict:
     # Build domain map
     domain_map = {}
     for module in module_plan.get("modules", []):
-        domain = module.get("domain", "").lower()
-        base   = DOMAIN_BASE.get(domain, 0x8000)
-        props  = []
-        for idx, name in enumerate(module.get("properties", [])):
+        # Handle both formats:
+        # dict: {"domain": "adas", "properties": [...]}
+        # str:  "adas" (domain name only — get all props matching domain prefix)
+        if isinstance(module, str):
+            domain     = module.lower()
+            domain_upper = domain.upper()
+            prop_names = [n for n in prop_meta.keys() if domain_upper in n.upper()]
+        elif isinstance(module, dict):
+            domain     = module.get("domain", "").lower()
+            prop_names = module.get("properties", [])
+        else:
+            continue
+
+        base  = DOMAIN_BASE.get(domain, 0x8000)
+        props = []
+        for idx, name in enumerate(prop_names):
             prop_id = compiled_ids.get(name, base + idx)
             meta    = prop_meta.get(name, {})
             typ     = meta.get("type", "INT32")
@@ -186,6 +198,8 @@ def load_vss_properties() -> dict:
             domain_map[domain] = props
             print(f"  [C5] {domain.upper():15s}: {len(props):4d} properties")
 
+    total = sum(len(v) for v in domain_map.values())
+    print(f"  [C5] Total: {total} properties across {len(domain_map)} domains")
     return domain_map
 
 # ═══════════════════════════════════════════════════════════════════
