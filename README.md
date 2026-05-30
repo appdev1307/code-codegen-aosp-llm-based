@@ -202,7 +202,8 @@ gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
 mkdir -p aosp_dump
 gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
 unzip aosp_dump.zip -d aosp_dump_raw
-cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
+cp aosp_dump_raw/VehicleProperty*.aidl aosp_dump/
+# Note: -j flag in zip stores filenames only (no subdirs), so no wildcard needed
 
 # Step 4: Run C5
 python multi_main_c5.py
@@ -252,28 +253,47 @@ on a real AAOS Cuttlefish instance. It builds directly on C4 output and the AOSP
 
 ### C5 Prerequisites on GCP VM
 
+**First — grant GCS write access to the VM service account (run in Cloud Shell, not VM):**
+
 ```bash
-# Copy required files to GCS bucket
+gcloud storage buckets add-iam-policy-binding gs://aosp-thesis-temp \
+  --member="serviceAccount:751513866050-compute@developer.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+```
+
+**Then on the GCP VM:**
+
+```bash
 BUCKET=gs://aosp-thesis-temp
+cd ~/aosp-14-auto
 
 # 1. FakeVehicleHardware source
-gsutil cp ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
+gsutil cp \
+  hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
   $BUCKET/FakeVehicleHardware.cpp
 
-# 2. AOSP compiled AIDL property ID dump
-cd ~/aosp-14-auto
-zip -r ~/aosp_dump.zip \
-  out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle/VehicleProperty*.aidl
+# 2. AOSP compiled AIDL property ID dump (-j stores filenames only, no directory path)
+DUMP_DIR=out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle
+zip -j ~/aosp_dump.zip $DUMP_DIR/VehicleProperty*.aidl
 gsutil cp ~/aosp_dump.zip $BUCKET/aosp_dump.zip
+
+# Verify both uploaded
+gsutil ls $BUCKET/
+# Expected:
+#   gs://aosp-thesis-temp/FakeVehicleHardware.cpp
+#   gs://aosp-thesis-temp/aosp_dump.zip
 ```
 
 ### C5 Run on Colab
 
-```bash
+```python
 # Authenticate GCS
-from google.colab import auth; auth.authenticate_user()
+from google.colab import auth
+auth.authenticate_user()
+```
 
-# Copy FakeVehicleHardware from GCP VM
+```bash
+# Copy FakeVehicleHardware from GCS
 # (aosp_source/ already exists from ChromaDB RAG step)
 gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
 
@@ -281,9 +301,10 @@ gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
 mkdir -p aosp_dump
 gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
 unzip aosp_dump.zip -d aosp_dump_raw
-cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
+cp aosp_dump_raw/VehicleProperty*.aidl aosp_dump/
+# Note: -j flag in zip means files are at root of zip, not in subdirectory
 
-# Run C5 (reads C4 output automatically)
+# Run C5 (reads C4 output + AOSP assets automatically)
 python multi_main_c5.py
 ```
 
@@ -948,16 +969,26 @@ the VHAL with VSS properties and validate them at runtime on Cuttlefish.
 #### 8a — Prepare AOSP assets on GCP VM
 
 ```bash
-# Copy FakeVehicleHardware source and compiled AIDL IDs to GCS
+# Grant GCS write access first (run in Cloud Shell, not VM)
+gcloud storage buckets add-iam-policy-binding gs://aosp-thesis-temp \
+  --member="serviceAccount:751513866050-compute@developer.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+
 BUCKET=gs://aosp-thesis-temp
 cd ~/aosp-14-auto
 
-gsutil cp hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
+# 1. FakeVehicleHardware source
+gsutil cp \
+  hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
   $BUCKET/FakeVehicleHardware.cpp
 
-zip -r ~/aosp_dump.zip \
-  out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle/VehicleProperty*.aidl
+# 2. AOSP compiled AIDL property IDs (-j = no directory paths in zip)
+DUMP_DIR=out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle
+zip -j ~/aosp_dump.zip $DUMP_DIR/VehicleProperty*.aidl
 gsutil cp ~/aosp_dump.zip $BUCKET/aosp_dump.zip
+
+# Verify
+gsutil ls $BUCKET/
 ```
 
 #### 8b — Run C5 on Colab
@@ -969,12 +1000,14 @@ auth.authenticate_user()
 ```
 
 ```bash
-# Download AOSP assets
-mkdir -p aosp_source aosp_dump
+# Copy FakeVehicleHardware (aosp_source/ already exists from RAG step)
 gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
+
+# Download compiled AIDL property IDs
+mkdir -p aosp_dump
 gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
 unzip aosp_dump.zip -d aosp_dump_raw
-cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
+cp aosp_dump_raw/VehicleProperty*.aidl aosp_dump/
 
 # Run C5 (reads C4 output automatically, generates 3 artifact types)
 python multi_main_c5.py
