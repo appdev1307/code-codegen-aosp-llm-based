@@ -247,7 +247,12 @@ def load_vss_properties() -> dict:
             meta    = prop_meta.get(name, {})
             typ     = meta.get("type", "INT32")
             access  = meta.get("access", "READ")
-            raw_id  = compiled_ids.get(name, global_idx)   # globally unique index
+            # Always assign from the global counter. The AOSP-dump values in
+            # compiled_ids are the original un-encoded / colliding enum entries
+            # (multiple names map to the same number), so trusting them here
+            # reintroduced duplicates. These are vendor VSS properties we define,
+            # so a fresh unique counter is correct and collision-free.
+            raw_id  = global_idx
             prop_id = encode_prop_id(raw_id, typ)   # encode group|area|type|index
             global_idx += 1
             desc    = name.replace("VEHICLE_CHILDREN_", "").replace("_CHILDREN_", ".")[:50]
