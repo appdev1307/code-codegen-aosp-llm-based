@@ -93,24 +93,12 @@ def _call_llm(prompt: str, timeout: int = 240) -> str:
         return ""
 
 # ── RAG retriever (reused from C3/C4) ────────────────────────────
-def _retrieve(query: str, collection: str = "aosp_cpp", top_k: int = RAG_TOP_K) -> str:
+def _retrieve(query: str, agent_type: str = "cpp", top_k: int = RAG_TOP_K) -> str:
     try:
         from rag.aosp_retriever import get_retriever
-        # get_retriever signature may vary — try with top_k, fallback without
-        try:
-            retriever = get_retriever(db_path=RAG_DB_PATH, top_k=top_k)
-        except TypeError:
-            retriever = get_retriever(db_path=RAG_DB_PATH)
-        try:
-            chunks = retriever.retrieve(query, collection=collection)
-        except TypeError:
-            chunks = retriever.retrieve(query)
-        if isinstance(chunks, list):
-            return "\n\n".join(
-                c.get("document", c) if isinstance(c, dict) else str(c)
-                for c in chunks[:4]
-            )
-        return str(chunks)
+        retriever = get_retriever(db_path=RAG_DB_PATH)
+        chunks = retriever.retrieve(query, agent_type=agent_type, top_k=top_k)
+        return retriever.format_for_prompt(chunks)
     except Exception as e:
         print(f"  [RAG] Error: {e}")
         return ""
@@ -119,25 +107,15 @@ def _retrieve(query: str, collection: str = "aosp_cpp", top_k: int = RAG_TOP_K) 
 def _load_dspy_program(agent_type: str):
     try:
         import dspy
-        from dspy_opt.hal_modules import MODULE_REGISTRY
+        from dspy_opt.hal_modules import get_module
         prog_path = Path(DSPY_SAVED_DIR) / f"{agent_type}_program" / "program.json"
         if not prog_path.exists():
+            print(f"  [DSPy] No saved program for {agent_type} — using direct LLM")
             return None
-        entry = MODULE_REGISTRY.get(agent_type)
-        if not entry:
-            return None
-        # MODULE_REGISTRY entry may be (signature, metric, module_cls)
-        # or (signature, module_cls) — handle both
-        if len(entry) >= 3:
-            module_cls = entry[2]
-        elif len(entry) >= 2:
-            module_cls = entry[1]
-        else:
-            return None
-        prog = module_cls()
-        prog.load(str(prog_path))
-        print(f"  [DSPy] {agent_type}: loaded optimised program ✓")
-        return prog
+        module = get_module(agent_type, programs_dir=DSPY_SAVED_DIR, auto_load=True)
+        if module.is_optimised:
+            print(f"  [DSPy] {agent_type}: loaded optimised program ✓")
+        return module
     except Exception as e:
         print(f"  [DSPy] {agent_type} load failed: {e}")
         return None
@@ -353,7 +331,7 @@ static std::vector<VehiclePropConfig> mergeVssProperties(
         # Get RAG context for FakeVehicleHardware patterns
         rag_ctx = _retrieve(
             "FakeVehicleHardware getAllPropertyConfigs VehiclePropConfig kVehicleProperties",
-            collection="aosp_cpp"
+            agent_type="cpp"
         )
 
         best_content = ""
@@ -470,7 +448,7 @@ class VtsGeneratorAgent:
         """Generate VTS test C++ file."""
         rag_ctx = _retrieve(
             "VtsHalAutomotive VehicleHalTest getAllPropertyConfigs getValues gtest",
-            collection="aosp_cpp"
+            agent_type="cpp"
         )
 
         # Build enum include list
