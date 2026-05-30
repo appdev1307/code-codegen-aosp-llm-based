@@ -296,10 +296,11 @@ static std::vector<VehiclePropConfig> mergeVssProperties(
 
     def _patch_source(self, original: str, vss_block: str) -> str:
         """
-        Patch FakeVehicleHardware.cpp:
-        1. Detect namespace closing lines
-        2. Insert forward declaration + merge call + VSS block INSIDE namespace
-        Non-destructive — never replaces existing code.
+        Patch FakeVehicleHardware.cpp correctly:
+        1. Insert VSS block (using decls + kVssProperties + mergeVssProperties)
+           BEFORE getAllPropertyConfigs — so function is defined before call
+        2. Inject merge call into getAllPropertyConfigs
+        Both insertions happen INSIDE the fake namespace.
         """
         # Step 1: Remove existing C5 block to avoid duplicates
         base = original.rstrip()
@@ -308,41 +309,28 @@ static std::vector<VehiclePropConfig> mergeVssProperties(
             if idx > 0:
                 base = base[:idx].rstrip()
 
-        # Step 2: Find where namespace closes — insert VSS block before it
-        # Look for the pattern:  }  // namespace android  (outermost)
-        ns_close = None
-        for pattern in [
-            "}  // namespace android",
-            "} // namespace android",
-            "}  // namespace fake",
-            "} // namespace fake",
-        ]:
-            idx = base.rfind(pattern)
-            if idx > 0:
-                # Find start of this line
-                line_start = base.rfind("\n", 0, idx) + 1
-                ns_close = line_start
-                break
+        # Step 2: Find getAllPropertyConfigs line — insert VSS block BEFORE it
+        # This ensures mergeVssProperties is defined before it is called
+        func_pos = base.find("\nstd::vector<VehiclePropConfig> FakeVehicleHardware::getAllPropertyConfigs")
+        if func_pos < 0:
+            func_pos = base.find("getAllPropertyConfigs")
+            func_pos = base.rfind("\n", 0, func_pos) + 1
+        else:
+            func_pos += 1  # skip the leading \n
 
-        if ns_close is None:
-            print("  [FAKE_VHAL] ⚠ Could not find namespace close — appending at end")
-            ns_close = len(base)
-
-        # Step 3: Build insert block with using declarations + forward decl + VSS block
         using_decls = (
-            "\n// C5: explicit type aliases for VSS property configs\n"
+            "// C5: type aliases for VSS property configs\n"
             "using ::aidl::android::hardware::automotive::vehicle::VehiclePropConfig;\n"
             "using ::aidl::android::hardware::automotive::vehicle::VehicleAreaConfig;\n"
             "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyAccess;\n"
-            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyChangeMode;\n"
+            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyChangeMode;\n\n"
         )
-        insert_block = using_decls + "\n" + vss_block + "\n"
+        insert = using_decls + vss_block.strip() + "\n\n"
+        base = base[:func_pos] + insert + base[func_pos:]
+        print(f"  [FAKE_VHAL] ✓ Inserted VSS block before getAllPropertyConfigs")
 
-        # Step 4: Insert VSS block before namespace close
-        base = base[:ns_close] + insert_block + base[ns_close:]
-
-        # Step 5: Inject merge call into getAllPropertyConfigs
-        # FakeVehicleHardware uses 'allConfigs', not 'configs'
+        # Step 3: Inject merge call into getAllPropertyConfigs
+        # Variable is 'allConfigs' in FakeVehicleHardware
         search_start = 0
         injected = False
         while True:
@@ -355,7 +343,7 @@ static std::vector<VehiclePropConfig> mergeVssProperties(
                 for var in ["allConfigs", "configs"]:
                     return_idx = base.find(f"return {var};", brace_idx)
                     if return_idx > 0:
-                        merge = f"    {var} = mergeVssProperties({var});  // C5: VSS properties\n    "
+                        merge = f"    {var} = mergeVssProperties({var});  // C5: VSS\n    "
                         base = base[:return_idx] + merge + base[return_idx:]
                         injected = True
                         print(f"  [FAKE_VHAL] ✓ Injected merge call before 'return {var};'")
