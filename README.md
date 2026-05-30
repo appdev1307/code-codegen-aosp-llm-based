@@ -159,11 +159,27 @@ cp -r output/ output_c1_backup/
 python multi_main_adaptive.py
 cp -r output_adaptive/ output_adaptive_backup/
 
+# ── ChromaDB: Build RAG corpus (before DSPy) ────────────────
+# Clone AOSP source pinned to android-14.0.0_r75
+mkdir -p aosp_source
+git clone --depth=1 -b android-14.0.0_r75 \
+  https://android.googlesource.com/platform/hardware/interfaces aosp_source/hardware
+git clone --depth=1 -b android-14.0.0_r75 \
+  https://android.googlesource.com/platform/system/sepolicy aosp_source/sepolicy
+git clone --depth=1 -b android-14.0.0_r75 \
+  https://android.googlesource.com/platform/packages/services/Car aosp_source/car
+
+# Index AOSP → ChromaDB (AIDL-only, HIDL excluded)
+python -m rag.aosp_indexer --source aosp_source --db rag/chroma_db --force
+
+# Verify
+python -c "import chromadb; c=chromadb.PersistentClient('rag/chroma_db'); print(sum(col.count() for col in c.list_collections()), 'chunks')"
+
 # ── DSPy Optimiser (after ChromaDB, before C3) ──────────────
 python dspy_opt/optimizer.py --mipro-auto light --train-size 8 --force
 ls dspy_opt/saved/*/program.json | wc -l   # expect: 12
 
-# ── ChromaDB fix (before C3) ───────────────────────────────
+# ── ChromaDB fix (before C3) ────────────────────────────────
 python apply_chroma_fix.py
 
 # ── C3: RAG + DSPy ─────────────────────────────────────────
@@ -178,17 +194,20 @@ cp -r output_c4_feedback/ output_c4_feedback_backup/
 # Step 1: Authenticate GCS (Colab only)
 # from google.colab import auth; auth.authenticate_user()
 
-# Step 2: Copy AOSP assets from GCP VM
+# Step 2: Copy FakeVehicleHardware from GCP VM
+# (aosp_source/ already exists from ChromaDB RAG step above)
 gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
+
+# Step 3: Download compiled AIDL property IDs
+mkdir -p aosp_dump
 gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
 unzip aosp_dump.zip -d aosp_dump_raw
-mkdir -p aosp_dump
 cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
 
-# Step 3: Run C5
+# Step 4: Run C5
 python multi_main_c5.py
 
-# Step 4: Deploy to GCP VM (see C5 section below)
+# Step 5: Upload to GCP VM
 zip -r output_c5.zip output_c5/
 gsutil cp output_c5.zip gs://aosp-thesis-temp/
 ```
@@ -254,9 +273,12 @@ gsutil cp ~/aosp_dump.zip $BUCKET/aosp_dump.zip
 # Authenticate GCS
 from google.colab import auth; auth.authenticate_user()
 
-# Download AOSP assets
-mkdir -p aosp_source aosp_dump
+# Copy FakeVehicleHardware from GCP VM
+# (aosp_source/ already exists from ChromaDB RAG step)
 gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
+
+# Download compiled AIDL property IDs
+mkdir -p aosp_dump
 gsutil cp gs://aosp-thesis-temp/aosp_dump.zip .
 unzip aosp_dump.zip -d aosp_dump_raw
 cp aosp_dump_raw/*/VehicleProperty*.aidl aosp_dump/
