@@ -976,30 +976,7 @@ cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-#
-adb -s 0.0.0.0:6520 shell pgrep -f vehicle
-adb -s 0.0.0.0:6520 shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list | head -20
-
-adb -s 0.0.0.0:6520 shell setenforce 0
-adb -s 0.0.0.0:6520 shell dumpsys car_service | grep -icE "VENDOR_PROPERTY\(0x2[0-9a-f]{7}\)"
-
-# Verify VSS properties are now served
-adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x1000 0
-# Expected: HalPropValue{prop=4096, areaId=0, value=...}
-# (0x1000 = ADAS domain first property)
-
-adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x2000 0
-# Expected: HalPropValue{prop=8192, areaId=0, value=...}
-# (0x2000 = Body domain first property)
-
-# Run VSS VTS tests
-atest VtsHalAutomotiveVehicleVss
-# Expected: compile-time enum tests PASS, runtime access tests PASS
-
-# Inject VSS signal and verify
-adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event 0x1000 0 42
-adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x1000 0
-# Expected: value=42
+atest VtsHalAutomotiveVehicleVss -c
 ```
 
 #### 8e — Install and verify HMI app
