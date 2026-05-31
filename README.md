@@ -855,16 +855,6 @@ adb -s 0.0.0.0:6520 shell getenforce
 adb -s 0.0.0.0:6520 root
 adb -s 0.0.0.0:6520 shell dmesg | grep avc
 # No Vehicle HAL related denials expected in base image
-
-# Access the WebRTC display from your local machine:
-# gcloud compute ssh aosp-builder --zone=us-central1-a -- -L 8443:localhost:8443
-# Then open https://localhost:8443 in your browser
-
-# Run VTS
-atest VtsHalAutomotiveVehicle
-
-# Shutdown
-stop_cvd
 ```
 
 ### Step 8 — C5 Runtime Validation (FakeVHAL + VTS + HMI App)
