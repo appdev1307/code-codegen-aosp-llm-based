@@ -350,27 +350,40 @@ static const std::vector<VehiclePropConfig> kVssProperties = {{
             if idx > 0:
                 base = base[:idx].rstrip()
 
-        # Step 2: Insert the kVssProperties block before getAllPropertyConfigs
-        # (any point inside the fake namespace works; this keeps it near related
-        # config code). The registration loop in step 3 references it from init().
-        func_pos = base.find("\nstd::vector<VehiclePropConfig> FakeVehicleHardware::getAllPropertyConfigs")
-        if func_pos < 0:
-            func_pos = base.find("getAllPropertyConfigs")
-            func_pos = base.rfind("\n", 0, func_pos) + 1
+        # Step 2: Insert the kVssProperties block BEFORE init().
+        #
+        # CRITICAL ORDERING: the registration loop (step 3) lives inside init()
+        # and references kVssProperties. In FakeVehicleHardware.cpp, init() is
+        # defined EARLIER in the file than getAllPropertyConfigs(). So the block
+        # must be placed before init(), or the loop would use kVssProperties
+        # before it is defined (C++ compile error). We anchor on init().
+        anchor = base.find("\nvoid FakeVehicleHardware::init()")
+        if anchor < 0:
+            anchor = base.find("void FakeVehicleHardware::init()")
+            anchor = base.rfind("\n", 0, anchor) + 1 if anchor > 0 else 0
         else:
-            func_pos += 1  # skip the leading \n
+            anchor += 1  # skip the leading \n
+        func_pos = anchor
 
-        using_decls = (
-            "// C5: type aliases for VSS property configs\n"
-            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropConfig;\n"
-            "using ::aidl::android::hardware::automotive::vehicle::VehicleAreaConfig;\n"
-            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyAccess;\n"
-            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyChangeMode;\n"
-            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyStatus;\n\n"
-        )
+        # Only emit using-decls that the original file does not already declare,
+        # to avoid duplicate-using redefinition errors (e.g. VehiclePropertyStatus
+        # is already declared in the stock file).
+        candidate_usings = [
+            "::aidl::android::hardware::automotive::vehicle::VehiclePropConfig",
+            "::aidl::android::hardware::automotive::vehicle::VehicleAreaConfig",
+            "::aidl::android::hardware::automotive::vehicle::VehiclePropertyAccess",
+            "::aidl::android::hardware::automotive::vehicle::VehiclePropertyChangeMode",
+            "::aidl::android::hardware::automotive::vehicle::VehiclePropertyStatus",
+        ]
+        using_lines = ["// C5: type aliases for VSS property configs"]
+        for u in candidate_usings:
+            decl = f"using {u};"
+            if decl not in base:
+                using_lines.append(decl)
+        using_decls = "\n".join(using_lines) + "\n\n"
         insert = using_decls + vss_block.strip() + "\n\n"
         base = base[:func_pos] + insert + base[func_pos:]
-        print(f"  [FAKE_VHAL] ✓ Inserted VSS block before getAllPropertyConfigs")
+        print(f"  [FAKE_VHAL] ✓ Inserted VSS block before init()")
 
         # Step 3: Register VSS props into the prop store inside init().
         #
