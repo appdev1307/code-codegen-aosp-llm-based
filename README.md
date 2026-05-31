@@ -311,9 +311,8 @@ unzip aosp_dump.zip -d aosp_dump_raw
 cp aosp_dump_raw/VehicleProperty*.aidl aosp_dump/
 # Note: -j flag in zip means files are at root of zip, not in subdirectory
 
-gsutil rm gs://aosp-thesis-temp/output_c5.zip
-
 # Run C5 (reads C4 output + AOSP assets automatically)
+gsutil rm gs://aosp-thesis-temp/output_c5.zip
 python multi_main_c5.py
 ```
 
@@ -937,26 +936,36 @@ source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
 # Copy VTS tests
+rm -fr test/vts/vss_vehicle
 mkdir -p test/vts/vss_vehicle
-cp ~/output_c5/vts/* test/vts/vss_vehicle/
-
-
-# Rebuild affected modules only (~30 min vs full rebuild)
+cp ~/output_c5/vts/VtsHalAutomotiveVehicleVss.cpp \
+   ~/output_c5/vts/VtsHalAutomotiveVehicleVss.xml \
+   ~/output_c5/vts/Android.bp \
+   ~/aosp-14-auto/test/vts/vss_vehicle/
 mmm test/vts/vss_vehicle
 
-m vendorimage
 cvd reset -y
 launch_cvd -gpu_mode=guest_swiftshader --cpus 4 --memory_mb 8192
 
 # JSON file in other terminal
 # from mac
 gcloud compute scp /Users/macintoshhd/Downloads/VssProperties.json nguyenngoctam1307@aosp-builder-cutterfish:~/aosp-14-auto/ --zone=us-central1-a
-# from output_c5.
 
-adb root
-adb remount
-adb sync vendor
-adb reboot
+# from output_c5.
+# 1. make /vendor writable (reboot first if remount tells you to):
+cd ~/aosp-14-auto
+adb root && adb remount
+
+# 2. push into the config dir:
+adb push ~/output_c5/fake_vhal/VssProperties.json /vendor/etc/automotive/vhalconfig/VssProperties.json
+
+# 3. reboot so the VHAL re-scans the dir at startup:
+adb reboot && adb wait-for-device && adb root && adb wait-for-device
+
+# 4. verify:
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list | wc -l
+adb logcat -b all -d | grep -i VssProperties   # want a "loading properties" line, no "failed to load"
+
 ```
 
 #### 8d — Relaunch Cuttlefish and run VTS
