@@ -319,29 +319,29 @@ class FakeVehicleHardwarePatchAgent:
 // DO NOT EDIT MANUALLY — regenerate with multi_main_c5.py
 // Total VSS properties: {total} across {len(domain_map)} domains
 // ═══════════════════════════════════════════════════════════════
-
-// Forward declaration — definition follows below
-static std::vector<VehiclePropConfig> mergeVssProperties(std::vector<VehiclePropConfig>);
+//
+// IMPORTANT: VSS props are registered into mServerSidePropStore in init(),
+// NOT appended in getAllPropertyConfigs(). The fake VHAL's --list/--get/--set
+// and subscription paths all read the prop store; getAllPropertyConfigs() is a
+// secondary read path that dumpsys does not use. Appending there is a silent
+// no-op at runtime (props compile in but never appear on device). The
+// registration loop is injected inline into init() because it needs the
+// member fields mServerSidePropStore and mValuePool.
 
 static const std::vector<VehiclePropConfig> kVssProperties = {{
 {props_str}
 }};
-
-// Called from getAllPropertyConfigs() to merge VSS properties
-static std::vector<VehiclePropConfig> mergeVssProperties(
-        std::vector<VehiclePropConfig> configs) {{
-    configs.insert(configs.end(), kVssProperties.begin(), kVssProperties.end());
-    return configs;
-}}
 """
 
     def _patch_source(self, original: str, vss_block: str) -> str:
         """
         Patch FakeVehicleHardware.cpp correctly:
-        1. Insert VSS block (using decls + kVssProperties + mergeVssProperties)
-           BEFORE getAllPropertyConfigs — so function is defined before call
-        2. Inject merge call into getAllPropertyConfigs
-        Both insertions happen INSIDE the fake namespace.
+        1. Insert VSS block (using decls + kVssProperties) BEFORE
+           getAllPropertyConfigs, inside the fake namespace.
+        2. Inject a registration loop at the END of init() that calls
+           registerProperty() + writeValue() for each kVssProperties entry.
+           This is what makes props appear on device — the prop store, not
+           getAllPropertyConfigs(), is what --list/--get/--set read.
         """
         # Step 1: Remove existing C5 block to avoid duplicates
         base = original.rstrip()
@@ -350,8 +350,9 @@ static std::vector<VehiclePropConfig> mergeVssProperties(
             if idx > 0:
                 base = base[:idx].rstrip()
 
-        # Step 2: Find getAllPropertyConfigs line — insert VSS block BEFORE it
-        # This ensures mergeVssProperties is defined before it is called
+        # Step 2: Insert the kVssProperties block before getAllPropertyConfigs
+        # (any point inside the fake namespace works; this keeps it near related
+        # config code). The registration loop in step 3 references it from init().
         func_pos = base.find("\nstd::vector<VehiclePropConfig> FakeVehicleHardware::getAllPropertyConfigs")
         if func_pos < 0:
             func_pos = base.find("getAllPropertyConfigs")
@@ -364,37 +365,70 @@ static std::vector<VehiclePropConfig> mergeVssProperties(
             "using ::aidl::android::hardware::automotive::vehicle::VehiclePropConfig;\n"
             "using ::aidl::android::hardware::automotive::vehicle::VehicleAreaConfig;\n"
             "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyAccess;\n"
-            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyChangeMode;\n\n"
+            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyChangeMode;\n"
+            "using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyStatus;\n\n"
         )
         insert = using_decls + vss_block.strip() + "\n\n"
         base = base[:func_pos] + insert + base[func_pos:]
         print(f"  [FAKE_VHAL] ✓ Inserted VSS block before getAllPropertyConfigs")
 
-        # Step 3: Inject merge call into getAllPropertyConfigs
-        # Variable is 'allConfigs' in FakeVehicleHardware
-        search_start = 0
+        # Step 3: Register VSS props into the prop store inside init().
+        #
+        # CRITICAL: do NOT inject into getAllPropertyConfigs(). On AOSP 14 the
+        # fake VHAL serves --list/--get/--set and subscriptions from
+        # mServerSidePropStore, which is populated in init() via
+        # registerProperty(). getAllPropertyConfigs() is a secondary read path
+        # that dumpsys --list does not call, so appending there is a silent
+        # runtime no-op (the original C5 bug: props compiled in, 0 visible on
+        # device). We mirror the existing init() registration loop instead.
+        #
+        # The injected loop, for each cfg in kVssProperties:
+        #   - registerProperty(cfg, nullptr)  -> makes it appear in --list
+        #   - writes a default value          -> makes --get return OK
+        registration = (
+            "\n    // ── C5: VSS — register generated configs into the prop store ──\n"
+            "    // Injected at end of init(). Mirrors the standard registration loop\n"
+            "    // above so VSS props are visible to --list and back --get/--set.\n"
+            "    for (const auto& vssCfg : kVssProperties) {\n"
+            "        mServerSidePropStore->registerProperty(vssCfg, nullptr);\n"
+            "        auto vssValue = mValuePool->obtain(getPropType(vssCfg.prop));\n"
+            "        vssValue->prop = vssCfg.prop;\n"
+            "        vssValue->areaId =\n"
+            "                vssCfg.areaConfigs.empty() ? 0 : vssCfg.areaConfigs[0].areaId;\n"
+            "        vssValue->timestamp = elapsedRealtimeNano();\n"
+            "        vssValue->status =\n"
+            "                VehiclePropertyStatus::AVAILABLE;\n"
+            "        mServerSidePropStore->writeValue(std::move(vssValue), /*updateStatus=*/true);\n"
+            "    }\n"
+        )
+
+        # Find FakeVehicleHardware::init() and inject before its closing brace.
         injected = False
-        while True:
-            func_start = base.find("getAllPropertyConfigs", search_start)
-            if func_start < 0:
-                break
-            brace_idx = base.find("{", func_start)
-            next_semi  = base.find(";", func_start)
-            if brace_idx > 0 and (next_semi < 0 or brace_idx < next_semi):
-                for var in ["allConfigs", "configs"]:
-                    return_idx = base.find(f"return {var};", brace_idx)
-                    if return_idx > 0:
-                        merge = f"    {var} = mergeVssProperties({var});  // C5: VSS\n    "
-                        base = base[:return_idx] + merge + base[return_idx:]
-                        injected = True
-                        print(f"  [FAKE_VHAL] ✓ Injected merge call before 'return {var};'")
-                        break
-                if injected:
-                    break
-            search_start = func_start + 1
+        init_pos = base.find("void FakeVehicleHardware::init()")
+        if init_pos >= 0:
+            body_open = base.find("{", init_pos)
+            if body_open >= 0:
+                # Walk braces to find the matching close of init().
+                depth = 0
+                i = body_open
+                end = -1
+                while i < len(base):
+                    c = base[i]
+                    if c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                    i += 1
+                if end > 0:
+                    base = base[:end] + registration + base[end:]
+                    injected = True
+                    print("  [FAKE_VHAL] ✓ Injected VSS registration loop into init()")
 
         if not injected:
-            print("  [FAKE_VHAL] ⚠ Could not inject merge call")
+            print("  [FAKE_VHAL] ⚠ Could not locate init() to inject registration loop")
 
         return base
 
@@ -455,15 +489,23 @@ static std::vector<VehiclePropConfig> mergeVssProperties(
         ok, errors = self._validate_syntax(tmp_path)
 
         # Score
-        has_merge  = "mergeVssProperties" in patched
-        has_props  = "kVssProperties" in patched
+        # NOTE: the old C5 scorer rewarded `mergeVssProperties` presence, which
+        # is exactly the silent-no-op pattern. We now require registration into
+        # the prop store inside init() — the thing that actually makes props
+        # visible on device — so a high score corresponds to working output.
+        has_props      = "kVssProperties" in patched
+        has_register   = "registerProperty(vssCfg" in patched
+        has_seed_value = "writeValue(std::move(vssValue)" in patched
+        in_init        = "C5: VSS — register generated configs" in patched
         prop_count = patched.count(".prop =")
         coverage   = min(1.0, prop_count / max(total_props, 1))
         syntax_score = 1.0 if ok else 0.6  # clang++ on Colab lacks AOSP headers — partial credit
-        struct_score = 1.0 if (has_merge and has_props) else 0.5
+        struct_score = 1.0 if (has_props and has_register and has_seed_value and in_init) else 0.5
         score = 0.35 * struct_score + 0.45 * syntax_score + 0.20 * coverage
 
         print(f"  [FAKE_VHAL] score={score:.3f} syntax={'✓' if ok else '⚠ (AOSP headers needed on GCP VM)'} props={prop_count}/{total_props}")
+        if not (has_register and has_seed_value and in_init):
+            print("  [FAKE_VHAL] ⚠ registration loop missing/incomplete — props would NOT appear on device")
         if not ok:
             print(f"  [FAKE_VHAL] Note: syntax check requires AOSP headers — will compile correctly on GCP VM")
 

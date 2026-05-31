@@ -418,6 +418,11 @@ gcloud compute ssh aosp-builder-cutterfish \
   --project=$(gcloud config get-value project) \
   --zone=us-central1-a  
 
+
+gcloud compute instances list \
+  --project=$(gcloud config get-value project) \
+  --zone=us-central1-a  
+
 sudo growpart /dev/sda 1
 sudo resize2fs /dev/sda1
 df -h
@@ -994,17 +999,25 @@ cp ~/output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp \
 mkdir -p test/vts/vss_vehicle
 cp ~/output_c5/vts/* test/vts/vss_vehicle/
 
+
+rm -f $ANDROID_PRODUCT_OUT/vendor/etc/vintf/manifest/vhal-default-service.xml
+rm -f $ANDROID_PRODUCT_OUT/vendor/bin/hw/android.hardware.automotive.vehicle@V3-default-service
+
 # Rebuild affected modules only (~30 min vs full rebuild)
 mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl
 mmm test/vts/vss_vehicle
-m android.hardware.automotive.vehicle@V3-fake-service
+mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl -j$(nproc)
+m android.hardware.automotive.vehicle@V3-default-service
+
+cvd reset -y
+launch_cvd -gpu_mode=guest_swiftshader --cpus 4 --memory_mb 8192
 
 adb root
 adb remount
-adb sync vendor          # Push the new VHAL binary
+adb sync vendor
 
-stop_cvd || true
-launch_cvd --daemon
+adb reboot
+
 ```
 
 #### 8d — Relaunch Cuttlefish and run VTS
