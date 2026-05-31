@@ -796,10 +796,6 @@ launch_cvd --noresume --cpus=4 --memory_mb=4096
 # Wait for: VIRTUAL_DEVICE_BOOT_COMPLETED
 ```
 
-> **Note:** `adb` is not installed system-wide — it comes from the AOSP build output.
-> You must `source build/envsetup.sh` and `lunch` in every new terminal before using `adb`.
-> Do NOT run `apt install adb` — use the version from your build tree.
-
 ```bash
 # In a new terminal (source the build env again)
 cd ~/aosp-14-auto
@@ -940,35 +936,27 @@ cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-# Apply FakeVehicleHardware patch (non-destructive — appends VSS configs)
-rm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
-cp ~/output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp \
-   hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
-
 # Copy VTS tests
 mkdir -p test/vts/vss_vehicle
 cp ~/output_c5/vts/* test/vts/vss_vehicle/
 
 
-rm -f $ANDROID_PRODUCT_OUT/vendor/etc/vintf/manifest/vhal-default-service.xml
-rm -f $ANDROID_PRODUCT_OUT/vendor/bin/hw/android.hardware.automotive.vehicle@V3-default-service
-
 # Rebuild affected modules only (~30 min vs full rebuild)
-mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl
 mmm test/vts/vss_vehicle
-mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl -j$(nproc)
-m android.hardware.automotive.vehicle@V3-emulator-service
 
 m vendorimage
 cvd reset -y
 launch_cvd -gpu_mode=guest_swiftshader --cpus 4 --memory_mb 8192
 
+# JSON file in other terminal
+# from mac
+gcloud compute scp /Users/macintoshhd/Downloads/VssProperties.json nguyenngoctam1307@aosp-builder-cutterfish:~/aosp-14-auto/ --zone=us-central1-a
+# from output_c5.
+
 adb root
 adb remount
 adb sync vendor
-
 adb reboot
-
 ```
 
 #### 8d — Relaunch Cuttlefish and run VTS

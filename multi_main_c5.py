@@ -333,6 +333,87 @@ static const std::vector<VehiclePropConfig> kVssProperties = {{
 }};
 """
 
+    def _build_vss_json_config(self, domain_map: dict) -> str:
+        """
+        Generate VssProperties.json in the AOSP DefaultConfig JSON format that
+        the fake VHAL's JsonConfigLoader reads from /vendor/etc/automotive/vhalconfig/.
+
+        This is the DEVICE-VERIFIED output path, preferred over the C++ patch:
+          - The emulator service instantiates EmulatedVehicleHardware (a subclass
+            of FakeVehicleHardware), so a C++ init() patch in FakeVehicleHardware
+            may not run. The JSON loader runs for both — config loading is
+            inherited and unconditional at startup.
+          - No recompile of the VHAL service: push JSON + restart/reboot.
+
+        FORMAT NOTES (each verified against on-device loader errors):
+          - "property" MUST be a JSON integer (decimal), NOT a quoted hex string.
+            A quoted value is parsed as an enum-constant NAME and rejected with
+            'Invalid constant value: "0x..." for field: property'.
+          - "access"/"changeMode" are the "Enum::VALUE" string forms.
+          - each area needs a typed "defaultValue" so --get returns a value
+            (not NOT_AVAILABLE). The value key is chosen from the prop id's
+            type bits (0x00FF0000 mask).
+        """
+        import json as _json
+        TYPE_MASK = 0x00FF0000
+        TYPE_DEFAULTVAL = {
+            0x00100000: {"stringValue": ""},     # STRING
+            0x00200000: {"int32Values": [0]},    # BOOLEAN
+            0x00400000: {"int32Values": [0]},    # INT32
+            0x00410000: {"int32Values": [0]},    # INT32_VEC
+            0x00500000: {"int64Values": [0]},    # INT64
+            0x00510000: {"int64Values": [0]},    # INT64_VEC
+            0x00600000: {"floatValues": [0.0]},  # FLOAT
+            0x00610000: {"floatValues": [0.0]},  # FLOAT_VEC
+            0x00700000: {"int32Values": [0]},    # BYTES
+        }
+        ACCESS_MAP = {
+            "READ":       "VehiclePropertyAccess::READ",
+            "WRITE":      "VehiclePropertyAccess::WRITE",
+            "READ_WRITE": "VehiclePropertyAccess::READ_WRITE",
+        }
+        props = []
+        for domain, dprops in domain_map.items():
+            for name, prop_id, typ, access, desc in dprops:
+                defval = TYPE_DEFAULTVAL.get(prop_id & TYPE_MASK, {"int32Values": [0]})
+                props.append({
+                    "property": int(prop_id),  # INTEGER — not quoted hex
+                    "access": ACCESS_MAP.get(access, "VehiclePropertyAccess::READ"),
+                    "changeMode": "VehiclePropertyChangeMode::ON_CHANGE",
+                    "areas": [{"areaId": 0, "defaultValue": defval}],
+                })
+        return _json.dumps({"properties": props}, indent=2)
+
+    def _validate_vss_json(self, json_text: str, total_props: int) -> tuple:
+        """
+        Validate the generated JSON against the on-device loader's known rules,
+        catching the failure classes we hit in C5 testing before they reach the VM.
+        """
+        import json as _json
+        try:
+            data = _json.loads(json_text)
+        except Exception as e:
+            return False, f"invalid JSON: {e}"
+        props = data.get("properties")
+        if not isinstance(props, list) or not props:
+            return False, "missing or empty 'properties' array"
+        ids = []
+        for p in props:
+            pid = p.get("property")
+            if not isinstance(pid, int):
+                return False, f"'property' must be an integer, got {type(pid).__name__}: {pid!r}"
+            if (pid & 0xF0000000) != 0x20000000:
+                return False, f"property 0x{pid:08x} not in VENDOR group (would collide with system props)"
+            if not p.get("areas"):
+                return False, f"property 0x{pid:08x} missing 'areas'"
+            ids.append(pid)
+        dupes = {i for i in ids if ids.count(i) > 1}
+        if dupes:
+            return False, f"duplicate property ids: {[hex(d) for d in list(dupes)[:5]]}"
+        if len(props) != total_props:
+            return True, f"warning: emitted {len(props)} props, expected {total_props}"
+        return True, ""
+
     def _patch_source(self, original: str, vss_block: str) -> str:
         """
         Patch FakeVehicleHardware.cpp correctly:
@@ -462,67 +543,46 @@ static const std::vector<VehiclePropConfig> kVssProperties = {{
         except Exception as e:
             return False, str(e)
 
-    def run(self, domain_map: dict) -> tuple[str, float]:
+    def run(self, domain_map: dict) -> tuple:
         """
-        Generate and validate patched FakeVehicleHardware.cpp.
-        Returns (patched_content, score).
+        Generate VSS property configs for the fake VHAL.
+
+        PRIMARY output is VssProperties.json (device-verified path). The C++
+        patch is still produced for reference, but the JSON is what gets loaded
+        on device and is what the score reflects.
+        Returns (json_content, score). Also stashes the C++ patch on self.
         """
-        print(f"\n  [FAKE_VHAL] Patching FakeVehicleHardware.cpp...")
-
-        # Load original FakeVehicleHardware.cpp
-        orig_path = AOSP_SOURCE_DIR / "FakeVehicleHardware.cpp"
-        if orig_path.exists():
-            original = orig_path.read_text()
-            print(f"  [FAKE_VHAL] Loaded original ({len(original)} chars)")
-        else:
-            print(f"  [FAKE_VHAL] FakeVehicleHardware.cpp not found — generating stub")
-            original = self._generate_stub(domain_map)
-
-        # Get RAG context for FakeVehicleHardware patterns
-        rag_ctx = _retrieve(
-            "FakeVehicleHardware getAllPropertyConfigs VehiclePropConfig kVehicleProperties",
-            agent_type="cpp"
-        )
-
-        # Always use deterministic generator for VSS config block.
-        # LLM cannot reliably generate 385 property configs in one shot —
-        # it truncates to ~24 entries. The _build_vss_config_block() method
-        # generates all properties correctly from domain_map.
+        print(f"\n  [FAKE_VHAL] Generating VSS property configs...")
         total_props = sum(len(v) for v in domain_map.values())
-        vss_block = self._build_vss_config_block(domain_map)
-        print(f"  [FAKE_VHAL] Built VSS config block: {total_props} properties (deterministic)")
 
-        # Patch original file
-        patched = self._patch_source(original, vss_block)
+        # ── PRIMARY: JSON config (device-verified loader format) ──
+        json_content = self._build_vss_json_config(domain_map)
+        ok, msg = self._validate_vss_json(json_content, total_props)
+        prop_count = json_content.count('"property":')
 
-        # Validate syntax
-        tmp_path = OUTPUT_DIR / "fake_vhal" / "FakeVehicleHardware_vss_patch.cpp"
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_text(patched)
-        ok, errors = self._validate_syntax(tmp_path)
+        # ── SECONDARY: C++ patch (kept for reference / thesis completeness) ──
+        # Not the deployed artifact; emulator service uses EmulatedVehicleHardware.
+        try:
+            orig_path = AOSP_SOURCE_DIR / "FakeVehicleHardware.cpp"
+            original = orig_path.read_text() if orig_path.exists() else self._generate_stub(domain_map)
+            vss_block = self._build_vss_config_block(domain_map)
+            self.cpp_patch = self._patch_source(original, vss_block)
+        except Exception as e:
+            self.cpp_patch = f"// C++ reference patch generation skipped: {e}\n"
 
-        # Score
-        # NOTE: the old C5 scorer rewarded `mergeVssProperties` presence, which
-        # is exactly the silent-no-op pattern. We now require registration into
-        # the prop store inside init() — the thing that actually makes props
-        # visible on device — so a high score corresponds to working output.
-        has_props      = "kVssProperties" in patched
-        has_register   = "registerProperty(vssCfg" in patched
-        has_seed_value = "writeValue(std::move(vssValue)" in patched
-        in_init        = "C5: VSS — register generated configs" in patched
-        prop_count = patched.count(".prop =")
-        coverage   = min(1.0, prop_count / max(total_props, 1))
-        syntax_score = 1.0 if ok else 0.6  # clang++ on Colab lacks AOSP headers — partial credit
-        struct_score = 1.0 if (has_props and has_register and has_seed_value and in_init) else 0.5
+        # Score on JSON validity (the thing that actually works on device)
+        coverage     = min(1.0, prop_count / max(total_props, 1))
+        syntax_score = 1.0 if ok else 0.0
+        struct_score = 1.0 if ok else 0.5
         score = 0.35 * struct_score + 0.45 * syntax_score + 0.20 * coverage
 
-        print(f"  [FAKE_VHAL] score={score:.3f} syntax={'✓' if ok else '⚠ (AOSP headers needed on GCP VM)'} props={prop_count}/{total_props}")
-        if not (has_register and has_seed_value and in_init):
-            print("  [FAKE_VHAL] ⚠ registration loop missing/incomplete — props would NOT appear on device")
-        if not ok:
-            print(f"  [FAKE_VHAL] Note: syntax check requires AOSP headers — will compile correctly on GCP VM")
+        status = "✓" if ok else "✗"
+        print(f"  [FAKE_VHAL] JSON config: {prop_count}/{total_props} properties {status}")
+        if msg:
+            print(f"  [FAKE_VHAL] {msg}")
+        print(f"  [FAKE_VHAL] score={score:.3f} (JSON is the deployed artifact)")
 
-        return patched, score
+        return json_content, score
 
     def _generate_stub(self, domain_map: dict) -> str:
         """Minimal stub if original file not available."""
@@ -713,13 +773,23 @@ cc_test {
 """
 
     def _generate_test_config(self) -> str:
+        # NOTE: the test is built vendor:true + 64-bit, so it installs under
+        # /data/nativetest64/vendor/ — NOT /data/nativetest. Pointing GTest at
+        # the wrong path makes TradeFed find the module but run 0 test cases
+        # ("TradeFed did not find any test cases to run"). We push the binary
+        # explicitly to /data/local/tmp and run it there, which avoids the
+        # nativetest/nativetest64 + vendor-subdir ambiguity entirely.
         return """<?xml version="1.0" encoding="utf-8"?>
 <!-- AUTO-GENERATED by C5 pipeline -->
 <configuration description="VTS test for VSS Vehicle HAL properties">
     <option name="test-suite-tag" value="vts"/>
     <target_preparer class="com.android.tradefed.targetprep.RootTargetPreparer"/>
+    <target_preparer class="com.android.tradefed.targetprep.PushFilePreparer">
+        <option name="cleanup" value="true"/>
+        <option name="push" value="VtsHalAutomotiveVehicleVss->/data/local/tmp/VtsHalAutomotiveVehicleVss"/>
+    </target_preparer>
     <test class="com.android.tradefed.testtype.GTest">
-        <option name="native-test-device-path" value="/data/nativetest"/>
+        <option name="native-test-device-path" value="/data/local/tmp"/>
         <option name="module-name" value="VtsHalAutomotiveVehicleVss"/>
     </test>
 </configuration>
@@ -947,15 +1017,22 @@ def main():
     total = sum(len(v) for v in domain_map.values())
     print(f"  ✓ Loaded {total} properties across {len(domain_map)} domains\n")
 
-    # ── Step 2: Patch FakeVehicleHardware ────────────────────────
-    print("[ STEP 2 ] Patching FakeVehicleHardware.cpp (Agent 1)...")
+    # ── Step 2: Generate VSS configs for fake VHAL ───────────────
+    print("[ STEP 2 ] Generating VSS property configs (Agent 1)...")
     fake_agent   = FakeVehicleHardwarePatchAgent()
-    fake_content, fake_score = fake_agent.run(domain_map)
+    json_content, fake_score = fake_agent.run(domain_map)
 
-    fake_out = OUTPUT_DIR / "fake_vhal" / "FakeVehicleHardware_vss_patch.cpp"
-    fake_out.write_text(fake_content)
-    results["fake_vhal"] = {"score": fake_score, "file": str(fake_out)}
-    print(f"  ✓ FakeVehicleHardware patch: score={fake_score:.3f} → {fake_out.name}\n")
+    # PRIMARY deliverable: device-verified JSON config
+    fake_dir = OUTPUT_DIR / "fake_vhal"
+    fake_dir.mkdir(parents=True, exist_ok=True)
+    json_out = fake_dir / "VssProperties.json"
+    json_out.write_text(json_content)
+    # SECONDARY: C++ patch kept for reference
+    cpp_out = fake_dir / "FakeVehicleHardware_vss_patch.cpp"
+    cpp_out.write_text(getattr(fake_agent, "cpp_patch", "// not generated\n"))
+
+    results["fake_vhal"] = {"score": fake_score, "file": str(json_out)}
+    print(f"  ✓ VSS configs: score={fake_score:.3f} → {json_out.name} (+ C++ reference)\n")
 
     # ── Step 3: Generate VTS tests ───────────────────────────────
     print("[ STEP 3 ] Generating VSS VTS tests (Agent 2)...")
@@ -995,16 +1072,21 @@ def main():
     print(f"  Time                      : {elapsed:.0f}s")
     print()
     print("  Next steps (on GCP VM):")
-    print("  1. Copy patch to AOSP tree:")
-    print(f"     cp output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp \\")
-    print(f"        ~/aosp-14-auto/{FAKE_VHAL_REL}")
-    print("  2. Copy VTS tests:")
+    print("  1. Push VSS configs to the device (no rebuild needed):")
+    print("     adb root && adb remount   # reboot once first if remount says so")
+    print("     adb push output_c5/fake_vhal/VssProperties.json \\")
+    print("        /vendor/etc/automotive/vhalconfig/VssProperties.json")
+    print("     adb reboot && adb wait-for-device")
+    print("  2. Verify the props are live (expect base+VSS count, values on --get):")
+    print("     adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list | wc -l")
+    print("  3. Build + copy VTS, then run:")
     print(f"     cp -r output_c5/vts/ ~/aosp-14-auto/{VTS_REL}/")
-    print("  3. Build:")
-    print("     mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl")
     print("     mmm test/vts/vss_vehicle")
-    print("  4. Relaunch Cuttlefish and run:")
-    print("     atest VtsHalAutomotiveVehicleVss")
+    print("     atest VtsHalAutomotiveVehicleVss -c")
+    print("  4. (Reference only) C++ patch is at")
+    print("     output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp")
+    print("     — NOT the deployed path; the emulator service uses")
+    print("     EmulatedVehicleHardware, so prefer the JSON above.")
     print("  5. Install HMI app:")
     print("     mmm output_c5/hmi_app && adb install VssDashboardApp.apk")
     print("=" * 70)
