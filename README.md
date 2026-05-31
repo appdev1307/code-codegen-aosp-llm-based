@@ -942,6 +942,9 @@ cp ~/output_c5/vts/VtsHalAutomotiveVehicleVss.cpp \
    ~/output_c5/vts/VtsHalAutomotiveVehicleVss.xml \
    ~/output_c5/vts/Android.bp \
    ~/aosp-14-auto/test/vts/vss_vehicle/
+   
+sed -i.bak 's/android.hardware.automotive.vehicle-V4-ndk/android.hardware.automotive.vehicle-V3-ndk/' \
+  test/vts/vss_vehicle/Android.bp
 mmm test/vts/vss_vehicle
 
 cvd reset -y
