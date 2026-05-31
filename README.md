@@ -997,33 +997,30 @@ cp ~/output_c5/vts/* test/vts/vss_vehicle/
 # Rebuild affected modules only (~30 min vs full rebuild)
 mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl
 mmm test/vts/vss_vehicle
+m android.hardware.automotive.vehicle@V3-fake-service
+
+adb root
+adb remount
+adb sync vendor          # Push the new VHAL binary
+
+stop_cvd || true
+launch_cvd --daemon
 ```
 
 #### 8d — Relaunch Cuttlefish and run VTS
 
 ```bash
 # Relaunch with new build
-stop_cvd
-launch_cvd --noresume --cpus=4 --memory_mb=4096
-# Wait for: VIRTUAL_DEVICE_BOOT_COMPLETED
-
-
-# In other VM terminal (redeploy change to cutterfish):
-m android.hardware.automotive.vehicle@V3-default-service
-adb connect 0.0.0.0:6520
-adb -s 0.0.0.0:6520 wait-for-device
-adb -s 0.0.0.0:6520 root
-adb -s 0.0.0.0:6520 remount
-adb -s 0.0.0.0:6520 sync vendor
-adb -s 0.0.0.0:6520 reboot
-
-# wait for boot, reconnect, then:
-adb -s 0.0.0.0:6520 root
-adb -s 0.0.0.0:6520 shell dumpsys car_service | grep -iE "0x2[0-9a-f]{7}" | head
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
 #
 adb -s 0.0.0.0:6520 shell pgrep -f vehicle
 adb -s 0.0.0.0:6520 shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list | head -20
+
+adb -s 0.0.0.0:6520 shell setenforce 0
+adb -s 0.0.0.0:6520 shell dumpsys car_service | grep -icE "VENDOR_PROPERTY\(0x2[0-9a-f]{7}\)"
 
 # Verify VSS properties are now served
 adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x1000 0
