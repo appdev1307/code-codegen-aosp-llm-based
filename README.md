@@ -264,6 +264,9 @@ gcloud storage buckets add-iam-policy-binding gs://aosp-thesis-temp \
 **Then on the GCP VM:**
 
 ```bash
+# Copy frm Mac
+gcloud compute scp /Users/macintoshhd/Downloads/VssProperties.json nguyenngoctam1307@aosp-builder-cutterfish:~/aosp-14-auto/ --zone=us-central1-a
+
 BUCKET=gs://aosp-thesis-temp
 cd ~/aosp-14-auto
 
@@ -314,63 +317,7 @@ gsutil rm gs://aosp-thesis-temp/output_c5.zip
 python multi_main_c5.py
 ```
 
-**C5 generates 3 artifact types:**
-
-| Agent | Output | Validates via |
-|-------|--------|--------------|
-| FakeVehicleHardwarePatchAgent | `FakeVehicleHardware_vss_patch.cpp` | `clang++` + feedback |
-| VtsGeneratorAgent | `VtsHalAutomotiveVehicleVss.cpp` | Structure check + feedback |
-| HMI App | Kotlin fragments + XML layouts | XML parser + feedback |
-
-### C5 Deploy on GCP VM
-
-```bash
-# Download C5 output
-gsutil cp gs://aosp-thesis-temp/output_c5.zip ~/
-unzip ~/output_c5.zip -d ~/output_c5
-
-# 1. Apply FakeVehicleHardware patch
-cp ~/output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp \
-   ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
-
-# 2. Copy VTS tests
-mkdir -p ~/aosp-14-auto/test/vts/vss_vehicle
-cp ~/output_c5/vts/* ~/aosp-14-auto/test/vts/vss_vehicle/
-
-# 3. Build patched FakeVehicleHardware + VTS
-cd ~/aosp-14-auto
-source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl
-mmm test/vts/vss_vehicle
-
-# 4. Relaunch Cuttlefish with new build
-stop_cvd
-launch_cvd --noresume --cpus=4 --memory_mb=4096
-
-# 5. Run VSS VTS tests
-atest VtsHalAutomotiveVehicleVss
-
-# 6. Verify VSS properties are now served
-adb -s 0.0.0.0:6520 shell cmd car_service get-property-value 0x1000 0
-# Expected: HalPropValue{prop=4096, areaId=0, ...}
-
-# 7. Install HMI app
-mmm output_c5/hmi_app
-adb -s 0.0.0.0:6520 install -r \
-  out/target/product/vsoc_x86_64/system/app/VssDashboardApp/VssDashboardApp.apk
-
-# 8. Launch and verify
-adb -s 0.0.0.0:6520 shell am start -n com.vss.vehicleapp/.MainActivity
-adb -s 0.0.0.0:6520 shell cmd car_service inject-vhal-event 0x1000 0 42
-adb -s 0.0.0.0:6520 logcat | grep -i "vehicleapp\|CarProperty"
-```
-
-### C5 Known Limitations
-
-- FakeVehicleHardware patch requires AOSP rebuild (~3 hours) before Cuttlefish can serve VSS properties
-- VTS tests for runtime property access may fail if patch is not applied — compile-time enum tests always pass
-- HMI app requires `android.car` API — must be built within AOSP tree, not standalone Android Studio
+### C5 Deploy on GCP VM - In later chapters.
 
 ## AOSP Source Tree Validation
 
