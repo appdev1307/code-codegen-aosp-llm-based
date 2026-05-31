@@ -308,6 +308,8 @@ unzip aosp_dump.zip -d aosp_dump_raw
 cp aosp_dump_raw/VehicleProperty*.aidl aosp_dump/
 # Note: -j flag in zip means files are at root of zip, not in subdirectory
 
+gsutil rm gs://aosp-thesis-temp/output_c5.zip
+
 # Run C5 (reads C4 output + AOSP assets automatically)
 python multi_main_c5.py
 ```
@@ -992,6 +994,7 @@ source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
 # Apply FakeVehicleHardware patch (non-destructive — appends VSS configs)
+rm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
 cp ~/output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp \
    hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
 
@@ -1007,8 +1010,9 @@ rm -f $ANDROID_PRODUCT_OUT/vendor/bin/hw/android.hardware.automotive.vehicle@V3-
 mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl
 mmm test/vts/vss_vehicle
 mmm hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl -j$(nproc)
-m android.hardware.automotive.vehicle@V3-default-service
+m android.hardware.automotive.vehicle@V3-emulator-service
 
+m vendorimage
 cvd reset -y
 launch_cvd -gpu_mode=guest_swiftshader --cpus 4 --memory_mb 8192
 
