@@ -1,38 +1,36 @@
 """
 agents/rag_dspy_cpp_agent.py
 ═══════════════════════════════════════════════════════════════════
-RAG+DSPy VHAL C++ service implementation agent (condition 3).
+RAG+DSPy VHAL C++ service implementation agent.
 
-Retrieves real .cpp/.h VHAL examples from ChromaDB (aosp_cpp
-collection) and uses a DSPy-optimised prompt to generate the
-C++ service implementation file.
+Root-cause fix: the canonical AIDL VHAL reference files
+(DefaultVehicleHal.cpp, FakeVehicleHardware.cpp, VehicleService.cpp)
+ARE in the aosp_cpp corpus, but generic queries
+("getValues setValues implementation") ranked generic HALs
+(biometrics, bluetooth, sensors) above them. The LLM was therefore
+grounded in the wrong subsystem and produced non-compiling hybrids
+(HIDL_FETCH_*, wrong getValues signatures).
 
-Interface matches original VHALCppAgent.run(module_spec).
+This version uses vehicle-anchored multi-queries so retrieval surfaces
+the real VHAL reference code, and a prompt that tells the LLM to follow
+the retrieved reference signatures rather than invent them.
+
+Uses ONLY the mixin's public API: self._retrieve_multi(queries),
+self._generate(**signature_inputs). No direct ChromaDB access.
 ═══════════════════════════════════════════════════════════════════
 """
-
 from __future__ import annotations
 from agents.rag_dspy_mixin import RAGDSPyMixin
 
 
 class RAGDSPyCppAgent(RAGDSPyMixin):
-    """
-    Generates VHAL C++ service implementation files using RAG + DSPy.
-
-    Parameters
-    ----------
-    dspy_programs_dir : str  — root dir for saved DSPy programs
-    rag_top_k         : int  — AOSP chunks to retrieve per call
-    rag_db_path       : str  — ChromaDB path
-    """
-
     AGENT_TYPE        = "cpp"
     DSPY_OUTPUT_FIELD = "cpp_code"
 
     def __init__(
         self,
         dspy_programs_dir: str = "dspy_opt/saved",
-        rag_top_k:         int = 3,
+        rag_top_k:         int = 4,
         rag_db_path:       str = "rag/chroma_db",
     ):
         self._init_rag_dspy(
@@ -42,49 +40,39 @@ class RAGDSPyCppAgent(RAGDSPyMixin):
         )
 
     def run(self, module_spec) -> str:
-        """
-        Generate a VHAL C++ service implementation for the given module.
-
-        Parameters
-        ----------
-        module_spec : ModuleSpec
-            Contains .domain (str), .properties (list), .to_llm_spec()
-
-        Returns
-        -------
-        str — complete .cpp file content, or "" on failure
-        """
         domain     = module_spec.domain
         properties = module_spec.to_llm_spec()
 
-        # Use multi-query retrieval for Android 14 AIDL-based VHAL patterns
+        # Vehicle-anchored queries. Naming the canonical reference files and
+        # vehicle-specific symbols pulls the real VHAL impl to the top of the
+        # aosp_cpp ranking instead of generic biometrics/bluetooth/sensors HALs.
         queries = [
-            f"DefaultVehicleHal IVehicleHardware getAllPropertyConfigs AIDL",
-            f"VehiclePropValue getValues setValues ndk aidl automotive vehicle",
-            f"VehiclePropertyStore onSetProperty onGetProperty android 14",
+            "DefaultVehicleHal IVehicleHardware automotive vehicle getAllPropertyConfigs",
+            "FakeVehicleHardware automotive vehicle getValues setValues VehiclePropValue",
+            "VehicleService automotive vehicle main AServiceManager_addService IVehicle",
         ]
         aosp_context = self._retrieve_multi(queries)
 
-        # ── Inject Android 14 AIDL C++ constraint ────────────────
         cpp_constraint = (
-            "\n=== CRITICAL: Android 14 AIDL C++ Rules ===\n"
-            "You MUST follow these rules for the generated .cpp file:\n"
-            "- Use AIDL namespace: aidl::android::hardware::automotive::vehicle\n"
-            "- Use ndk::ScopedAStatus (NOT Return<void>, NOT hidl Return)\n"
-            "- Use std::vector (NOT hidl_vec)\n"
-            "- DO NOT include <hidl/Status.h> or any hidl/ headers\n"
-            "- DO NOT use Void(), _hidl_cb, HIDL_FETCH_*, BpHw, BnHw\n"
-            "- DO NOT use Return<> template (that is HIDL)\n"
-            "- Include <aidl/android/hardware/automotive/vehicle/BnVehicle.h>\n"
-            "- Include <VehicleHalTypes.h> and <VehicleUtils.h>\n"
-            "- Use VehiclePropConfig for property definitions\n"
-            "- Property IDs should reference VehiclePropertyAdas enum values\n"
-            "- Extend IVehicleHardware or DefaultVehicleHal\n"
-            "- Module name: vendor.vss.adas (NOT android.hardware.automotive.vehicle-service)\n"
-            "- This is Android 14 AIDL C++ — NOT HIDL C++\n"
-            "=== END RULES ===\n"
+            "\n=== Android 14 AIDL VHAL C++ contract — FOLLOW the retrieved reference code ===\n"
+            "Generate a vendor IVehicleHardware implementation that mirrors the structure of the\n"
+            "retrieved DefaultVehicleHal / FakeVehicleHardware / VehicleService examples above.\n"
+            "Hard requirements (all visible in the retrieved reference):\n"
+            "- namespace aidl::android::hardware::automotive::vehicle\n"
+            "- ndk::ScopedAStatus return type (never HIDL Return<>)\n"
+            "- std::vector (never hidl_vec); AIDL 'boolean', not raw bool in interface types\n"
+            "- Register the service with a main() calling AServiceManager_addService(...),\n"
+            "  exactly as VehicleService.cpp does. DO NOT emit HIDL_FETCH_* — that is HIDL.\n"
+            "- getValues/setValues are ASYNCHRONOUS: match the EXACT signatures in the retrieved\n"
+            "  DefaultVehicleHal.cpp (callback + request parcelable). DO NOT invent a synchronous\n"
+            "  (propIds, out-vector) form — that signature does not exist in the AIDL interface.\n"
+            "- Property IDs reference the generated VehiclePropertyAdas enum constants.\n"
+            "- No hidl/ headers, no BpHw/BnHw, no '@2.0' types, no 'generates (' syntax.\n"
+            "Treat the retrieved reference files as the authoritative template for every signature\n"
+            "and for service registration. Do not deviate from their structure.\n"
+            "=== END ===\n"
         )
-        aosp_context = cpp_constraint + aosp_context
+        aosp_context = cpp_constraint + (aosp_context or "")
 
         output = self._generate(
             domain       = domain,
@@ -94,5 +82,4 @@ class RAGDSPyCppAgent(RAGDSPyMixin):
 
         if not output:
             self._log("DSPy returned empty — check module or optimizer")
-
         return output

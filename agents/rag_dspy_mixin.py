@@ -161,15 +161,12 @@ class RAGDSPyMixin:
 
     # HIDL patterns that should never appear in RAG context or output.
     # All lowercase — compared against .lower() text.
-    _HIDL_CONTAMINATION_PATTERNS = [
-        "v2_0", "v1_0", "@2.0", "@1.0", "hidl::", "bphw", "bnhw",
-        "vehicle@2", "vehicle@1", "types.hidl", "/2.0/", "/1.0/",
-        "hidl/status.h", "hidl/hiddensupport.h",
-        "oneway void get", "oneway void set",  # HIDL-style method signatures
-        "out bool", "out int", "out float",     # HIDL-style out params
-        "throws remoteexception",                # Java, not AIDL
-        "generates (",                           # HIDL return syntax
-    ]
+    # HIDL is excluded at INDEX time by directory path (see aosp_indexer.py),
+    # so retrieved chunks are already AIDL-only. Content-keyword filtering here
+    # was over-broad — patterns like "oneway void get" / "out bool" and the bare
+    # presence of "ivehicle" dropped legitimate AIDL VHAL reference code. Kept
+    # empty by design; the path-based index gate is authoritative.
+    _HIDL_CONTAMINATION_PATTERNS: list[str] = []
 
     @classmethod
     def _has_hidl_contamination(cls, text: str) -> list[str]:

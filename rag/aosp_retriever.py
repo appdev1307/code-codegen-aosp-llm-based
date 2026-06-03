@@ -195,31 +195,29 @@ class AOSPRetriever:
             return None
 
     def _parse_results(self, raw: dict, top_k: int) -> list[dict]:
-        """Parse ChromaDB results with strong HIDL post-filtering."""
+        """Parse ChromaDB results. HIDL is excluded at INDEX time by path, so
+        no content/filename filtering happens here — doing so wrongly dropped
+        AIDL reference files (VehiclePropertyStore, AccessForVehicleProperty,
+        etc.). The only path-level guard kept is a defensive check that the
+        source file isn't from a versioned HIDL directory."""
         results = []
 
         docs      = raw.get("documents", [[]])[0]
         metas     = raw.get("metadatas",  [[]])[0]
         distances = raw.get("distances",  [[]])[0]
 
-        # Strong HIDL filter keywords
-        HIDL_FILTER = {
-            "hidl::", "@2.0", "@1.0", "V2_0", "V1_0", "BpHw", "BnHw",
-            "android.hardware.automotive.vehicle@2.0", "IVehicle.hidl",
-            "FakeObd2", "VehiclePropertyStore", "VehicleObjectPool",
-            "Obd2SensorStore", "AccessForVehicleProperty"
-        }
+        # Defensive PATH-only HIDL guard (matches the indexer's gate). Does not
+        # look at file content or generic filenames.
+        HIDL_PATH_MARKERS = ("/2.0/", "/1.0/", "/3.0/", "/hidl/",
+                             "/vehicle/2.0/", "/vehicle/1.0/", "/v2_0/", "/v1_0/")
 
         for doc, meta, dist in zip(docs, metas, distances):
             score = round(1.0 - dist, 4)
             if score < self.min_score:
                 continue
 
-            text_lower = doc.lower()
-            filename_lower = meta.get("filename", "").lower()
-
-            # Skip if clearly legacy HIDL content
-            if any(kw.lower() in text_lower or kw.lower() in filename_lower for kw in HIDL_FILTER):
+            file_path = meta.get("file", "").lower()
+            if any(m in file_path for m in HIDL_PATH_MARKERS):
                 continue
 
             results.append({

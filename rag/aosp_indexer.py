@@ -35,25 +35,26 @@ BATCH_SIZE = 256
 MIN_FILE_BYTES = 64
 MAX_FILE_BYTES = 200_000
 
-# ==================== ULTIMATE HIDL EXCLUSION ====================
+# ==================== HIDL EXCLUSION (PATH-ONLY) ====================
+# HIDL lives entirely in versioned directories (.../2.0/, .../1.0/) and /hidl/
+# trees. Excluding by PATH is exact and complete: every HIDL file is under one
+# of these, and no AIDL file is. We deliberately do NOT filter by file CONTENT
+# or by generic filenames — those approaches cannot distinguish HIDL from AIDL
+# (both contain "vehicle", "IVehicle", "VehiclePropertyStore", etc.) and were
+# silently dropping the canonical AIDL reference implementation
+# (DefaultVehicleHal.cpp, FakeVehicleHardware.cpp, VehiclePropertyStore.cpp),
+# leaving the LLM with no AIDL VHAL code to learn from.
 HIDL_EXCLUDE_PATTERNS = [
-    "/2.0/", "/1.0/", "/3.0/", "/4.0/", "/hidl/", "/hidl-generated/",
-    "V2_0", "V1_0", "V3_0", "@2.0", "@1.0", "@3.0", "vehicle@2", "vehicle@1"
+    "/2.0/", "/1.0/", "/3.0/", "/4.0/",          # versioned HIDL package dirs
+    "/hidl/", "/hidl-generated/",                # explicit HIDL trees
+    "/vehicle/2.0/", "/vehicle/1.0/",            # HIDL vehicle HAL specifically
+    "/v2_0/", "/v1_0/", "/v3_0/",                # HIDL namespace dirs (path-scoped)
 ]
 
-HIDL_CONTENT_KEYWORDS = [
-    "hidl::", "@2.0", "@1.0", "v2_0", "v1_0", "bphw", "bnhw", "hidl",
-    "android.hardware.automotive.vehicle@", "ivehicle", "types.hidl",
-    "oneway void", "generates (", "vehicle@2", "vehicle@1",
-]
-
-# Very aggressive filename blocking
-HIDL_BAD_FILENAMES = {
-    "fake", "mock", "test", "vts", "obd2", "composer", "virtualizer", 
-    "mapper", "keymint", "identitycredential", "presetreverb",
-    "vehiclepropertystore", "vehicleobjectpool", "accessforvehicleproperty",
-    "obd2sensorstore", "fakeobd2"
-}
+# Content-keyword and filename keyword filtering are intentionally REMOVED.
+# Path exclusion above is the single, authoritative HIDL gate.
+HIDL_CONTENT_KEYWORDS: list[str] = []   # disabled by design
+HIDL_BAD_FILENAMES: set[str] = set()    # disabled by design
 
 class AOSPIndexer:
     def __init__(self, aosp_source_dir="aosp_source", db_path="rag/chroma_db", force_reindex=False):
@@ -128,12 +129,8 @@ class AOSPIndexer:
                 path_lower = path.as_posix().lower()
                 fname_lower = path.name.lower()
 
-                # Path exclusion
+                # ── HIDL exclusion: PATH ONLY (exact + complete) ──
                 if any(pat.lower() in path_lower for pat in HIDL_EXCLUDE_PATTERNS):
-                    continue
-
-                # Filename exclusion (very aggressive)
-                if any(bad in fname_lower for bad in HIDL_BAD_FILENAMES):
                     continue
 
                 # Size filter
@@ -150,18 +147,14 @@ class AOSPIndexer:
                 if not (ext_ok or name_ok):
                     continue
 
-                # Content check
-                if self._contains_hidl_content(path):
-                    continue
-
+                # NOTE: no content-keyword HIDL check. Path exclusion above is
+                # the authoritative gate; content filtering wrongly dropped AIDL.
                 yield path
 
     def _contains_hidl_content(self, path: Path) -> bool:
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore").lower()
-            return any(kw in text for kw in HIDL_CONTENT_KEYWORDS)
-        except:
-            return False
+        # Retained for backward compatibility but intentionally a no-op:
+        # HIDL is excluded by directory path, not by file content.
+        return False
 
     # === Rest of methods (unchanged) ===
     def _process_file(self, path: Path, cfg):
