@@ -81,37 +81,54 @@ class AIDLSignature(dspy.Signature):
     )
 
 
-class VHALCppSignature(dspy.Signature):
+class ModernCppVehicleHardwareSignature(dspy.Signature):
+    """Generate production-ready C++ Vehicle HAL for Android 14+ AIDL V3 only.
+    Must follow AOSP reference: implement IVehicleHardware + wrap with DefaultVehicleHal.
+    getValues and setValues must be ASYNCHRONOUS (callback + request).
+    Never use any HIDL patterns.
     """
-    Generate a complete Android 14 VHAL C++ service implementation file
-    for the given HAL domain. The implementation extends IVehicleHardware
-    and registers all properties defined in the VehiclePropertyAdas enum.
+    vss_spec: str = dspy.InputField(desc="Vehicle System Specification")
+    generated_aidl_info: str = dspy.InputField(desc="AIDL package name and custom properties")
+    retrieved_aosp_examples: str = dspy.InputField(desc="Retrieved high-quality AOSP examples")
+    
+    cpp_header: str = dspy.OutputField(desc="Full content of VssVehicleHardware.h")
+    cpp_impl: str = dspy.OutputField(desc="Full content of VssVehicleHardware.cpp")
+    main_service: str = dspy.OutputField(desc="Full content of VehicleService.cpp")
+    android_bp: str = dspy.OutputField(desc="Full content of Android.bp")
+    reasoning: str = dspy.OutputField(desc="Reasoning for AOSP compliance")
 
-    Requirements:
-    - Use AIDL namespace: aidl::android::hardware::automotive::vehicle
-    - Use ndk::ScopedAStatus for return types (NOT Return<void>, NOT HIDL)
-    - Use std::vector (NOT hidl_vec)
-    - Include AIDL headers: <aidl/android/hardware/automotive/vehicle/BnVehicle.h>
-    - DO NOT include <hidl/Status.h> or any hidl/ headers
-    - DO NOT use Return<>, Void(), _hidl_cb, HIDL_FETCH_*, BpHw, BnHw
-    - Implement getAllPropertyConfigs() returning VehiclePropConfig for each property
-    - Implement getValues() and setValues() dispatching by property ID
-    - Property IDs reference VehiclePropertyAdas enum constants
-    - Module binary name: vendor.vss.<domain> (NOT android.hardware.automotive.vehicle-service)
-    - Follow retrieved AOSP DefaultVehicleHal examples for AIDL patterns
-    """
-    domain:       str = dspy.InputField(
-        desc="HAL domain name"
-    )
-    properties:   str = dspy.InputField(
-        desc="VSS property specs with types and access modes"
-    )
-    aosp_context: str = dspy.InputField(
-        desc="Retrieved real AOSP VHAL .cpp/.h examples"
-    )
-    cpp_code:     str = dspy.OutputField(
-        desc="Complete .cpp implementation file with all includes and namespace"
-    )
+
+class CppVehicleAssertions(dspy.Module):
+    def __init__(self, strict: bool = False):
+        super().__init__()
+        self.strict = strict
+
+    def forward(self, pred):
+        header = getattr(pred, "cpp_header", "") or ""
+        impl = getattr(pred, "cpp_impl", "") or ""
+        main = getattr(pred, "main_service", "") or ""
+        full = header + impl + main
+
+        violations = []
+
+        if "IVehicleHardware" not in header:
+            violations.append("Must inherit from IVehicleHardware")
+        if "DefaultVehicleHal" not in main:
+            violations.append("Must use DefaultVehicleHal wrapper in main_service")
+        if "AServiceManager_addService" not in main:
+            violations.append("Must register using AServiceManager_addService")
+        if not ("GetValueRequest" in full and "GetValuesCallback" in full):
+            violations.append("getValues must use async pattern (GetValueRequest + GetValuesCallback)")
+        if not ("SetValueRequest" in full and "SetValuesCallback" in full):
+            violations.append("setValues must use async pattern")
+
+        forbidden = ["HIDL_FETCH", "hidl/", "Return<", ".valueType"]
+        for term in forbidden:
+            if term in full:
+                violations.append(f"Forbidden HIDL pattern: {term}")
+
+        pred.violations = violations
+        return pred
 
 
 class SELinuxSignature(dspy.Signature):
@@ -418,23 +435,20 @@ class SimulatorSignature(dspy.Signature):
 
 # ═══════════════════════════════════════════════════════════════════
 # Registry — used by optimizer.py and hal_modules.py
-# Maps a short key to (SignatureClass, output_field_name)
 # ═══════════════════════════════════════════════════════════════════
 SIGNATURE_REGISTRY: dict[str, tuple] = {
-    # HAL layer
     "aidl":           (AIDLSignature,         "aidl_code"),
-    "cpp":            (VHALCppSignature,       "cpp_code"),
+    "cpp":            (ModernCppVehicleHardwareSignature, "cpp_code"),   # ← New modern version
     "selinux":        (SELinuxSignature,       "policy"),
     "build":          (BuildFileSignature,     "build_file"),
     "vintf":          (VINTFSignature,         "manifest"),
-    # Design layer
     "design_doc":     (DesignDocSignature,     "design_doc"),
     "puml":           (PlantUMLSignature,      "puml"),
-    # App layer
     "android_app":    (AndroidAppSignature,    "kotlin_code"),
     "android_layout": (AndroidLayoutSignature, "layout_xml"),
-    # Backend layer
     "backend":        (BackendAPISignature,    "api_code"),
     "backend_model":  (BackendModelSignature,  "models_code"),
     "simulator":      (SimulatorSignature,     "simulator_code"),
 }
+
+print("✅ hal_signatures.py loaded successfully with ModernCppVehicleHardwareSignature")

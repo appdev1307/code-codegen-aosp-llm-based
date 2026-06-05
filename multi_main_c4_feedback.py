@@ -40,6 +40,7 @@ import ast
 import subprocess
 from pathlib import Path
 from typing import Optional
+from agents.rag_dspy_cpp_agent import RagDspyCppAgent
 
 # ── ChromaDB singleton fix (prevents "instance already exists" error) ──
 import fix_chroma_singleton
@@ -579,10 +580,10 @@ def _avg(d: dict) -> float:
 # ─────────────────────────────────────────────────────────────────
 
 def _generate_one_module(
-    domain:       str,
+    domain: str,
     module_props: list,
-    run_metrics:  list,
-    tracker:      ThompsonTracker,
+    run_metrics: list,
+    tracker: ThompsonTracker,
 ) -> tuple[str, bool, str | None]:
     """
     Generate HAL module files using the SAME architect.run() as C3,
@@ -609,58 +610,45 @@ def _generate_one_module(
         return (domain, False, str(e))
 
     t_gen = time.time() - t0
-    print(f"\n  [C4 ARCHITECT] Generation done ({t_gen:.1f}s) — "
-          f"starting post-validation...")
+    print(f"\n [C4 ARCHITECT] Generation done ({t_gen:.1f}s) — starting post-validation...")
 
     # ── Step 2: Post-validate each generated file ─────────────────
-    #
-    # Map agent_type → (glob pattern, sub-agent class, gen_kwargs builder)
-    # The sub-agents are only instantiated if retry is needed.
-    #
     retry_engine = PostValidationRetry(max_retries=MAX_RETRIES)
     llm_spec = module_spec.to_llm_spec()
 
-    # Find generated files per agent type for this domain
     agent_file_map: dict[str, list[Path]] = {}
     for agent_type in ["aidl", "cpp", "selinux", "build"]:
         pattern = _FILE_PATTERNS.get(agent_type, "")
-        suffix  = pattern.removeprefix("**/")
+        suffix = pattern.removeprefix("**/")
         matches = list(OUTPUT_DIR.rglob(suffix))
-        # Filter to this domain
         matches = [f for f in matches
-                   if domain.lower() in f.name.lower()
-                   or domain.lower() in str(f.parent).lower()]
+                   if domain.lower() in f.name.lower() or domain.lower() in str(f.parent).lower()]
         if matches:
             agent_file_map[agent_type] = matches
 
-    # Sub-agent constructors for retry (lazy — only created if needed)
     _sub_agent_classes = {
-        "aidl":    RAGDSPyAIDLAgent,
-        "cpp":     RAGDSPyCppAgent,
+        "aidl": RAGDSPyAIDLAgent,
+        "cpp": RagDspyCppAgent,           # Modern C++ agent
         "selinux": RAGDSPySELinuxSubAgent,
-        "build":   RAGDSPyBuildAgent,
+        "build": RAGDSPyBuildAgent,
     }
 
     retry_metrics = []
     for agent_type, files in agent_file_map.items():
         for fpath in files:
-            # Quick-validate first (no retry overhead if it passes)
             code = fpath.read_text(encoding="utf-8", errors="ignore")
             passed, _, score = ValidatorFeedback.validate(code, agent_type)
 
             if passed:
                 tracker.record(agent_type, True)
                 tag = agent_type.upper()
-                print(f"    [C4 {tag}] ✓ {fpath.name} passed "
-                      f"(score={score:.3f})")
+                print(f" [C4 {tag}] ✓ {fpath.name} passed (score={score:.3f})")
                 retry_metrics.append({
                     "agent_type": agent_type, "file": str(fpath),
-                    "attempts": 1, "final_passed": True,
-                    "final_score": score,
+                    "attempts": 1, "final_passed": True, "final_score": score,
                 })
                 continue
 
-            # Needs retry — create sub-agent and build gen_kwargs
             AgentClass = _sub_agent_classes.get(agent_type)
             if not AgentClass:
                 tracker.record(agent_type, False)
@@ -668,15 +656,12 @@ def _generate_one_module(
 
             sub_agent = AgentClass(**AGENT_CFG)
 
-            # Build kwargs that match the sub-agent's _generate() signature
-            # Use the sub-agent's own _retrieve() for RAG context (not hardcoded)
-            rag_query = (f"{domain} {agent_type} AOSP 14 VHAL "
-                         f"android.hardware.automotive.vehicle")
-            rag_context = sub_agent._retrieve(rag_query)
+            rag_query = f"{domain} {agent_type} AOSP 14 VHAL android.hardware.automotive.vehicle"
+            rag_context = sub_agent._retrieve(rag_query) if hasattr(sub_agent, '_retrieve') else ""
 
             gen_kwargs = {
-                "domain":       domain,
-                "properties":   llm_spec,
+                "domain": domain,
+                "properties": llm_spec,
                 "aosp_context": rag_context,
             }
             if agent_type == "selinux":
@@ -693,38 +678,29 @@ def _generate_one_module(
 
     elapsed = round(time.time() - t0, 2)
 
-    # ── Step 3: Score final output ────────────────────────────────
-    print(f"\n   Final validation for {domain}:")
-    file_scores = _score_files(
-        ["aidl", "cpp", "selinux", "build"], domain_filter=domain)
+    print(f"\n Final validation for {domain}:")
+    file_scores = _score_files(["aidl", "cpp", "selinux", "build"], domain_filter=domain)
     avg_score = _avg(file_scores)
 
-    # Count retries
-    total_retries = sum(
-        m.get("attempts", 1) - 1 for m in retry_metrics if m.get("attempts", 1) > 1
-    )
-    fixes = sum(
-        1 for m in retry_metrics
-        if m.get("attempts", 1) > 1 and m.get("final_passed")
-    )
+    total_retries = sum(m.get("attempts", 1) - 1 for m in retry_metrics if m.get("attempts", 1) > 1)
+    fixes = sum(1 for m in retry_metrics if m.get("attempts", 1) > 1 and m.get("final_passed"))
 
     run_metrics.append({
-        "domain":          domain,
-        "stage":           "hal_module",
-        "success":         True,
+        "domain": domain,
+        "stage": "hal_module",
+        "success": True,
         "generation_time": elapsed,
-        "metric_score":    avg_score,
-        "file_scores":     file_scores,
-        "properties":      len(module_props),
-        "c4_retries":      total_retries,
-        "c4_fixes":        fixes,
+        "metric_score": avg_score,
+        "file_scores": file_scores,
+        "properties": len(module_props),
+        "c4_retries": total_retries,
+        "c4_fixes": fixes,
         "c4_retry_details": retry_metrics,
     })
 
-    print(f"\n [C4 MODULE {domain}] → OK  avg_score={avg_score:.3f}  "
-          f"retries={total_retries}  fixes={fixes}  ({elapsed:.1f}s)")
+    print(f"\n [C4 MODULE {domain}] → OK avg_score={avg_score:.3f} "
+          f"retries={total_retries} fixes={fixes} ({elapsed:.1f}s)")
     return (domain, True, None)
-
 
 # ─────────────────────────────────────────────────────────────────
 # Support components — C3 generation + C4 post-validation retry

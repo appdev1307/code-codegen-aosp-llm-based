@@ -54,6 +54,8 @@ from agents.rag_dspy_backend_agent     import RAGDSPyBackendAgent
 from dspy_opt.metrics    import score_file
 from dspy_opt.validators import validate, print_availability_report
 
+from agents.rag_dspy_cpp_agent import RagDspyCppAgent
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,14 +191,13 @@ def _avg(d: dict) -> float:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _generate_one_module(
-    domain:       str,
+    domain: str,
     module_props: list,
-    run_metrics:  list,
+    run_metrics: list,
 ) -> tuple[str, bool, str | None]:
     """
     Generate all HAL layer files for one module via RAGDSPyArchitectAgent.
     Validates every generated file and appends score metrics to run_metrics.
-    Returns (domain, success, error_msg).
     """
     print(f"\n{'=' * 60}")
     print(f" MODULE: {domain.upper()} ({len(module_props)} props)")
@@ -211,18 +212,34 @@ def _generate_one_module(
     except Exception as e:
         print(f" [MODULE {domain}] → FAILED: {e}")
         run_metrics.append({
-            "domain":          domain,
-            "stage":           "hal_module",
-            "success":         False,
-            "error":           str(e),
+            "domain": domain,
+            "stage": "hal_module",
+            "success": False,
+            "error": str(e),
             "generation_time": round(time.time() - t0, 2),
         })
         return (domain, False, str(e))
 
     elapsed = round(time.time() - t0, 2)
 
-    # Score every generated HAL-layer file for this module
-    print(f"\n   Validating {domain} output files:")
+    # === Modern C++ VHAL Upgrade ===
+    print(f"\n [C3] Generating Modern Android 14+ C++ VHAL for {domain}...")
+    cpp_agent = RagDspyCppAgent()
+    aidl_info = {"package": "android.hardware.automotive.vehicle", "properties": {}}
+    
+    cpp_output = cpp_agent.generate(vss_spec=module_spec, aidl_info=aidl_info)
+
+    # Save modern C++ files
+    cpp_dir = OUTPUT_DIR / domain.lower()
+    cpp_dir.mkdir(parents=True, exist_ok=True)
+    
+    (cpp_dir / "VssVehicleHardware.h").write_text(cpp_output.get("header", ""), encoding="utf-8")
+    (cpp_dir / "VssVehicleHardware.cpp").write_text(cpp_output.get("impl", ""), encoding="utf-8")
+    (cpp_dir / "VehicleService.cpp").write_text(cpp_output.get("main_service", ""), encoding="utf-8")
+    (cpp_dir / "Android.bp").write_text(cpp_output.get("android_bp", ""), encoding="utf-8")
+
+    # Score files
+    print(f"\n Validating {domain} output files:")
     file_scores = _score_files(
         ["aidl", "cpp", "selinux", "build"],
         domain_filter=domain,
@@ -230,19 +247,17 @@ def _generate_one_module(
     avg_score = _avg(file_scores)
 
     run_metrics.append({
-        "domain":          domain,
-        "stage":           "hal_module",
-        "success":         True,
+        "domain": domain,
+        "stage": "hal_module",
+        "success": True,
         "generation_time": elapsed,
-        "metric_score":    avg_score,
-        "file_scores":     file_scores,
-        "properties":      len(module_props),
+        "metric_score": avg_score,
+        "file_scores": file_scores,
+        "properties": len(module_props),
     })
 
-    print(f"\n [MODULE {domain}] → OK  "
-          f"avg_score={avg_score:.3f}  ({elapsed:.1f}s)")
+    print(f"\n [MODULE {domain}] → OK avg_score={avg_score:.3f} ({elapsed:.1f}s)")
     return (domain, True, None)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 7 — support components (Group A parallel + Group B sequential)
