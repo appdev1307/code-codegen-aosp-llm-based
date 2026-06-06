@@ -1,45 +1,24 @@
 #!/usr/bin/env python3
 """
 multi_main_c5.py
-═══════════════════════════════════════════════════════════════════
-Condition 5 — Advanced Runtime Validation Pipeline
+═══════════════════════════════════════════════════════════════════════════════
+Condition 5 — VTS + HMI Generation Pipeline
 
-This is the advanced validation layer on top of C1-C4. It:
-  1. Reads compiled VSS property IDs from AOSP build output
-  2. Patches FakeVehicleHardware.cpp to serve VSS properties at runtime
-  3. Generates custom VTS tests for VSS properties
-  4. Generates HMI app with real CarPropertyManager IDs
-  5. Validates everything via mmm build + feedback loop
+Runs on Colab after C3/C4. Generates:
+  - VtsHalAutomotiveVehicleVss.cpp  — VTS tests for the 500 VSS properties
+  - HMI Android app fragments + XML layouts
 
-Reuses from C1-C4:
-  - All 12 optimised DSPy programs (dspy_opt/saved/)
-  - RAG retriever (rag/aosp_retriever.py) + ChromaDB
-  - rag_dspy_mixin.py base class
-  - llm_client.py Ollama wrapper
-  - Validators (clang++, checkpolicy, ast.parse)
-  - C4 feedback loop retry pattern
-
-New in C5:
-  - FakeVehicleHardwarePatchAgent — extends FakeVehicleHardware.cpp
-  - VtsGeneratorAgent — generates custom VSS VTS tests
-  - mmm build as runtime validator
-  - AOSP build tree as primary input (not VSS signals)
-
-Usage (on Colab, after C4 + AOSP dump available):
-    python multi_main_c5.py
-
-Requirements:
-  - output_c4_feedback/ — C4 output (YAML spec + MODULE_PLAN.json)
-  - aosp_source/FakeVehicleHardware.cpp — from GCP VM via GCS
-  - aosp_dump/VehicleProperty*.aidl — compiled IDs from GCP VM
-  - dspy_opt/saved/ — C4 optimised DSPy programs
+Inputs (all from Colab, no Android Build dependency):
+  - output_c4_feedback/SPEC_FROM_VSS_*.yaml  — C4 YAML spec
+  - output/MODULE_PLAN.json                  — C4 module plan
+  - dspy_opt/saved/                          — C4 optimised DSPy programs
   - Ollama running with qwen2.5-coder:32b
 
-GCS setup (run on GCP VM before this script):
-    gsutil cp ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp gs://aosp-thesis-temp/
-    gsutil cp ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/include/FakeVehicleHardware.h gs://aosp-thesis-temp/
-    zip -r ~/aosp_dump.zip out/soong/.intermediates/.../VehicleProperty*.aidl
-    gsutil cp ~/aosp_dump.zip gs://aosp-thesis-temp/
+After this script, copy output_c5/vts/ to GCP, build with mmm, and run
+atest VtsHalAutomotiveVehicleVss against the deployed VssVehicleHardware service.
+
+Note: FakeVehicleHardware patching and VssProperties.json are NOT used.
+VssVehicleHardware.cpp (C3/C4 output) serves properties directly.
 ═══════════════════════════════════════════════════════════════════
 """
 
@@ -48,7 +27,6 @@ from __future__ import annotations
 import json
 import re
 import time
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -59,14 +37,8 @@ RAG_DB_PATH       = "rag/chroma_db"
 RAG_TOP_K         = 8
 MAX_RETRIES       = 3
 
-# Input paths (copied from GCP VM via GCS)
-AOSP_DUMP_DIR     = Path("aosp_dump")           # VehicleProperty*.aidl compiled dumps
-AOSP_SOURCE_DIR   = Path("aosp_source")          # FakeVehicleHardware.cpp + .h
+# Input paths
 C4_OUTPUT_DIR     = Path("output_c4_feedback")   # C4 YAML spec + MODULE_PLAN.json
-
-# AOSP source paths on GCP VM (for reference)
-FAKE_VHAL_REL     = "hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp"
-FAKE_VHAL_H_REL   = "hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/include/FakeVehicleHardware.h"
 VTS_REL           = "test/vts/vss_vehicle"
 
 # Vehicle HAL AIDL interface version the VTS links against. MUST match the
@@ -226,15 +198,6 @@ def load_vss_properties() -> dict:
         print(f"  [C5] Unknown MODULE_PLAN format")
         return {}
 
-    # Load compiled IDs from AOSP dump
-    compiled_ids = {}
-    if AOSP_DUMP_DIR.exists():
-        for f in AOSP_DUMP_DIR.glob("VehicleProperty*.aidl"):
-            for line in f.read_text().splitlines():
-                m = re.match(r'\s+(\w+)\s*=\s*(0x[0-9a-fA-F]+)', line)
-                if m:
-                    compiled_ids[m.group(1)] = int(m.group(2), 16)
-
     # Build domain map from modules_iter
     domain_map = {}
     # Global monotonic index so every property gets a unique low-16-bit field.
@@ -258,12 +221,7 @@ def load_vss_properties() -> dict:
             typ     = meta.get("type", "INT32")
             access  = meta.get("access", "READ")
             # Always assign from the global counter. The AOSP-dump values in
-            # compiled_ids are the original un-encoded / colliding enum entries
-            # (multiple names map to the same number), so trusting them here
-            # reintroduced duplicates. These are vendor VSS properties we define,
-            # so a fresh unique counter is correct and collision-free.
-            raw_id  = global_idx
-            prop_id = encode_prop_id(raw_id, typ)   # encode group|area|type|index
+            prop_id = encode_prop_id(global_idx, typ)
             global_idx += 1
             desc    = name.replace("VEHICLE_CHILDREN_", "").replace("_CHILDREN_", ".")[:50]
             props.append((name, prop_id, typ, access, desc))
@@ -280,342 +238,10 @@ def load_vss_properties() -> dict:
 # Extends FakeVehicleHardware.cpp to serve VSS properties at runtime
 # Reuses: cpp DSPy program, RAG aosp_cpp collection, C4 feedback loop
 # ═══════════════════════════════════════════════════════════════════
-class FakeVehicleHardwarePatchAgent:
-    """
-    Patches FakeVehicleHardware.cpp to register and serve VSS properties.
-    Uses RAG to retrieve existing FakeVehicleHardware patterns, then uses
-    the C4 cpp DSPy program to generate the VSS property config block.
-    Validates with clang++ (syntax) and feedback loop (up to MAX_RETRIES).
-    """
-
-    def __init__(self):
-        self.prog = _load_dspy_program("cpp")
-
-    def _build_vss_config_block(self, domain_map: dict) -> str:
-        """Generate kVssProperties C++ vector from VSS property map."""
-        entries = []
-        for domain, props in domain_map.items():
-            entries.append(f"\n    // ── {domain.upper()} domain ──")
-            for name, prop_id, typ, access, desc in props:
-                # Map VSS type to VehiclePropertyType
-                vtype = {
-                    "BOOLEAN": "::aidl::android::hardware::automotive::vehicle::VehiclePropertyType::BOOLEAN",
-                    "FLOAT":   "::aidl::android::hardware::automotive::vehicle::VehiclePropertyType::FLOAT",
-                    "INT32":   "::aidl::android::hardware::automotive::vehicle::VehiclePropertyType::INT32",
-                    "INT64":   "::aidl::android::hardware::automotive::vehicle::VehiclePropertyType::INT64",
-                    "STRING":  "::aidl::android::hardware::automotive::vehicle::VehiclePropertyType::STRING",
-                }.get(typ, "::aidl::android::hardware::automotive::vehicle::VehiclePropertyType::INT32")
-
-                # Map access to VehiclePropertyAccess (short names — using decls added by _patch_source)
-                vaccess = {
-                    "READ":       "VehiclePropertyAccess::READ",
-                    "WRITE":      "VehiclePropertyAccess::WRITE",
-                    "READ_WRITE": "VehiclePropertyAccess::READ_WRITE",
-                }.get(access, "VehiclePropertyAccess::READ")
-
-                entries.append(
-                    f"    {{.prop = {hex(prop_id)},  // {name[:40]}\n"
-                    f"     .access = {vaccess},\n"
-                    f"     .changeMode = VehiclePropertyChangeMode::ON_CHANGE,\n"
-                    f"     .areaConfigs = {{{{.areaId = 0}}}}}},  // {desc}"
-                )
-
-        props_str = "\n".join(entries)
-        total = sum(len(v) for v in domain_map.values())
-
-        return f"""
-// ═══════════════════════════════════════════════════════════════
-// AUTO-GENERATED by C5 pipeline — VSS property configs
-// DO NOT EDIT MANUALLY — regenerate with multi_main_c5.py
-// Total VSS properties: {total} across {len(domain_map)} domains
-// ═══════════════════════════════════════════════════════════════
-//
-// IMPORTANT: VSS props are registered into mServerSidePropStore in init(),
-// NOT appended in getAllPropertyConfigs(). The fake VHAL's --list/--get/--set
-// and subscription paths all read the prop store; getAllPropertyConfigs() is a
-// secondary read path that dumpsys does not use. Appending there is a silent
-// no-op at runtime (props compile in but never appear on device). The
-// registration loop is injected inline into init() because it needs the
-// member fields mServerSidePropStore and mValuePool.
-
-static const std::vector<VehiclePropConfig> kVssProperties = {{
-{props_str}
-}};
-"""
-
-    def _build_vss_json_config(self, domain_map: dict) -> str:
-        """
-        Generate VssProperties.json in the AOSP DefaultConfig JSON format that
-        the fake VHAL's JsonConfigLoader reads from /vendor/etc/automotive/vhalconfig/.
-
-        This is the DEVICE-VERIFIED output path, preferred over the C++ patch:
-          - The emulator service instantiates EmulatedVehicleHardware (a subclass
-            of FakeVehicleHardware), so a C++ init() patch in FakeVehicleHardware
-            may not run. The JSON loader runs for both — config loading is
-            inherited and unconditional at startup.
-          - No recompile of the VHAL service: push JSON + restart/reboot.
-
-        FORMAT NOTES (each verified against on-device loader errors):
-          - "property" MUST be a JSON integer (decimal), NOT a quoted hex string.
-            A quoted value is parsed as an enum-constant NAME and rejected with
-            'Invalid constant value: "0x..." for field: property'.
-          - "access"/"changeMode" are the "Enum::VALUE" string forms.
-          - each area needs a typed "defaultValue" so --get returns a value
-            (not NOT_AVAILABLE). The value key is chosen from the prop id's
-            type bits (0x00FF0000 mask).
-        """
-        import json as _json
-        TYPE_MASK = 0x00FF0000
-        TYPE_DEFAULTVAL = {
-            0x00100000: {"stringValue": ""},     # STRING
-            0x00200000: {"int32Values": [0]},    # BOOLEAN
-            0x00400000: {"int32Values": [0]},    # INT32
-            0x00410000: {"int32Values": [0]},    # INT32_VEC
-            0x00500000: {"int64Values": [0]},    # INT64
-            0x00510000: {"int64Values": [0]},    # INT64_VEC
-            0x00600000: {"floatValues": [0.0]},  # FLOAT
-            0x00610000: {"floatValues": [0.0]},  # FLOAT_VEC
-            0x00700000: {"int32Values": [0]},    # BYTES
-        }
-        ACCESS_MAP = {
-            "READ":       "VehiclePropertyAccess::READ",
-            "WRITE":      "VehiclePropertyAccess::WRITE",
-            "READ_WRITE": "VehiclePropertyAccess::READ_WRITE",
-        }
-        props = []
-        for domain, dprops in domain_map.items():
-            for name, prop_id, typ, access, desc in dprops:
-                defval = TYPE_DEFAULTVAL.get(prop_id & TYPE_MASK, {"int32Values": [0]})
-                props.append({
-                    "property": int(prop_id),  # INTEGER — not quoted hex
-                    "access": ACCESS_MAP.get(access, "VehiclePropertyAccess::READ"),
-                    "changeMode": "VehiclePropertyChangeMode::ON_CHANGE",
-                    "areas": [{"areaId": 0, "defaultValue": defval}],
-                })
-        return _json.dumps({"properties": props}, indent=2)
-
-    def _validate_vss_json(self, json_text: str, total_props: int) -> tuple:
-        """
-        Validate the generated JSON against the on-device loader's known rules,
-        catching the failure classes we hit in C5 testing before they reach the VM.
-        """
-        import json as _json
-        try:
-            data = _json.loads(json_text)
-        except Exception as e:
-            return False, f"invalid JSON: {e}"
-        props = data.get("properties")
-        if not isinstance(props, list) or not props:
-            return False, "missing or empty 'properties' array"
-        ids = []
-        for p in props:
-            pid = p.get("property")
-            if not isinstance(pid, int):
-                return False, f"'property' must be an integer, got {type(pid).__name__}: {pid!r}"
-            if (pid & 0xF0000000) != 0x20000000:
-                return False, f"property 0x{pid:08x} not in VENDOR group (would collide with system props)"
-            if not p.get("areas"):
-                return False, f"property 0x{pid:08x} missing 'areas'"
-            ids.append(pid)
-        dupes = {i for i in ids if ids.count(i) > 1}
-        if dupes:
-            return False, f"duplicate property ids: {[hex(d) for d in list(dupes)[:5]]}"
-        if len(props) != total_props:
-            return True, f"warning: emitted {len(props)} props, expected {total_props}"
-        return True, ""
-
-    def _patch_source(self, original: str, vss_block: str) -> str:
-        """
-        Patch FakeVehicleHardware.cpp correctly:
-        1. Insert VSS block (using decls + kVssProperties) BEFORE
-           getAllPropertyConfigs, inside the fake namespace.
-        2. Inject a registration loop at the END of init() that calls
-           registerProperty() + writeValue() for each kVssProperties entry.
-           This is what makes props appear on device — the prop store, not
-           getAllPropertyConfigs(), is what --list/--get/--set read.
-        """
-        # Step 1: Remove existing C5 block to avoid duplicates
-        base = original.rstrip()
-        if "AUTO-GENERATED by C5" in base:
-            idx = base.find("// AUTO-GENERATED by C5")
-            if idx > 0:
-                base = base[:idx].rstrip()
-
-        # Step 2: Insert the kVssProperties block BEFORE init().
-        #
-        # CRITICAL ORDERING: the registration loop (step 3) lives inside init()
-        # and references kVssProperties. In FakeVehicleHardware.cpp, init() is
-        # defined EARLIER in the file than getAllPropertyConfigs(). So the block
-        # must be placed before init(), or the loop would use kVssProperties
-        # before it is defined (C++ compile error). We anchor on init().
-        anchor = base.find("\nvoid FakeVehicleHardware::init()")
-        if anchor < 0:
-            anchor = base.find("void FakeVehicleHardware::init()")
-            anchor = base.rfind("\n", 0, anchor) + 1 if anchor > 0 else 0
-        else:
-            anchor += 1  # skip the leading \n
-        func_pos = anchor
-
-        # Only emit using-decls that the original file does not already declare,
-        # to avoid duplicate-using redefinition errors (e.g. VehiclePropertyStatus
-        # is already declared in the stock file).
-        candidate_usings = [
-            "::aidl::android::hardware::automotive::vehicle::VehiclePropConfig",
-            "::aidl::android::hardware::automotive::vehicle::VehicleAreaConfig",
-            "::aidl::android::hardware::automotive::vehicle::VehiclePropertyAccess",
-            "::aidl::android::hardware::automotive::vehicle::VehiclePropertyChangeMode",
-            "::aidl::android::hardware::automotive::vehicle::VehiclePropertyStatus",
-        ]
-        using_lines = ["// C5: type aliases for VSS property configs"]
-        for u in candidate_usings:
-            decl = f"using {u};"
-            if decl not in base:
-                using_lines.append(decl)
-        using_decls = "\n".join(using_lines) + "\n\n"
-        insert = using_decls + vss_block.strip() + "\n\n"
-        base = base[:func_pos] + insert + base[func_pos:]
-        print(f"  [FAKE_VHAL] ✓ Inserted VSS block before init()")
-
-        # Step 3: Register VSS props into the prop store inside init().
-        #
-        # CRITICAL: do NOT inject into getAllPropertyConfigs(). On AOSP 14 the
-        # fake VHAL serves --list/--get/--set and subscriptions from
-        # mServerSidePropStore, which is populated in init() via
-        # registerProperty(). getAllPropertyConfigs() is a secondary read path
-        # that dumpsys --list does not call, so appending there is a silent
-        # runtime no-op (the original C5 bug: props compiled in, 0 visible on
-        # device). We mirror the existing init() registration loop instead.
-        #
-        # The injected loop, for each cfg in kVssProperties:
-        #   - registerProperty(cfg, nullptr)  -> makes it appear in --list
-        #   - writes a default value          -> makes --get return OK
-        registration = (
-            "\n    // ── C5: VSS — register generated configs into the prop store ──\n"
-            "    // Injected at end of init(). Mirrors the standard registration loop\n"
-            "    // above so VSS props are visible to --list and back --get/--set.\n"
-            "    for (const auto& vssCfg : kVssProperties) {\n"
-            "        mServerSidePropStore->registerProperty(vssCfg, nullptr);\n"
-            "        auto vssValue = mValuePool->obtain(getPropType(vssCfg.prop));\n"
-            "        vssValue->prop = vssCfg.prop;\n"
-            "        vssValue->areaId =\n"
-            "                vssCfg.areaConfigs.empty() ? 0 : vssCfg.areaConfigs[0].areaId;\n"
-            "        vssValue->timestamp = elapsedRealtimeNano();\n"
-            "        vssValue->status =\n"
-            "                VehiclePropertyStatus::AVAILABLE;\n"
-            "        mServerSidePropStore->writeValue(std::move(vssValue), /*updateStatus=*/true);\n"
-            "    }\n"
-        )
-
-        # Find FakeVehicleHardware::init() and inject before its closing brace.
-        injected = False
-        init_pos = base.find("void FakeVehicleHardware::init()")
-        if init_pos >= 0:
-            body_open = base.find("{", init_pos)
-            if body_open >= 0:
-                # Walk braces to find the matching close of init().
-                depth = 0
-                i = body_open
-                end = -1
-                while i < len(base):
-                    c = base[i]
-                    if c == "{":
-                        depth += 1
-                    elif c == "}":
-                        depth -= 1
-                        if depth == 0:
-                            end = i
-                            break
-                    i += 1
-                if end > 0:
-                    base = base[:end] + registration + base[end:]
-                    injected = True
-                    print("  [FAKE_VHAL] ✓ Injected VSS registration loop into init()")
-
-        if not injected:
-            print("  [FAKE_VHAL] ⚠ Could not locate init() to inject registration loop")
-
-        return base
-
-        return patched
-
-    def _validate_syntax(self, cpp_path: Path) -> tuple[bool, str]:
-        """Validate C++ syntax using clang++ (reused from C4 validators)."""
-        try:
-            result = subprocess.run(
-                ["clang++", "-fsyntax-only", "-std=c++17",
-                 "-I/usr/include", str(cpp_path)],
-                capture_output=True, text=True, timeout=60
-            )
-            if result.returncode == 0:
-                return True, ""
-            errors = result.stderr[:500]
-            return False, errors
-        except Exception as e:
-            return False, str(e)
-
-    def run(self, domain_map: dict) -> tuple:
-        """
-        Generate VSS property configs for the fake VHAL.
-
-        PRIMARY output is VssProperties.json (device-verified path). The C++
-        patch is still produced for reference, but the JSON is what gets loaded
-        on device and is what the score reflects.
-        Returns (json_content, score). Also stashes the C++ patch on self.
-        """
-        print(f"\n  [FAKE_VHAL] Generating VSS property configs...")
-        total_props = sum(len(v) for v in domain_map.values())
-
-        # ── PRIMARY: JSON config (device-verified loader format) ──
-        json_content = self._build_vss_json_config(domain_map)
-        ok, msg = self._validate_vss_json(json_content, total_props)
-        prop_count = json_content.count('"property":')
-
-        # ── SECONDARY: C++ patch (kept for reference / thesis completeness) ──
-        # Not the deployed artifact; emulator service uses EmulatedVehicleHardware.
-        try:
-            orig_path = AOSP_SOURCE_DIR / "FakeVehicleHardware.cpp"
-            original = orig_path.read_text() if orig_path.exists() else self._generate_stub(domain_map)
-            vss_block = self._build_vss_config_block(domain_map)
-            self.cpp_patch = self._patch_source(original, vss_block)
-        except Exception as e:
-            self.cpp_patch = f"// C++ reference patch generation skipped: {e}\n"
-
-        # Score on JSON validity (the thing that actually works on device)
-        coverage     = min(1.0, prop_count / max(total_props, 1))
-        syntax_score = 1.0 if ok else 0.0
-        struct_score = 1.0 if ok else 0.5
-        score = 0.35 * struct_score + 0.45 * syntax_score + 0.20 * coverage
-
-        status = "✓" if ok else "✗"
-        print(f"  [FAKE_VHAL] JSON config: {prop_count}/{total_props} properties {status}")
-        if msg:
-            print(f"  [FAKE_VHAL] {msg}")
-        print(f"  [FAKE_VHAL] score={score:.3f} (JSON is the deployed artifact)")
-
-        return json_content, score
-
-    def _generate_stub(self, domain_map: dict) -> str:
-        """Minimal stub if original file not available."""
-        return """#include "FakeVehicleHardware.h"
-#include <aidl/android/hardware/automotive/vehicle/VehiclePropConfig.h>
-
-namespace android::hardware::automotive::vehicle::fake {
-
-using namespace aidl::android::hardware::automotive::vehicle;
-
-std::vector<VehiclePropConfig> FakeVehicleHardware::getAllPropertyConfigs() const {
-    std::vector<VehiclePropConfig> configs;
-    return configs;
-}
-
-} // namespace
-"""
-
-
 # ═══════════════════════════════════════════════════════════════════
-# Agent 2: VTS Test Generator
-# Generates custom VTS tests for VSS properties
-# Reuses: cpp DSPy program, RAG aosp_cpp collection
+# Agent 1: VTS Test Generator
+# Generates custom VTS tests for all 500 VSS properties.
+# Tests run against VssVehicleHardware (C3/C4 output) on Cuttlefish.
 # ═══════════════════════════════════════════════════════════════════
 class VtsGeneratorAgent:
     """
@@ -631,34 +257,6 @@ class VtsGeneratorAgent:
 
     def __init__(self):
         self.prog = _load_dspy_program("cpp")
-
-    def _load_compiled_first_names(self) -> dict:
-        """
-        Load the first compiled property name per domain directly from
-        AOSP dump AIDL files. These are the authoritative names that
-        the C++ compiler knows about — not the YAML spec names which
-        may differ slightly (missing _CHILDREN_ segments etc).
-        """
-        domain_files = {
-            "adas":          "VehiclePropertyAdas.aidl",
-            "body":          "VehiclePropertyBody.aidl",
-            "cabin":         "VehiclePropertyCabin.aidl",
-            "chassis":       "VehiclePropertyChassis.aidl",
-            "hvac":          "VehiclePropertyHvac.aidl",
-            "infotainment":  "VehiclePropertyInfotainment.aidl",
-            "powertrain":    "VehiclePropertyPowertrain.aidl",
-        }
-        first_names = {}
-        for domain, filename in domain_files.items():
-            fpath = AOSP_DUMP_DIR / filename
-            if not fpath.exists():
-                continue
-            for line in fpath.read_text().splitlines():
-                m = re.match(r'\s+(\w+)\s*=\s*(0x[0-9a-fA-F]+)', line)
-                if m:
-                    first_names[domain] = (m.group(1), int(m.group(2), 16))
-                    break  # only need first entry
-        return first_names
 
     def _generate_vts_cpp(self, domain_map: dict) -> str:
         """Generate VTS test C++ for the VSS HAL.
@@ -1014,8 +612,6 @@ def main():
     print("=" * 70)
     print(f"  Output   : {OUTPUT_DIR.resolve()}")
     print(f"  C4 input : {C4_OUTPUT_DIR}")
-    print(f"  AOSP dump: {AOSP_DUMP_DIR}")
-    print(f"  AOSP src : {AOSP_SOURCE_DIR}")
     print()
 
     t_start = time.time()
