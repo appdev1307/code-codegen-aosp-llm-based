@@ -224,10 +224,19 @@ def _generate_one_module(
 
     # === Modern C++ VHAL Upgrade ===
     print(f"\n [C3] Generating Modern Android 14+ C++ VHAL for {domain}...")
-    cpp_agent = RagDspyCppAgent()
-    aidl_info = {"package": "android.hardware.automotive.vehicle", "properties": {}}
-    
-    cpp_output = cpp_agent.generate(vss_spec=module_spec, aidl_info=aidl_info)
+    cpp_agent = RagDspyCppAgent(
+        rag_db_path = AGENT_CFG["rag_db_path"],
+        rag_top_k   = AGENT_CFG["rag_top_k"],
+    )
+    aidl_info = {
+        "package":    "android.hardware.automotive.vehicle",
+        "properties": {getattr(p, "id", str(i)): None
+                       for i, p in enumerate(module_props)},
+    }
+    cpp_output = cpp_agent.generate(
+        vss_spec  = module_spec.to_llm_spec(),
+        aidl_info = aidl_info,
+    )
 
     # Save modern C++ files
     cpp_dir = OUTPUT_DIR / domain.lower()
