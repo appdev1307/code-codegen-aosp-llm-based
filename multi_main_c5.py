@@ -1007,8 +1007,7 @@ def _generate_xml_layout(domain: str, properties: list) -> str:
 # ═══════════════════════════════════════════════════════════════════
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUTPUT_DIR / "fake_vhal").mkdir(exist_ok=True)
-    (OUTPUT_DIR / "vts").mkdir(exist_ok=True)
+    (OUTPUT_DIR / "vts").mkdir(exist_ok=True)  # fake_vhal dir removed — not used
 
     print("=" * 70)
     print("  C5 Full Pipeline — Advanced Runtime Validation")
@@ -1031,22 +1030,13 @@ def main():
     total = sum(len(v) for v in domain_map.values())
     print(f"  ✓ Loaded {total} properties across {len(domain_map)} domains\n")
 
-    # ── Step 2: Generate VSS configs for fake VHAL ───────────────
-    print("[ STEP 2 ] Generating VSS property configs (Agent 1)...")
-    fake_agent   = FakeVehicleHardwarePatchAgent()
-    json_content, fake_score = fake_agent.run(domain_map)
-
-    # PRIMARY deliverable: device-verified JSON config
-    fake_dir = OUTPUT_DIR / "fake_vhal"
-    fake_dir.mkdir(parents=True, exist_ok=True)
-    json_out = fake_dir / "VssProperties.json"
-    json_out.write_text(json_content)
-    # SECONDARY: C++ patch kept for reference
-    cpp_out = fake_dir / "FakeVehicleHardware_vss_patch.cpp"
-    cpp_out.write_text(getattr(fake_agent, "cpp_patch", "// not generated\n"))
-
-    results["fake_vhal"] = {"score": fake_score, "file": str(json_out)}
-    print(f"  ✓ VSS configs: score={fake_score:.3f} → {json_out.name} (+ C++ reference)\n")
+    # ── Step 2: SKIPPED — FakeVehicleHardware patch not used ────
+    # VssVehicleHardware.cpp (C3/C4 output) hardcodes the property table
+    # directly in C++. VssProperties.json and FakeVehicleHardware patching
+    # are not needed. Steps 3+4 (VTS + HMI) run against VssVehicleHardware.
+    fake_score = 0.0   # not scored — kept for formula compat only
+    print("[ STEP 2 ] Skipped — FakeVehicleHardware patch not required\n"
+          "           VssVehicleHardware.cpp (C3/C4) serves properties directly.\n")
 
     # ── Step 3: Generate VTS tests ───────────────────────────────
     print("[ STEP 3 ] Generating VSS VTS tests (Agent 2)...")
@@ -1067,7 +1057,7 @@ def main():
     print(f"  ✓ HMI app: score={hmi_score:.3f} → output_c5/hmi_app/\n")
 
     # ── Step 5: Overall score ────────────────────────────────────
-    overall = (fake_score * 0.40 + vts_score * 0.35 + hmi_score * 0.25)
+    overall = (vts_score * 0.60 + hmi_score * 0.40)  # fake_score removed; VTS is ground-truth
     results["overall"] = overall
 
     # Save results
@@ -1079,29 +1069,30 @@ def main():
     print("=" * 70)
     print("  C5 Pipeline Complete!")
     print("=" * 70)
-    print(f"  FakeVehicleHardware patch : {fake_score:.3f}")
-    print(f"  VTS tests                 : {vts_score:.3f}")
+    print(f"  VTS tests (ground-truth)  : {vts_score:.3f}")
     print(f"  HMI app                   : {hmi_score:.3f}")
     print(f"  Overall score             : {overall:.3f}")
     print(f"  Time                      : {elapsed:.0f}s")
     print()
     print("  Next steps (on GCP VM):")
-    print("  1. Push VSS configs to the device (no rebuild needed):")
-    print("     adb root && adb remount   # reboot once first if remount says so")
-    print("     adb push output_c5/fake_vhal/VssProperties.json \\")
-    print("        /vendor/etc/automotive/vhalconfig/VssProperties.json")
-    print("     adb reboot && adb wait-for-device")
-    print("  2. Verify the props are live (expect base+VSS count, values on --get):")
-    print("     adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list | wc -l")
-    print("  3. Build + copy VTS, then run:")
+    print("  Prerequisites: C3/C4 VssVehicleHardware service already built")
+    print("  and deployed as IVehicle/default on Cuttlefish.")
+    print()
+    print("  1. Copy VTS test into AOSP tree and build:")
     print(f"     cp -r output_c5/vts/ ~/aosp-14-auto/{VTS_REL}/")
+    print("     source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk_staging-userdebug")
     print("     mmm test/vts/vss_vehicle")
+    print()
+    print("  2. Stop stock VHAL, confirm VssVehicleHardware is running:")
+    print("     adb root && adb shell stop vendor.vehicle-default")
+    print("     adb shell lshal | grep automotive.vehicle")
+    print()
+    print("  3. Run VTS against VssVehicleHardware:")
     print("     atest VtsHalAutomotiveVehicleVss -c")
-    print("  4. (Reference only) C++ patch is at")
-    print("     output_c5/fake_vhal/FakeVehicleHardware_vss_patch.cpp")
-    print("     — NOT the deployed path; the emulator service uses")
-    print("     EmulatedVehicleHardware, so prefer the JSON above.")
-    print("  5. Install HMI app:")
+    print("     # Checks: ServiceAvailable, VssPropertiesRegistered,")
+    print("     #         AllIdsUnique, AllIdsWellFormed")
+    print()
+    print("  4. Install HMI app:")
     print("     mmm output_c5/hmi_app && adb install VssDashboardApp.apk")
     print("=" * 70)
 

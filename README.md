@@ -196,7 +196,7 @@ cp -r output_c4_feedback/ output_c4_feedback_backup/
 
 # Step 2: Copy FakeVehicleHardware from GCP VM
 # (aosp_source/ already exists from ChromaDB RAG step above)
-gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
+#gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
 
 # Step 3: Download compiled AIDL property IDs
 mkdir -p aosp_dump
@@ -271,13 +271,13 @@ BUCKET=gs://aosp-thesis-temp
 cd ~/aosp-14-auto
 
 # 1. FakeVehicleHardware — restore from git first (may have been patched)
-git -C hardware/interfaces checkout \
-  automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
+#git -C hardware/interfaces checkout \
+#  automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp
 
 # 2. FakeVehicleHardware source
-gsutil cp \
-  hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
-  $BUCKET/FakeVehicleHardware.cpp
+#gsutil cp \
+#  hardware/interfaces/automotive/vehicle/aidl/impl/fake_impl/hardware/src/FakeVehicleHardware.cpp \
+#  $BUCKET/FakeVehicleHardware.cpp
 
 # 3. AOSP compiled AIDL property ID dump (-j stores filenames only, no directory path)
 DUMP_DIR=out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-api/dump/android/hardware/automotive/vehicle
@@ -302,7 +302,7 @@ auth.authenticate_user()
 ```bash
 # Copy FakeVehicleHardware from GCS
 # (aosp_source/ already exists from ChromaDB RAG step)
-gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
+#gsutil cp gs://aosp-thesis-temp/FakeVehicleHardware.cpp aosp_source/
 
 # Download compiled AIDL property IDs
 mkdir -p aosp_dump
@@ -650,7 +650,7 @@ cd ~/aosp-14-auto/system/sepolicy && git status
 Build the full AOSP image with your chosen condition:
 
 ```bash
-# Set condition: c4 (default — highest scoring), c1, c2, or c3
+# Set condition: c4
 COND2=c4
 
 clean_hal
