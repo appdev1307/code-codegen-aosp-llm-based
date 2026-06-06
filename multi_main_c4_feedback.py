@@ -127,6 +127,68 @@ class ValidatorFeedback:
 
     @staticmethod
     def _validate_cpp(code: str) -> tuple[bool, str, float]:
+        # ── Stage 1: AIDL V3 contract check ─────────────────────────────────
+        # clang -fsyntax-only passes HIDL-contaminated code (no AOSP headers).
+        # Check AIDL violations first so the retry prompt is specific and actionable.
+        if not code or not code.strip():
+            return (False,
+                    "Generated cpp_code is empty. Check DSPY_OUTPUT_FIELD='cpp_impl' "
+                    "matches ModernCppVehicleHardwareSignature output fields.", 0.0)
+
+        _HIDL_BANNED = [
+            ("HIDL_FETCH_",
+             "HIDL_FETCH_* found — forbidden in AIDL HAL. "
+             "Remove extern C factory. Register via AServiceManager_addService in main()."),
+            ("hidl/",
+             "#include <hidl/...> found. Remove all HIDL headers."),
+            ("Return<",
+             "Return<> type found — HIDL-only. AIDL uses ndk::ScopedAStatus or StatusCode."),
+            (".valueType",
+             ".valueType used on VehiclePropConfig — this field does not exist in V3. "
+             "Type is encoded in the property ID bits."),
+            ("BnIVehicle",
+             "BnIVehicle used — this name does not exist. "
+             "Inherit IVehicleHardware (vendor seam) not BnVehicle (binder layer)."),
+        ]
+        aidl_violations = []
+        for marker, explanation in _HIDL_BANNED:
+            if marker in code:
+                aidl_violations.append(explanation)
+
+        if "IVehicleHardware" not in code:
+            aidl_violations.append(
+                "Missing IVehicleHardware base class. Inherit IVehicleHardware (vendor seam). "
+                "DefaultVehicleHal (instantiated in main()) owns BnVehicle.")
+        if "DefaultVehicleHal" not in code:
+            aidl_violations.append(
+                "Missing DefaultVehicleHal. Required: "
+                "auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw)); "
+                "AServiceManager_addService(vhal->asBinder().get(), instance.c_str());")
+        if "AServiceManager_addService" not in code:
+            aidl_violations.append(
+                "Missing AServiceManager_addService — AIDL registration, not HIDL_FETCH_*.")
+        if "GetValuesCallback" not in code or "GetValueRequest" not in code:
+            aidl_violations.append(
+                "getValues must be async: StatusCode getValues("
+                "std::shared_ptr<const GetValuesCallback>, "
+                "const std::vector<GetValueRequest>&) const override. "
+                "Invoke (*callback)(results) then return StatusCode::OK.")
+        if "SetValuesCallback" not in code or "SetValueRequest" not in code:
+            aidl_violations.append(
+                "setValues must be async: StatusCode setValues("
+                "std::shared_ptr<const SetValuesCallback>, "
+                "const std::vector<SetValueRequest>&) override.")
+
+        if aidl_violations:
+            msg = (
+                "AIDL V3 contract violations — fix ALL before anything else:\n"
+                + "\n".join(f"  [{i+1}] {v}" for i, v in enumerate(aidl_violations))
+                + "\n\nRegenerate the complete file following IVehicleHardware + "
+                "DefaultVehicleHal architecture."
+            )
+            return (False, msg, max(0.1, 1.0 - len(aidl_violations) * 0.15))
+
+        # ── Stage 2: clang++ syntax check ────────────────────────────────────
         try:
             import tempfile
             tmp = Path(tempfile.mktemp(suffix=".cpp"))
@@ -139,7 +201,6 @@ class ValidatorFeedback:
             if result.returncode == 0:
                 return (True, "", 1.0)
             stderr = result.stderr.decode(errors="replace")
-            # Filter out missing include errors (expected without AOSP headers)
             real_errors = [l for l in stderr.splitlines()
                            if "error:" in l and "file not found" not in l]
             if not real_errors:
@@ -147,17 +208,15 @@ class ValidatorFeedback:
             msg = (
                 f"C++ compilation errors ({len(real_errors)} errors):\n"
                 + "\n".join(real_errors[:5]) + "\n"
-                f"Fix these compilation errors. Keep all #include directives. "
-                f"Regenerate the complete file."
+                "Fix these errors. Keep all #include directives. Regenerate the complete file."
             )
             return (False, msg, max(0, 1.0 - len(real_errors) * 0.15))
         except FileNotFoundError:
-            # clang++ not available — heuristic check
             issues = []
             if code.count("{") != code.count("}"):
                 issues.append(f"Unbalanced braces: {code.count('{')} open, {code.count('}')} close")
             if code.count("(") != code.count(")"):
-                issues.append(f"Unbalanced parentheses")
+                issues.append("Unbalanced parentheses")
             if issues:
                 return (False, "C++ issues:\n" + "\n".join(issues), 0.6)
             return (True, "", 0.8)
@@ -628,7 +687,7 @@ def _generate_one_module(
 
     _sub_agent_classes = {
         "aidl": RAGDSPyAIDLAgent,
-        "cpp": RagDspyCppAgent,           # Modern C++ agent
+        "cpp": RAGDSPyCppAgent,           # mixin-based: has _generate + _retrieve for retry engine
         "selinux": RAGDSPySELinuxSubAgent,
         "build": RAGDSPyBuildAgent,
     }
