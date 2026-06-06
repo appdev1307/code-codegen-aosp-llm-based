@@ -550,6 +550,36 @@ rm -rf out/
 ```
 </details>
 
+
+### Step 6b — Build VssVehicleHardware Service (C3/C4 output)
+
+Copy the generated C++ service into the AOSP tree and build it as a standalone
+module — much faster than a full image rebuild.
+
+```bash
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+
+# Copy C3/C4 generated service files into the AOSP tree
+mkdir -p hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
+cp ~/output_c4/hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/*.{h,cpp} \
+   hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
+cp ~/output_c4/hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/Android.bp \
+   hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
+
+# Build just the VHAL service binary
+m android.hardware.automotive.vehicle@V3-vss-service
+
+# Verify binary produced
+ls $OUT/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
+# Expected: file present, ~1-2 MB
+```
+
+> **Note:** If the build fails with missing headers (`IVehicleHardware.h`, `DefaultVehicleHal.h`),
+> confirm `header_libs: ["IVehicleHardware"]` and `static_libs: ["DefaultVehicleHal", "VehicleHalUtils"]`
+> are in the generated `Android.bp`. Run `mmm` on the module to see the exact error.
+
 ### Step 7 — Launch Cuttlefish and Verify Base Image
 
 ```bash
@@ -582,28 +612,10 @@ adb -s 0.0.0.0:6520 shell lshal | grep automotive.vehicle
 
 ### Step 8 — Deploy VssVehicleHardware and Run VTS
 
-C5 VTS tests run against your generated `VssVehicleHardware` service, not the stock VHAL.
-The service is built from C3/C4 C++ output and registered as `IVehicle/default`.
+VssVehicleHardware is already built in Step 6b. This step deploys it on the
+running Cuttlefish instance, builds the C5 VTS test, and runs validation.
 
-#### 8a — Build VssVehicleHardware Service
-
-```bash
-cd ~/aosp-14-auto
-source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-
-# Copy C3/C4 generated service into AOSP tree
-mkdir -p hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
-cp ~/output_c4/hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/*.{h,cpp} \
-   hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
-cp ~/output_c4/hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/Android.bp \
-   hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
-
-# Build just the VHAL service (faster than full image)
-m android.hardware.automotive.vehicle@V3-vss-service
-```
-
-#### 8b — Build VTS Test
+#### 8a — Build VTS Test
 
 ```bash
 # Copy C5 VTS test into AOSP tree
@@ -623,7 +635,7 @@ sed -i 's/automotive.vehicle-V4-ndk/automotive.vehicle-V3-ndk/' \
 mmm test/vts/vss_vehicle
 ```
 
-#### 8c — Deploy VssVehicleHardware on Cuttlefish
+#### 8b — Deploy VssVehicleHardware on Cuttlefish
 
 ```bash
 # Cuttlefish must be running
@@ -648,7 +660,7 @@ adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default
 # Shows: VssVehicleHardware: N properties
 ```
 
-#### 8d — Run VTS
+#### 8c — Run VTS
 
 ```bash
 # Push VTS binary to device
@@ -663,7 +675,7 @@ adb shell /data/local/tmp/VtsHalAutomotiveVehicleVss
 atest VtsHalAutomotiveVehicleVss -c
 ```
 
-#### 8e — Install and verify HMI app
+#### 8d — Install and verify HMI app
 
 ```bash
 mkdir -p packages/apps/VssDashboard
