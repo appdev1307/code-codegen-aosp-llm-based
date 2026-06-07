@@ -50,11 +50,12 @@ from agents.rag_dspy_design_doc_agent  import RAGDSPyDesignDocAgent
 from agents.rag_dspy_android_app_agent import RAGDSPyAndroidAppAgent
 from agents.rag_dspy_backend_agent     import RAGDSPyBackendAgent
 
+# Modern C++ agent
+from agents.rag_dspy_cpp_agent import RagDspyCppAgent
+
 # ── Compile-aware metrics + validators ───────────────────────────────────────
 from dspy_opt.metrics    import score_file
 from dspy_opt.validators import validate, print_availability_report
-
-from agents.rag_dspy_cpp_agent import RagDspyCppAgent
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -197,7 +198,7 @@ def _generate_one_module(
 ) -> tuple[str, bool, str | None]:
     """
     Generate all HAL layer files for one module via RAGDSPyArchitectAgent.
-    Validates every generated file and appends score metrics to run_metrics.
+    Then upgrade C++ part with modern Android 14+ agent.
     """
     print(f"\n{'=' * 60}")
     print(f" MODULE: {domain.upper()} ({len(module_props)} props)")
@@ -207,6 +208,7 @@ def _generate_one_module(
     t0 = time.time()
 
     try:
+        # Step 1: Run architect (same as before)
         agent = RAGDSPyArchitectAgent(**AGENT_CFG, output_root=str(OUTPUT_DIR))
         agent.run(module_spec)
     except Exception as e:
@@ -222,30 +224,36 @@ def _generate_one_module(
 
     elapsed = round(time.time() - t0, 2)
 
-    # === Modern C++ VHAL Upgrade ===
-    print(f"\n [C3] Generating Modern Android 14+ C++ VHAL for {domain}...")
-    cpp_agent = RagDspyCppAgent(
-        rag_db_path = AGENT_CFG["rag_db_path"],
-        rag_top_k   = AGENT_CFG["rag_top_k"],
-    )
-    aidl_info = {
-        "package":    "android.hardware.automotive.vehicle",
-        "properties": {getattr(p, "id", str(i)): None
-                       for i, p in enumerate(module_props)},
-    }
-    cpp_output = cpp_agent.generate(
-        vss_spec  = module_spec.to_llm_spec(),
-        aidl_info = aidl_info,
-    )
+    # === Modern C++ VHAL Upgrade (Android 14+ AIDL) ===
+    print(f"\n [C3 Modern C++] Generating Android 14+ VHAL for {domain}...")
+    try:
+        cpp_agent = RagDspyCppAgent(
+            rag_db_path=AGENT_CFG["rag_db_path"],
+            rag_top_k=AGENT_CFG.get("rag_top_k", 8)
+        )
+        aidl_info = {
+            "package": "android.hardware.automotive.vehicle",
+            "properties": {}
+        }
 
-    # Save modern C++ files
-    cpp_dir = OUTPUT_DIR / domain.lower()
-    cpp_dir.mkdir(parents=True, exist_ok=True)
-    
-    (cpp_dir / "VssVehicleHardware.h").write_text(cpp_output.get("header", ""), encoding="utf-8")
-    (cpp_dir / "VssVehicleHardware.cpp").write_text(cpp_output.get("impl", ""), encoding="utf-8")
-    (cpp_dir / "VehicleService.cpp").write_text(cpp_output.get("main_service", ""), encoding="utf-8")
-    (cpp_dir / "Android.bp").write_text(cpp_output.get("android_bp", ""), encoding="utf-8")
+        cpp_output = cpp_agent.generate(
+            vss_spec=module_spec,
+            aidl_info=aidl_info
+        )
+
+        # Save in module folder (AOSP-like structure)
+        cpp_dir = OUTPUT_DIR / domain.lower()
+        cpp_dir.mkdir(parents=True, exist_ok=True)
+
+        (cpp_dir / "VssVehicleHardware.h").write_text(cpp_output.get("header", "// Header failed\n"), encoding="utf-8")
+        (cpp_dir / "VssVehicleHardware.cpp").write_text(cpp_output.get("impl", "// Impl failed\n"), encoding="utf-8")
+        (cpp_dir / "VehicleService.cpp").write_text(cpp_output.get("main_service", "// Service failed\n"), encoding="utf-8")
+        (cpp_dir / "Android.bp").write_text(cpp_output.get("android_bp", "// Android.bp failed\n"), encoding="utf-8")
+
+        print(f" [C3 Modern C++] → Saved 4 C++ files for {domain}")
+
+    except Exception as e:
+        print(f" [C3 Modern C++] Warning: C++ upgrade failed: {e}")
 
     # Score files
     print(f"\n Validating {domain} output files:")
