@@ -719,7 +719,7 @@ def _generate_one_module(
 
             if agent_type == "cpp":
                 rag_context = ""
-            else        
+            else:        
                 rag_query = f"{domain} {agent_type} AOSP 14 VHAL android.hardware.automotive.vehicle"
                 rag_context = sub_agent._retrieve(rag_query) if hasattr(sub_agent, '_retrieve') else ""
 
