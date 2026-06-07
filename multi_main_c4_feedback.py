@@ -687,7 +687,7 @@ def _generate_one_module(
 
     _sub_agent_classes = {
         "aidl": RAGDSPyAIDLAgent,
-        "cpp": RagDspyCppAgent,   # Modern Android 14+ agent
+        "cpp": RagDspyCppAgent,   # Modern standalone agent
         "selinux": RAGDSPySELinuxSubAgent,
         "build": RAGDSPyBuildAgent,
     }
