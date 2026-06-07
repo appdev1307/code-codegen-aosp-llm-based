@@ -103,19 +103,15 @@ class AIDLSignature(dspy.Signature):
 
 
 class ModernCppVehicleHardwareSignature(dspy.Signature):
-    """Generate production-ready C++ Vehicle HAL for Android 14+ AIDL V3 only.
-    Must follow AOSP reference: implement IVehicleHardware + wrap with DefaultVehicleHal.
-    getValues and setValues must be ASYNCHRONOUS (callback + request).
-    Never use any HIDL patterns.
-    """
-    vss_spec: str = dspy.InputField(desc="Vehicle System Specification")
-    generated_aidl_info: str = dspy.InputField(desc="AIDL package name and custom properties")
-    retrieved_aosp_examples: str = dspy.InputField(desc="Retrieved high-quality AOSP examples")
+    """Generate production-ready C++ Vehicle HAL for Android 14+ AIDL V3 only."""
+    domain: str = dspy.InputField(desc="HAL domain name")
+    properties: str = dspy.InputField(desc="VSS property specifications")
+    aosp_context: str = dspy.InputField(desc="Retrieved high-quality AOSP examples")
     
-    cpp_header: str = dspy.OutputField(desc="Full content of VssVehicleHardware.h")
-    cpp_impl: str = dspy.OutputField(desc="Full content of VssVehicleHardware.cpp")
-    main_service: str = dspy.OutputField(desc="Full content of VehicleService.cpp")
-    android_bp: str = dspy.OutputField(desc="Full content of Android.bp")
+    cpp_header: str = dspy.OutputField(desc="Full VssVehicleHardware.h")
+    cpp_impl: str = dspy.OutputField(desc="Full VssVehicleHardware.cpp")
+    main_service: str = dspy.OutputField(desc="Full VehicleService.cpp")
+    android_bp: str = dspy.OutputField(desc="Full Android.bp")
     reasoning: str = dspy.OutputField(desc="Reasoning for AOSP compliance")
 
 
@@ -459,7 +455,7 @@ class SimulatorSignature(dspy.Signature):
 # ═══════════════════════════════════════════════════════════════════
 SIGNATURE_REGISTRY: dict[str, tuple] = {
     "aidl":           (AIDLSignature,         "aidl_code"),
-    "cpp":            (ModernCppVehicleHardwareSignature, "cpp_code"),   # ← Modern version
+    "cpp":            (ModernCppVehicleHardwareSignature, "cpp_impl"),
     "selinux":        (SELinuxSignature,       "policy"),
     "build":          (BuildFileSignature,     "build_file"),
     "vintf":          (VINTFSignature,         "manifest"),
