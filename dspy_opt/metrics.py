@@ -179,19 +179,33 @@ def metric_aidl(example, prediction, trace=None) -> float:
 
 
 def metric_cpp(example, prediction, trace=None) -> float:
-    """C++ VHAL — clang++ --syntax-only with stub AOSP headers (or regex)."""
-    code = _get_output(prediction, "cpp_code")
+    """C++ VHAL — clang++ --syntax-only with stub AOSP headers (or regex).
+
+    ModernCppVehicleHardwareSignature has four output fields:
+      cpp_impl, cpp_header, main_service, android_bp
+    All are combined for scoring. cpp_impl is the primary target.
+    """
+    impl   = _get_output(prediction, "cpp_impl")
+    header = _get_output(prediction, "cpp_header")
+    main   = _get_output(prediction, "main_service")
+    code   = "\n".join(filter(None, [impl, header, main]))
     if not code:
         return 0.0
+
     structural = _heuristic([
-        ("#include"   in code,                                               0.15),
-        ("namespace"  in code,                                               0.10),
-        ("class "     in code,                                               0.15),
-        (_balanced_braces(code),                                             0.15),
+        # Basic C++ structure
+        ("#include"         in code,                                         0.10),
+        ("namespace"        in code,                                         0.10),
+        ("class "           in code,                                         0.10),
+        (_balanced_braces(code),                                             0.10),
+        # AIDL V3 contract — rewards correct architecture
+        ("IVehicleHardware" in code,                                         0.15),
         (any(m in code for m in
-             ["getAllPropertyConfigs","getValues","setValues"]),              0.30),
-        (any(t in code for t in
-             ["int32_t","float","bool","VehiclePropValue"]),                  0.15),
+             ["getAllPropertyConfigs","getValues","setValues"]),              0.15),
+        (any(r in code for r in
+             ["AServiceManager_addService","DefaultVehicleHal"]),             0.15),
+        # HIDL absence — reward not having forbidden patterns
+        ("HIDL_FETCH_" not in code and "Return<" not in code,               0.15),
     ])
     syntax_res = validate("cpp", code)
     coverage   = _signal_coverage(example, code)
@@ -441,7 +455,7 @@ METRIC_REGISTRY: dict[str, callable] = {
 
 _FIELD_MAP = {
     "aidl":           "aidl_code",
-    "cpp":            "cpp_code",
+    "cpp":            "cpp_impl",   # primary output field
     "selinux":        "policy",
     "build":          "build_file",
     "vintf":          "manifest",
