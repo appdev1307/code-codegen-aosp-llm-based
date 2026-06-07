@@ -196,6 +196,10 @@ def _generate_one_module(
     module_props: list,
     run_metrics: list,
 ) -> tuple[str, bool, str | None]:
+    """
+    Generate all HAL layer files for one module via RAGDSPyArchitectAgent.
+    Then upgrade C++ part with modern Android 14+ agent (reviewer style).
+    """
     print(f"\n{'=' * 60}")
     print(f" MODULE: {domain.upper()} ({len(module_props)} props)")
     print(f"{'=' * 60}")
@@ -208,30 +212,44 @@ def _generate_one_module(
         agent.run(module_spec)
     except Exception as e:
         print(f" [MODULE {domain}] → FAILED: {e}")
-        run_metrics.append({"domain": domain, "stage": "hal_module", "success": False, "error": str(e), "generation_time": round(time.time() - t0, 2)})
+        run_metrics.append({
+            "domain": domain,
+            "stage": "hal_module",
+            "success": False,
+            "error": str(e),
+            "generation_time": round(time.time() - t0, 2),
+        })
         return (domain, False, str(e))
 
     elapsed = round(time.time() - t0, 2)
 
-    # Modern C++ Upgrade
+    # === Modern C++ VHAL Upgrade (reviewer style) ===
     print(f"\n [C3] Generating Modern Android 14+ C++ VHAL for {domain}...")
     try:
-        cpp_agent = RagDspyCppAgent(rag_db_path=AGENT_CFG["rag_db_path"])
+        cpp_agent = RagDspyCppAgent(
+            rag_db_path=AGENT_CFG["rag_db_path"],
+            rag_top_k=AGENT_CFG.get("rag_top_k", 8)
+        )
+
         cpp_output = cpp_agent.generate(
             domain=domain,
             properties=module_spec.to_llm_spec()
         )
 
+        # Save files
         cpp_dir = OUTPUT_DIR / domain.lower()
         cpp_dir.mkdir(parents=True, exist_ok=True)
+        
         (cpp_dir / "VssVehicleHardware.h").write_text(cpp_output.get("header", ""), encoding="utf-8")
         (cpp_dir / "VssVehicleHardware.cpp").write_text(cpp_output.get("impl", ""), encoding="utf-8")
         (cpp_dir / "VehicleService.cpp").write_text(cpp_output.get("main_service", ""), encoding="utf-8")
         (cpp_dir / "Android.bp").write_text(cpp_output.get("android_bp", ""), encoding="utf-8")
+
     except Exception as e:
         print(f" [C3 C++] Warning: {e}")
 
-    # Scoring
+    # Score files
+    print(f"\n Validating {domain} output files:")
     file_scores = _score_files(["aidl", "cpp", "selinux", "build"], domain_filter=domain)
     avg_score = _avg(file_scores)
 
