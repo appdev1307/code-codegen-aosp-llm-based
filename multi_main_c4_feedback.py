@@ -717,8 +717,11 @@ def _generate_one_module(
                     continue
                 sub_agent = AgentClass(**AGENT_CFG)
 
-            rag_query = f"{domain} {agent_type} AOSP 14 VHAL android.hardware.automotive.vehicle"
-            rag_context = sub_agent._retrieve(rag_query) if hasattr(sub_agent, '_retrieve') else ""
+            if agent_type == "cpp":
+                rag_context = ""
+            else        
+                rag_query = f"{domain} {agent_type} AOSP 14 VHAL android.hardware.automotive.vehicle"
+                rag_context = sub_agent._retrieve(rag_query) if hasattr(sub_agent, '_retrieve') else ""
 
             gen_kwargs = {
                 "domain": domain,
