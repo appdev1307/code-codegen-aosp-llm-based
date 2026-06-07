@@ -708,12 +708,14 @@ def _generate_one_module(
                 })
                 continue
 
-            AgentClass = _sub_agent_classes.get(agent_type)
-            if not AgentClass:
-                tracker.record(agent_type, False)
-                continue
-
-            sub_agent = AgentClass(**AGENT_CFG)
+            if agent_type == "cpp":
+                sub_agent = RagDspyCppAgent()   # standalone — does not accept **AGENT_CFG
+            else:
+                AgentClass = _sub_agent_classes.get(agent_type)
+                if not AgentClass:
+                    tracker.record(agent_type, False)
+                    continue
+                sub_agent = AgentClass(**AGENT_CFG)
 
             rag_query = f"{domain} {agent_type} AOSP 14 VHAL android.hardware.automotive.vehicle"
             rag_context = sub_agent._retrieve(rag_query) if hasattr(sub_agent, '_retrieve') else ""
