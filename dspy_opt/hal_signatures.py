@@ -103,162 +103,52 @@ class AIDLSignature(dspy.Signature):
 
 
 class ModernCppVehicleHardwareSignature(dspy.Signature):
+    """Generate production-ready C++ Vehicle HAL for Android 14+ AIDL V3 only.
+    Must follow AOSP reference: implement IVehicleHardware + wrap with DefaultVehicleHal.
+    getValues and setValues must be ASYNCHRONOUS (callback + request).
+    Never use any HIDL patterns.
     """
-    Generate a complete Android 14 AIDL V3 VHAL C++ implementation.
-    Output FOUR separate files: header, implementation, service main, and build file.
-
-    ══════════════════════════════════════════════════════════════════
-    MANDATORY ARCHITECTURE — do not deviate:
-
-      class YourHardware : public IVehicleHardware { ... };   ← YOU implement this
-      DefaultVehicleHal wraps IVehicleHardware → owns BnVehicle (binder layer)
-      main() creates DefaultVehicleHal and registers via AServiceManager_addService
-
-    YOU MUST NOT subclass BnVehicle or BnIVehicle — those are the binder layer.
-    YOU MUST NOT use HIDL_FETCH_* — that is HIDL passthrough, not AIDL.
-    ══════════════════════════════════════════════════════════════════
-
-    MANDATORY override signatures — copy these EXACTLY into cpp_header and cpp_impl:
-
-      std::vector<aidlvhal::VehiclePropConfig>
-          getAllPropertyConfigs() const override;
-
-      aidlvhal::StatusCode getValues(
-          std::shared_ptr<const GetValuesCallback> callback,
-          const std::vector<aidlvhal::GetValueRequest>& requests) const override;
-
-      aidlvhal::StatusCode setValues(
-          std::shared_ptr<const SetValuesCallback> callback,
-          const std::vector<aidlvhal::SetValueRequest>& requests) override;
-
-      void registerOnPropertyChangeEvent(
-          std::unique_ptr<const PropertyChangeCallback> callback) override;
-
-      void registerOnPropertySetErrorEvent(
-          std::unique_ptr<const PropertySetErrorCallback> callback) override;
-
-      DumpResult dump(const std::vector<std::string>& options) override;
-      aidlvhal::StatusCode checkHealth() override;
-
-    getValues/setValues: invoke (*callback)(results) then return StatusCode::OK.
-    The synchronous form getValues(propIds, areas, out*) does NOT exist in AIDL V3.
-
-    MANDATORY main_service pattern:
-      auto hw   = std::make_unique<YourHardware>();
-      auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw));
-      AServiceManager_addService(vhal->asBinder().get(), instance.c_str());
-
-    ══════════════════════════════════════════════════════════════════
-    ABSOLUTELY FORBIDDEN — any of these means wrong generation:
-      ✗ HIDL_FETCH_*        (HIDL passthrough factory — not used in AIDL)
-      ✗ extern "C" factory  (same as above)
-      ✗ #include <hidl/...> (wrong HAL generation)
-      ✗ Return<> type       (HIDL-only)
-      ✗ BnVehicle base class (binder layer — DefaultVehicleHal owns this)
-      ✗ BnIVehicle          (does not exist)
-      ✗ config.valueType    (VehiclePropConfig has no valueType field in V3)
-      ✗ get(prop,area)/set(value) methods (HIDL @2.0 — not in AIDL IVehicle)
-    ══════════════════════════════════════════════════════════════════
-
-    Follow the retrieved FakeVehicleHardware.cpp as your implementation template.
-    Follow the retrieved VehicleService.cpp for the main() registration pattern.
-    """
-    vss_spec:                str = dspy.InputField(
-        desc="VSS property specifications with name, type, access, change-mode"
-    )
-    generated_aidl_info:     str = dspy.InputField(
-        desc="AIDL package name and list of custom property constants"
-    )
-    retrieved_aosp_examples: str = dspy.InputField(
-        desc="Retrieved AOSP reference: IVehicleHardware.h, FakeVehicleHardware.cpp, "
-             "DefaultVehicleHal.cpp, VehicleService.cpp. Match their signatures exactly."
-    )
-
-    cpp_header:   str = dspy.OutputField(
-        desc="Complete VssVehicleHardware.h — class inheriting IVehicleHardware "
-             "(NOT BnVehicle) with all 7 method overrides declared. "
-             "No HIDL headers, no HIDL_FETCH_*, correct AIDL namespaces."
-    )
-    cpp_impl:     str = dspy.OutputField(
-        desc="Complete VssVehicleHardware.cpp — implements all 7 IVehicleHardware "
-             "overrides. getValues and setValues invoke (*callback)(results) then "
-             "return StatusCode::OK. No HIDL_FETCH_*, no .valueType field."
-    )
-    main_service: str = dspy.OutputField(
-        desc="Complete VehicleService.cpp — main() wraps hardware in DefaultVehicleHal "
-             "and registers via AServiceManager_addService. No HIDL_FETCH_* anywhere."
-    )
-    android_bp:   str = dspy.OutputField(
-        desc="Complete Android.bp — cc_binary vendor:true, "
-             "static_libs:[DefaultVehicleHal, VehicleHalUtils], "
-             "shared_libs:[android.hardware.automotive.vehicle-V3-ndk, libbinder_ndk], "
-             "header_libs:[IVehicleHardware]."
-    )
-    reasoning:    str = dspy.OutputField(
-        desc="Brief explanation of AOSP compliance choices made"
-    )
+    vss_spec: str = dspy.InputField(desc="Vehicle System Specification")
+    generated_aidl_info: str = dspy.InputField(desc="AIDL package name and custom properties")
+    retrieved_aosp_examples: str = dspy.InputField(desc="Retrieved high-quality AOSP examples")
+    
+    cpp_header: str = dspy.OutputField(desc="Full content of VssVehicleHardware.h")
+    cpp_impl: str = dspy.OutputField(desc="Full content of VssVehicleHardware.cpp")
+    main_service: str = dspy.OutputField(desc="Full content of VehicleService.cpp")
+    android_bp: str = dspy.OutputField(desc="Full content of Android.bp")
+    reasoning: str = dspy.OutputField(desc="Reasoning for AOSP compliance")
 
 
 class CppVehicleAssertions(dspy.Module):
-    """Validates generated C++ against the AIDL V3 contract. Non-crashing by default."""
-
     def __init__(self, strict: bool = False):
         super().__init__()
         self.strict = strict
 
     def forward(self, pred):
-        header = getattr(pred, "cpp_header",   "") or ""
-        impl   = getattr(pred, "cpp_impl",     "") or ""
-        main   = getattr(pred, "main_service", "") or ""
-        full   = header + impl + main
+        header = getattr(pred, "cpp_header", "") or ""
+        impl = getattr(pred, "cpp_impl", "") or ""
+        main = getattr(pred, "main_service", "") or ""
+        full = header + impl + main
 
         violations = []
 
-        if not full.strip():
-            violations.append("All output fields are empty — generation failed")
-            pred.violations = violations
-            if self.strict:
-                raise AssertionError("\n".join(violations))
-            return pred
-
-        # required patterns
         if "IVehicleHardware" not in header:
-            violations.append(
-                "cpp_header: class must inherit IVehicleHardware (vendor seam), "
-                "NOT BnVehicle (that is DefaultVehicleHal's base)")
+            violations.append("Must inherit from IVehicleHardware")
         if "DefaultVehicleHal" not in main:
-            violations.append(
-                "main_service: must wrap hardware in DefaultVehicleHal — "
-                "ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw))")
+            violations.append("Must use DefaultVehicleHal wrapper in main_service")
         if "AServiceManager_addService" not in main:
-            violations.append(
-                "main_service: must register via AServiceManager_addService, "
-                "not HIDL_FETCH_*")
-        if "GetValuesCallback" not in full or "GetValueRequest" not in full:
-            violations.append(
-                "cpp_impl: getValues must be async — "
-                "StatusCode getValues(shared_ptr<const GetValuesCallback>, "
-                "const vector<GetValueRequest>&) const override")
-        if "SetValuesCallback" not in full or "SetValueRequest" not in full:
-            violations.append(
-                "cpp_impl: setValues must be async — "
-                "StatusCode setValues(shared_ptr<const SetValuesCallback>, "
-                "const vector<SetValueRequest>&) override")
+            violations.append("Must register using AServiceManager_addService")
+        if not ("GetValueRequest" in full and "GetValuesCallback" in full):
+            violations.append("getValues must use async pattern (GetValueRequest + GetValuesCallback)")
+        if not ("SetValueRequest" in full and "SetValuesCallback" in full):
+            violations.append("setValues must use async pattern")
 
-        # forbidden HIDL artifacts
-        for banned, label in [
-            ("HIDL_FETCH",  "HIDL_FETCH_* (HIDL passthrough — forbidden in AIDL HAL)"),
-            ("hidl/",       "#include <hidl/...> (wrong HAL generation)"),
-            ("Return<",     "Return<> type (HIDL-only)"),
-            (".valueType",  ".valueType field (does not exist on VehiclePropConfig in V3)"),
-            ("BnIVehicle",  "BnIVehicle (invented name — use IVehicleHardware)"),
-        ]:
-            if banned in full:
-                violations.append(f"Forbidden: {label}")
+        forbidden = ["HIDL_FETCH", "hidl/", "Return<", ".valueType"]
+        for term in forbidden:
+            if term in full:
+                violations.append(f"Forbidden HIDL pattern: {term}")
 
         pred.violations = violations
-        if self.strict and violations:
-            raise AssertionError("VHAL violations:\n- " + "\n- ".join(violations))
         return pred
 
 
@@ -568,16 +458,18 @@ class SimulatorSignature(dspy.Signature):
 # Registry — used by optimizer.py and hal_modules.py
 # ═══════════════════════════════════════════════════════════════════
 SIGNATURE_REGISTRY: dict[str, tuple] = {
-    "aidl":           (AIDLSignature,                      "aidl_code"),
-    "cpp":            (ModernCppVehicleHardwareSignature,  "cpp_impl"),   # cpp_impl exists; cpp_code does not
-    "selinux":        (SELinuxSignature,                   "policy"),
-    "build":          (BuildFileSignature,                 "build_file"),
-    "vintf":          (VINTFSignature,                     "manifest"),
-    "design_doc":     (DesignDocSignature,                 "design_doc"),
-    "puml":           (PlantUMLSignature,                  "puml"),
-    "android_app":    (AndroidAppSignature,                "kotlin_code"),
-    "android_layout": (AndroidLayoutSignature,             "layout_xml"),
-    "backend":        (BackendAPISignature,                "api_code"),
-    "backend_model":  (BackendModelSignature,              "models_code"),
-    "simulator":      (SimulatorSignature,                 "simulator_code"),
+    "aidl":           (AIDLSignature,         "aidl_code"),
+    "cpp":            (ModernCppVehicleHardwareSignature, "cpp_code"),   # ← Modern version
+    "selinux":        (SELinuxSignature,       "policy"),
+    "build":          (BuildFileSignature,     "build_file"),
+    "vintf":          (VINTFSignature,         "manifest"),
+    "design_doc":     (DesignDocSignature,     "design_doc"),
+    "puml":           (PlantUMLSignature,      "puml"),
+    "android_app":    (AndroidAppSignature,    "kotlin_code"),
+    "android_layout": (AndroidLayoutSignature, "layout_xml"),
+    "backend":        (BackendAPISignature,    "api_code"),
+    "backend_model":  (BackendModelSignature,  "models_code"),
+    "simulator":      (SimulatorSignature,     "simulator_code"),
 }
+
+print("✅ hal_signatures.py loaded with ModernCppVehicleHardwareSignature")

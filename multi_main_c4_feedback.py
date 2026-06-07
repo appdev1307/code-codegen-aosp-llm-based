@@ -687,7 +687,7 @@ def _generate_one_module(
 
     _sub_agent_classes = {
         "aidl": RAGDSPyAIDLAgent,
-        "cpp": RAGDSPyCppAgent,           # mixin-based: has _generate + _retrieve for retry engine
+        "cpp": RagDspyCppAgent,   # Modern Android 14+ agent
         "selinux": RAGDSPySELinuxSubAgent,
         "build": RAGDSPyBuildAgent,
     }
