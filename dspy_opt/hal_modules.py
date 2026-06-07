@@ -40,7 +40,7 @@ from typing import Optional
 import dspy
 
 from dspy_opt.hal_signatures import (
-    AIDLSignature, VHALCppSignature, SELinuxSignature, BuildFileSignature,
+    AIDLSignature, ModernCppVehicleHardwareSignature, SELinuxSignature, BuildFileSignature,
     VINTFSignature, DesignDocSignature, PlantUMLSignature,
     AndroidAppSignature, AndroidLayoutSignature,
     BackendAPISignature, BackendModelSignature, SimulatorSignature,
@@ -200,7 +200,7 @@ AIDLModule = _make_module_class(
 )
 
 VHALCppModule = _make_module_class(
-    VHALCppSignature, "cpp_code", "VHALCppModule",
+    ModernCppVehicleHardwareSignature, "cpp_impl", "VHALCppModule",
     "Generates VHAL C++ service implementation files."
 )
 
@@ -276,7 +276,7 @@ SimulatorModule = _make_module_class(
 MODULE_REGISTRY: dict[str, tuple[type, str]] = {
     # HAL layer
     "aidl":           (AIDLModule,         "aidl_code"),
-    "cpp":            (VHALCppModule,       "cpp_code"),
+    "cpp":            (VHALCppModule,       "cpp_impl"),
     "selinux":        (SELinuxModule,       "policy"),
     "build":          (BuildFileModule,     "build_file"),
     "vintf":          (VINTFModule,         "manifest"),
