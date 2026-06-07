@@ -16,9 +16,28 @@ class RagDspyCppAgent:
         self.assertions = CppVehicleAssertions(strict=False)
 
     def generate(self, vss_spec: dict, aidl_info: dict, extra_context: str = "") -> dict:
-        query = "DefaultVehicleHal IVehicleHardware FakeVehicleHardware GetValueRequest GetValuesCallback SetValueRequest SetValuesCallback Android 14 VHAL"
+        """Generate modern Android 14+ C++ VHAL"""
+        query = (
+            "DefaultVehicleHal IVehicleHardware FakeVehicleHardware "
+            "GetValueRequest GetValuesCallback SetValueRequest SetValuesCallback "
+            "AServiceManager_addService Android 14 AIDL VHAL implementation"
+        )
 
-        retrieved = self.retriever.retrieve_multi([query], agent_type="cpp", top_k=self.top_k)
+        # Strong filter for best examples
+        filter_dict = {"$and": [
+            {"android_version": "14"},
+            {"component": {"$in": ["default_vehicle_hal", "ivhicle_hardware", "fake_impl", "vhal", "vehicle"]}},
+        ]}
+
+        retrieved = self.retriever.retrieve(
+            query=query, 
+            top_k=12, 
+            filter_dict=filter_dict
+        )
+
+        if not retrieved or len(retrieved) < 3:
+            print("[RagDspyCppAgent] WARNING: Weak retrieval, falling back...")
+            retrieved = self.retriever.retrieve(query=query, top_k=10)
 
         retrieved_text = "\n\n".join(
             doc.get("text", doc.get("page_content", "")) for doc in retrieved
@@ -30,7 +49,8 @@ class RagDspyCppAgent:
 
         result = self.predictor(
             vss_spec=str(vss_spec),
-            generated_aidl_info=f"Package: {aidl_info.get('package', '')}\nProperties: {list(aidl_info.get('properties', {}).keys())}",
+            generated_aidl_info=(f"Package: {aidl_info.get('package', '')}\n"
+                               f"Properties: {list(aidl_info.get('properties', {}).keys())}"),
             retrieved_aosp_examples=full_context,
         )
 
