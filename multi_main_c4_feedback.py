@@ -546,7 +546,7 @@ from agents.rag_dspy_backend_agent     import RAGDSPyBackendAgent
 
 # ── Sub-agents for targeted retry (only used in retry loop) ──────
 from agents.rag_dspy_aidl_agent    import RAGDSPyAIDLAgent
-from agents.rag_dspy_cpp_agent     import RAGDSPyCppAgent
+from agents.rag_dspy_cpp_agent import RagDspyCppAgent
 from agents.rag_dspy_selinux_agent import RAGDSPySELinuxAgent as RAGDSPySELinuxSubAgent
 from agents.rag_dspy_build_agent   import RAGDSPyBuildAgent
 
