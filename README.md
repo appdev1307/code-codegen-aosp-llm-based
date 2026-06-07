@@ -194,6 +194,45 @@ python apply_chroma_fix.py
 python multi_main_rag_dspy.py
 cp -r output_rag_dspy/ output_rag_dspy_backup/
 
+# ── C3 Post-run check (run before starting C4) ─────────────────
+# Verifies VssVehicleHardware.cpp is non-empty and AIDL-compliant.
+# If HIDL contamination or empty output is found, fix the cpp agent
+# before spending 4 hours on C4.
+python - << 'PYCHECK'
+import glob, sys
+from pathlib import Path
+
+output_dir = Path("output_rag_dspy")
+cpp_files = (list(output_dir.rglob("VssVehicleHardware.cpp")) +
+             list(output_dir.rglob("VehicleHalService*.cpp")))
+
+if not cpp_files:
+    print("❌ FAIL: No C++ file in output_rag_dspy/ — cpp agent returned empty")
+    sys.exit(1)
+
+HIDL_BANNED  = ["HIDL_FETCH_", "hidl/", "Return<", ".valueType", "BnIVehicle",
+                "BnVehicle"]
+AIDL_REQUIRED = ["IVehicleHardware", "DefaultVehicleHal", "AServiceManager_addService",
+                  "GetValuesCallback", "GetValueRequest", "SetValuesCallback", "SetValueRequest"]
+issues = []
+for f in cpp_files:
+    c = f.read_text(errors="ignore")
+    if len(c.strip()) < 200:
+        issues.append(f"{f.name}: empty")
+    for b in HIDL_BANNED:
+        if b in c: issues.append(f"{f.name}: HIDL artifact '{b}'")
+    for r in AIDL_REQUIRED:
+        if r not in c: issues.append(f"{f.name}: missing '{r}'")
+
+if issues:
+    print("❌ C3 cpp AIDL V3 violations:")
+    for v in issues: print(f"   • {v}")
+    print("Fix before running C4.")
+    sys.exit(1)
+else:
+    print(f"✓ C3 cpp passed AIDL V3 check ({len(cpp_files)} file(s))")
+PYCHECK
+
 # ── C4: Feedback Loop ──────────────────────────────────────────
 python multi_main_c4_feedback.py
 cp -r output_c4_feedback/ output_c4_feedback_backup/
@@ -741,6 +780,21 @@ gcloud compute instances start aosp-builder-cutterfish --zone=us-central1-a
 | 8 | Backend | `python -c "import main"` | No import errors |
 | 9 | Full image | `m -j$(nproc)` | `aosp_cf_x86_64_auto` builds |
 | 10 | VTS | `atest VtsHalAutomotiveVehicleVss` | 4 tests pass on Cuttlefish |
+
+---
+
+## Latest Results (500 signals, matched agents)
+
+| Condition | Avg Score | Syntax | Coverage | Effect vs C1 |
+|-----------|-----------|--------|----------|-------------|
+| C1 Baseline | 0.817 | 0.912 | 0.518 | — |
+| C2 Adaptive | 0.803 | 0.886 | 0.526 | r = -0.015 |
+| C3 RAG+DSPy | 0.858 | 0.898 | 0.679 | r = 0.169 |
+| C4 Feedback | **0.876** | **0.924** | **0.692** | r = 0.245 * |
+
+Kruskal-Wallis H = 8.32, p = 0.040 (significant at α = 0.05).
+C1 vs C4 pairwise: U = 1651.0, p = 0.016 *, r = 0.245 (small-to-medium effect size).
+C5 results (VTS pass rate, HMI score) reported separately.
 
 ---
 
