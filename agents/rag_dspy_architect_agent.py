@@ -157,18 +157,21 @@ class RAGDSPyArchitectAgent:
         return written
 
     def _clean_selinux(self, content: str) -> str:
-        """Maximum aggressive SELinux cleaner."""
+        """Aggressive clean only - no hard fallback."""
         if not content or not isinstance(content, str):
-            return "type vss_hal, domain;\n"
+            return content or ""
 
+        # Remove markdown fences
         content = re.sub(r'```(?:te|selinux|policy|shell)?\s*', '', content, flags=re.IGNORECASE | re.MULTILINE)
         content = re.sub(r'```\s*$', '', content, flags=re.MULTILINE)
 
         content = content.strip()
 
+        # Remove leading garbage
         while content and content[0] in '{}\n\t `':
             content = content[1:].strip()
 
+        # Remove bad lines
         lines = []
         for line in content.splitlines():
             stripped = line.strip()
@@ -177,16 +180,6 @@ class RAGDSPyArchitectAgent:
             lines.append(line)
 
         cleaned = '\n'.join(lines).strip()
-
-        if not cleaned or not any(k in cleaned.lower() for k in ['type ', 'allow ', 'gen_require', 'hal_attribute']):
-            cleaned = """type vss_hal, domain;
-typeattribute vss_hal hal_server_domain;
-hal_attribute_hwservice(vss_hal, hal_vehicle_hwservice)
-
-binder_call(hal_client_domain, vss_hal)
-allow vss_hal hal_vehicle_hwservice:hwservice_manager add find;
-allow vss_hal self:process fork;
-"""
         return cleaned
 
     def _write_selinux(self, domain: str, content: str) -> list[Path]:
