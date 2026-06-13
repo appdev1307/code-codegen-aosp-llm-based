@@ -426,28 +426,23 @@ class PostValidationRetry:
             )
 
             retry_kwargs = dict(gen_kwargs)
-            # Add feedback as a dedicated field.
-            # If the agent's _generate() accepts 'validation_feedback', use it.
-            # Otherwise fall back to prepending to 'properties' (less ideal but
-            # doesn't pollute RAG context).
-            retry_kwargs["validation_feedback"] = feedback_block
-
+            # DSPy silently ignores unknown kwargs instead of raising TypeError,
+            # so the old validation_feedback approach was a no-op for all DSPy
+            # agents (selinux, build, vintf). Fix: always prepend feedback to
+            # aosp_context so the LLM actually sees the error on every retry.
+            retry_kwargs["aosp_context"] = (
+                "=== VALIDATION FAILED — FIX THESE ERRORS BEFORE ANYTHING ELSE ===\n"
+                + feedback_block
+                + "\n=== END ERRORS ===\n\n"
+                + "=== AOSP REFERENCE CONTEXT ===\n"
+                + gen_kwargs.get("aosp_context", "")
+            )
             try:
                 new_code = agent._generate(**retry_kwargs)
-            except TypeError:
-                # Agent doesn't accept validation_feedback kwarg —
-                # fall back: prepend feedback to properties (NOT aosp_context)
-                retry_kwargs.pop("validation_feedback", None)
-                if "properties" in retry_kwargs:
-                    retry_kwargs["properties"] = (
-                        feedback_block + "\n\n" + gen_kwargs["properties"]
-                    )
-                try:
-                    new_code = agent._generate(**retry_kwargs)
-                except Exception as e:
-                    metrics["errors_by_attempt"].append(
-                        f"Attempt {attempt}: generation error: {e}")
-                    continue
+            except Exception as e:
+                metrics["errors_by_attempt"].append(
+                    f"Attempt {attempt}: generation error: {e}")
+                continue
 
             if not new_code or not new_code.strip():
                 metrics["errors_by_attempt"].append(
