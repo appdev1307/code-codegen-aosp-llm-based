@@ -155,7 +155,6 @@ class RAGDSPyArchitectAgent:
         return written
 
     @staticmethod
-        @staticmethod
     def _clean_selinux(self, content: str, domain: str = "") -> str:
         """Aggressively clean SELinux .te policy to pass checkpolicy."""
         if not content:
