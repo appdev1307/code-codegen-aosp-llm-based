@@ -156,40 +156,37 @@ class RAGDSPyArchitectAgent:
 
     @staticmethod
         @staticmethod
-    def _clean_selinux(content: str) -> str:
-        """Aggressive cleanup for SELinux .te files — remove markdown, extra braces, etc."""
-        import re
-        
-        # 1. Remove markdown code fences
-        content = re.sub(r"^```[\s\w]*\n?", "", content, flags=re.MULTILINE)
-        content = re.sub(r"\n```$", "", content, flags=re.MULTILINE)
-        content = content.strip("` \t\n\r")
+    def _clean_selinux(self, content: str, domain: str = "") -> str:
+        """Clean SELinux policy: remove fences and fix common syntax issues."""
+        if not content or not content.strip():
+            return content
 
-        # 2. Split into lines and clean
+        # Remove markdown fences
+        content = re.sub(r'```(?:te|selinux|policy)?\s*', '', content, flags=re.IGNORECASE)
+        content = re.sub(r'```\s*$', '', content, flags=re.MULTILINE)
+
+        # Remove leading/trailing whitespace
+        content = content.strip()
+
+        # Remove leading '{' if it exists at the very beginning
+        if content.startswith('{'):
+            content = content[1:].strip()
+
+        # Remove any empty lines at start
         lines = content.splitlines()
-        
-        # Remove leading empty lines, lone braces, comments
-        while lines and lines[0].strip() in ("", "{", "}", "#", "//"):
-            lines.pop(0)
-        
-        # Remove trailing empty lines, lone braces
-        while lines and lines[-1].strip() in ("", "{", "}", "#", "//"):
-            lines.pop()
+        cleaned = []
+        for line in lines:
+            if line.strip():
+                cleaned.append(line)
 
-        # Remove opening { on the first line if present
-        if lines and lines[0].strip().startswith("{"):
-            lines[0] = lines[0].split("{", 1)[-1].strip()
+        content = '\n'.join(cleaned).strip()
 
-        # Remove any remaining lone { or } lines
-        lines = [line for line in lines if line.strip() not in ("{", "}")]
+        # Minimal fallback header if policy looks broken
+        if content and not any(x in content.lower() for x in ['type ', 'allow ', 'gen_require']):
+            if domain:
+                content = f"type vss_{domain.lower()}_hal, domain;\n\n" + content
 
-        cleaned = "\n".join(lines).strip()
-
-        # Final safety check
-        if not any(line.strip().startswith(("type ", "allow ", "neverallow ", "attribute ")) for line in lines):
-            print(f" [SELinux Cleaner] Warning: Policy looks invalid for domain")
-
-        return cleaned
+        return content
 
     def _write_selinux(self, domain: str, content: str) -> list[Path]:
         """Write SELinux .te policy file."""

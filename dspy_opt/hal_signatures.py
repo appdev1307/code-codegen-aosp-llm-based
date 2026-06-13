@@ -170,31 +170,27 @@ class CppVehicleAssertions(dspy.Module):
 
 
 class SELinuxSignature(dspy.Signature):
-    """
-    Generate a complete SELinux Type Enforcement (.te) policy file for an
-    AOSP VHAL service. The policy must allow the HAL service to operate
-    correctly within Android's mandatory access control framework.
+    """Generate a clean, valid SELinux Type Enforcement (.te) policy file for AOSP VHAL service.
+
+    STRICT RULES — NO EXCEPTIONS:
+    - Output ONLY the raw .te policy content. 
+    - NEVER use markdown fences (no ```te, no ```, no code blocks)
+    - Do NOT add any extra text, explanations, or leading '{'
+    - Start directly with valid SELinux statements (type, allow, gen_require, etc.)
+    - Use proper vehicle HAL naming (e.g. vss_xxx_hal)
+    - Follow AOSP patterns from retrieved examples
 
     Requirements:
     - Define the HAL service type using hal_attribute_hwservice macro
     - Add binder_call permissions between hal_client_domain and the service
     - Include add_hwservice and find_hwservice rules
     - Add necessary file access rules for /dev/vndbinder
-    - Follow retrieved AOSP SELinux examples for macro and rule patterns
-    - Use hal_vehicle naming conventions for vehicle HAL policies
     """
-    domain:       str = dspy.InputField(
-        desc="HAL domain name"
-    )
-    service_name: str = dspy.InputField(
-        desc="Full VHAL service name, e.g. vendor.vss.adas"
-    )
-    aosp_context: str = dspy.InputField(
-        desc="Retrieved real AOSP .te policy file examples"
-    )
-    policy:       str = dspy.OutputField(
-        desc="Complete SELinux .te policy file content"
-    )
+    domain: str = dspy.InputField(desc="HAL domain name")
+    service_name: str = dspy.InputField(desc="Full VHAL service name, e.g. vendor.vss.adas")
+    aosp_context: str = dspy.InputField(desc="Retrieved real AOSP .te policy file examples")
+
+    policy: str = dspy.OutputField(desc="Complete clean SELinux .te policy content ONLY - no extra text or fences")
 
 
 class BuildFileSignature(dspy.Signature):
