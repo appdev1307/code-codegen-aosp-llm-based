@@ -30,9 +30,9 @@ class RAGDSPyBuildAgent(RAGDSPyMixin):
     DSPY_OUTPUT_FIELD = "build_file"
 
     # Standard VHAL shared libraries — used in prompt and as reference
+    # AIDL V3 shared libs — no HIDL, no libvhalclient
     _STANDARD_DEPS = (
-        "libvhalclient libbinder_ndk libbase liblog "
-        "libutils android.hardware.automotive.vehicle-V2-ndk"
+        "libbinder_ndk libbase liblog libutils"
     )
 
     def __init__(
