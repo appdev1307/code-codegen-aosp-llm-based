@@ -157,36 +157,34 @@ class RAGDSPyArchitectAgent:
     @staticmethod
         @staticmethod
     def _clean_selinux(self, content: str, domain: str = "") -> str:
-        """Clean SELinux policy: remove fences and fix common syntax issues."""
-        if not content or not content.strip():
-            return content
+        """Aggressively clean SELinux .te policy to pass checkpolicy."""
+        if not content:
+            return ""
 
-        # Remove markdown fences
+        # Remove markdown fences and code blocks
         content = re.sub(r'```(?:te|selinux|policy)?\s*', '', content, flags=re.IGNORECASE)
         content = re.sub(r'```\s*$', '', content, flags=re.MULTILINE)
 
-        # Remove leading/trailing whitespace
+        # Remove any leading { or extra braces at start
         content = content.strip()
-
-        # Remove leading '{' if it exists at the very beginning
         if content.startswith('{'):
             content = content[1:].strip()
 
-        # Remove any empty lines at start
-        lines = content.splitlines()
-        cleaned = []
-        for line in lines:
-            if line.strip():
-                cleaned.append(line)
+        # Split lines and clean
+        lines = [line.rstrip() for line in content.splitlines() if line.strip()]
+        
+        # Remove empty lines at the very beginning
+        while lines and not lines[0].strip():
+            lines.pop(0)
 
-        content = '\n'.join(cleaned).strip()
+        cleaned = '\n'.join(lines).strip()
 
-        # Minimal fallback header if policy looks broken
-        if content and not any(x in content.lower() for x in ['type ', 'allow ', 'gen_require']):
+        # Minimal fallback if policy looks completely broken
+        if cleaned and not any(keyword in cleaned.lower() for keyword in ['type ', 'allow ', 'gen_require', 'hal_attribute_hwservice']):
             if domain:
-                content = f"type vss_{domain.lower()}_hal, domain;\n\n" + content
+                cleaned = f"type vss_{domain.lower()}_hal, domain;\n\n" + cleaned
 
-        return content
+        return cleaned
 
     def _write_selinux(self, domain: str, content: str) -> list[Path]:
         """Write SELinux .te policy file."""
