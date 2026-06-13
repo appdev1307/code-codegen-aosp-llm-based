@@ -18,18 +18,29 @@ _QUERIES = [
 
 # Injected into every generation — explicit AIDL V3 contract
 _CONTRACT = """
-=== Android 14 AIDL VHAL V3 contract — no exceptions ===
+=== Android 14 AIDL VHAL V3 contract — NO EXCEPTIONS ===
+
+CRITICAL INCLUDES — ALWAYS ADD THESE AT THE TOP OF HEADER FILE:
+#include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>
+#include <android/log.h>
+#include <ndk/ScopedAStatus.h>
+#include <vector>
+#include <memory>
+#include <string>
+
+NAMESPACE:
+using namespace aidl::android::hardware::automotive::vehicle;
+
 ARCHITECTURE:
-  YourClass : public IVehicleHardware   ← you implement this (vendor seam)
-  DefaultVehicleHal : public BnVehicle  ← AOSP owns this (binder layer)
+  YourClass : public IVehicleHardware ← you implement this (vendor seam)
+  DefaultVehicleHal : public BnVehicle ← AOSP owns this (binder layer)
 
-  main() {
-    auto hw   = std::make_unique<YourClass>();
-    auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw));
-    AServiceManager_addService(vhal->asBinder().get(), instance.c_str());
-  }
+MAIN SERVICE:
+  auto hw = std::make_unique<YourClass>();
+  auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw));
+  AServiceManager_addService(vhal->asBinder().get(), instance.c_str());
 
-MANDATORY signatures (copy verbatim):
+MANDATORY signatures (copy style exactly):
   std::vector<aidlvhal::VehiclePropConfig> getAllPropertyConfigs() const override;
   aidlvhal::StatusCode getValues(
       std::shared_ptr<const GetValuesCallback> callback,
@@ -37,19 +48,11 @@ MANDATORY signatures (copy verbatim):
   aidlvhal::StatusCode setValues(
       std::shared_ptr<const SetValuesCallback> callback,
       const std::vector<aidlvhal::SetValueRequest>& requests) override;
-  void registerOnPropertyChangeEvent(
-      std::unique_ptr<const PropertyChangeCallback> callback) override;
-  void registerOnPropertySetErrorEvent(
-      std::unique_ptr<const PropertySetErrorCallback> callback) override;
-  DumpResult dump(const std::vector<std::string>& options) override;
-  aidlvhal::StatusCode checkHealth() override;
-
-getValues/setValues: invoke (*callback)(results) then return StatusCode::OK.
 
 FORBIDDEN:
-  HIDL_FETCH_*  |  #include <hidl/>  |  Return<>  |  BnVehicle base
-  BnIVehicle    |  .valueType field  |  sync getValues(propIds, areas, out*)
-=== END ===
+  HIDL_FETCH_* | #include <hidl/> | Return<> | BnVehicle | BnIVehicle | .valueType | sync getValues
+
+Start every .h file with the includes above. Do not omit them.
 """
 
 

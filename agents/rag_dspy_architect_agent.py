@@ -155,29 +155,41 @@ class RAGDSPyArchitectAgent:
         return written
 
     @staticmethod
+        @staticmethod
     def _clean_selinux(content: str) -> str:
-        """Strip markdown fences and bare {}-wrappers from SELinux output."""
+        """Aggressive cleanup for SELinux .te files — remove markdown, extra braces, etc."""
         import re
-        # Strip markdown code fences
-        content = re.sub(r"^```[a-zA-Z]*\n", "", content.strip(), flags=re.MULTILINE)
-        content = re.sub(r"\n```$", "", content.strip(), flags=re.MULTILINE)
-        content = content.strip("`").strip()
-        # Strip bare outer braces wrapping the whole file
-        stripped = content.strip()
-        if stripped.startswith("{") and stripped.endswith("}"):
-            inner = stripped[1:-1].strip()
-            if any(kw in inner for kw in ("type ", "allow ", "require", "attribute")):
-                content = inner
-        # Remove leading/trailing bare brace lines
+        
+        # 1. Remove markdown code fences
+        content = re.sub(r"^```[\s\w]*\n?", "", content, flags=re.MULTILINE)
+        content = re.sub(r"\n```$", "", content, flags=re.MULTILINE)
+        content = content.strip("` \t\n\r")
+
+        # 2. Split into lines and clean
         lines = content.splitlines()
-        while lines and lines[0].strip() in ("{", ""):
+        
+        # Remove leading empty lines, lone braces, comments
+        while lines and lines[0].strip() in ("", "{", "}", "#", "//"):
             lines.pop(0)
-        while lines and lines[-1].strip() in ("}", ""):
+        
+        # Remove trailing empty lines, lone braces
+        while lines and lines[-1].strip() in ("", "{", "}", "#", "//"):
             lines.pop()
-        # Strip { inline with content on first line e.g. "{ type hal_vehicle domain;"
+
+        # Remove opening { on the first line if present
         if lines and lines[0].strip().startswith("{"):
-            lines[0] = lines[0].lstrip().lstrip("{").lstrip()
-        return "\n".join(lines).strip()
+            lines[0] = lines[0].split("{", 1)[-1].strip()
+
+        # Remove any remaining lone { or } lines
+        lines = [line for line in lines if line.strip() not in ("{", "}")]
+
+        cleaned = "\n".join(lines).strip()
+
+        # Final safety check
+        if not any(line.strip().startswith(("type ", "allow ", "neverallow ", "attribute ")) for line in lines):
+            print(f" [SELinux Cleaner] Warning: Policy looks invalid for domain")
+
+        return cleaned
 
     def _write_selinux(self, domain: str, content: str) -> list[Path]:
         """Write SELinux .te policy file."""

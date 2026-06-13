@@ -104,18 +104,34 @@ class AIDLSignature(dspy.Signature):
 
 class ModernCppVehicleHardwareSignature(dspy.Signature):
     """Generate production-ready C++ Vehicle HAL for Android 14+ AIDL V3 only.
-    Must follow AOSP reference: implement IVehicleHardware + wrap with DefaultVehicleHal.
-    getValues and setValues must be ASYNCHRONOUS (callback + request).
-    Never use any HIDL patterns.
+
+    YOU MUST FOLLOW THESE RULES EXACTLY — NO EXCEPTIONS:
+
+    1. HEADER FILE (VssVehicleHardware.h) MUST START WITH:
+       #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>
+       #include <android/log.h>
+       #include <ndk/ScopedAStatus.h>
+       #include <vector>
+       #include <memory>
+       #include <string>
+
+       using namespace aidl::android::hardware::automotive::vehicle;
+
+    2. The class MUST inherit from IVehicleHardware
+    3. Main service MUST use DefaultVehicleHal wrapper + AServiceManager_addService
+    4. getValues and setValues MUST be asynchronous with callbacks
+    5. NEVER use any HIDL pattern (HIDL_FETCH, hidl/, Return<>, BnVehicle, .valueType, etc.)
+
+    Output 4 complete files with correct includes and structure.
     """
-    domain: str = dspy.InputField(desc="HAL domain name (e.g. CHASSIS, POWERTRAIN)")
-    properties: str = dspy.InputField(desc="VSS property specifications as string (from to_llm_spec())")
-    aosp_context: str = dspy.InputField(desc="Retrieved high-quality AOSP examples + contract rules")
-    
-    cpp_header: str = dspy.OutputField(desc="Full content of VssVehicleHardware.h")
-    cpp_impl: str = dspy.OutputField(desc="Full content of VssVehicleHardware.cpp")
-    main_service: str = dspy.OutputField(desc="Full content of VehicleService.cpp")
-    android_bp: str = dspy.OutputField(desc="Full content of Android.bp")
+    domain: str = dspy.InputField(desc="HAL domain name")
+    properties: str = dspy.InputField(desc="VSS property specifications")
+    aosp_context: str = dspy.InputField(desc="Retrieved AOSP examples")
+
+    cpp_header: str = dspy.OutputField(desc="Full VssVehicleHardware.h with all required includes")
+    cpp_impl: str = dspy.OutputField(desc="Full VssVehicleHardware.cpp")
+    main_service: str = dspy.OutputField(desc="Full VehicleService.cpp with DefaultVehicleHal")
+    android_bp: str = dspy.OutputField(desc="Full Android.bp")
     reasoning: str = dspy.OutputField(desc="Reasoning for AOSP compliance")
 
 class CppVehicleAssertions(dspy.Module):
