@@ -126,8 +126,31 @@ class RAGDSPyArchitectAgent:
         fname = f"VehicleHalService{domain_cap}.cpp"
         return [self._write(f"{self._CPP_DIR}/{fname}", content)]
 
+    @staticmethod
+    def _clean_selinux(content: str) -> str:
+        """Strip markdown fences and bare {}-wrappers from SELinux output."""
+        import re
+        # Strip markdown code fences
+        content = re.sub(r"^```[a-zA-Z]*\n", "", content.strip(), flags=re.MULTILINE)
+        content = re.sub(r"\n```$", "", content.strip(), flags=re.MULTILINE)
+        content = content.strip("`").strip()
+        # Strip bare outer braces wrapping the whole file
+        stripped = content.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            inner = stripped[1:-1].strip()
+            if any(kw in inner for kw in ("type ", "allow ", "require", "attribute")):
+                content = inner
+        # Remove leading/trailing bare brace lines
+        lines = content.splitlines()
+        while lines and lines[0].strip() in ("{", ""):
+            lines.pop(0)
+        while lines and lines[-1].strip() in ("}", ""):
+            lines.pop()
+        return "\n".join(lines).strip()
+
     def _write_selinux(self, domain: str, content: str) -> list[Path]:
         """Write SELinux .te policy file."""
+        content = self._clean_selinux(content)
         domain_lower = domain.lower()
         # Try to split on // FILE: markers (agent may emit multiple .te files)
         written = []
