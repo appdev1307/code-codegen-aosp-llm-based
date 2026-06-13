@@ -470,5 +470,3 @@ SIGNATURE_REGISTRY: dict[str, tuple] = {
     "backend_model":  (BackendModelSignature,  "models_code"),
     "simulator":      (SimulatorSignature,     "simulator_code"),
 }
-
-print("✅ hal_signatures.py loaded with ModernCppVehicleHardwareSignature")
