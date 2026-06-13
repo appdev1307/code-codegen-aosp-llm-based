@@ -155,31 +155,29 @@ class RAGDSPyArchitectAgent:
         return written
 
     @staticmethod
-    def _clean_selinux(self, content: str, domain: str = "") -> str:
-        """Aggressively clean SELinux .te policy to pass checkpolicy."""
-        if not content:
-            return ""
+    def _clean_selinux(self, content: str) -> str:
+        """Clean SELinux .te policy to pass checkpolicy."""
+        if not content or not content.strip():
+            return content
 
-        # Remove markdown fences and code blocks
+        # Remove markdown fences
         content = re.sub(r'```(?:te|selinux|policy)?\s*', '', content, flags=re.IGNORECASE)
         content = re.sub(r'```\s*$', '', content, flags=re.MULTILINE)
 
         # Remove leading/trailing whitespace
         content = content.strip()
 
-        # Remove leading '{' if it exists at the very beginning
+        # Remove leading '{' 
         if content.startswith('{'):
             content = content[1:].strip()
 
-        # Split lines and clean
+        # Clean lines
         lines = [line.rstrip() for line in content.splitlines() if line.strip()]
-
         cleaned = '\n'.join(lines).strip()
 
-        # Minimal fallback header if policy looks broken
-        if cleaned and not any(keyword in cleaned.lower() for keyword in ['type ', 'allow ', 'gen_require', 'hal_attribute_hwservice']):
-            if domain:
-                cleaned = f"type vss_{domain.lower()}_hal, domain;\n\n" + cleaned
+        # Minimal fallback if needed
+        if cleaned and not any(k in cleaned.lower() for k in ['type ', 'allow ', 'gen_require']):
+            cleaned = f"type vss_{self.domain.lower()}_hal, domain;\n\n" + cleaned if hasattr(self, 'domain') else cleaned
 
         return cleaned
 
