@@ -165,21 +165,19 @@ class RAGDSPyArchitectAgent:
         content = re.sub(r'```(?:te|selinux|policy)?\s*', '', content, flags=re.IGNORECASE)
         content = re.sub(r'```\s*$', '', content, flags=re.MULTILINE)
 
-        # Remove any leading { or extra braces at start
+        # Remove leading/trailing whitespace
         content = content.strip()
+
+        # Remove leading '{' if it exists at the very beginning
         if content.startswith('{'):
             content = content[1:].strip()
 
         # Split lines and clean
         lines = [line.rstrip() for line in content.splitlines() if line.strip()]
-        
-        # Remove empty lines at the very beginning
-        while lines and not lines[0].strip():
-            lines.pop(0)
 
         cleaned = '\n'.join(lines).strip()
 
-        # Minimal fallback if policy looks completely broken
+        # Minimal fallback header if policy looks broken
         if cleaned and not any(keyword in cleaned.lower() for keyword in ['type ', 'allow ', 'gen_require', 'hal_attribute_hwservice']):
             if domain:
                 cleaned = f"type vss_{domain.lower()}_hal, domain;\n\n" + cleaned
