@@ -174,6 +174,9 @@ class RAGDSPyArchitectAgent:
             lines.pop(0)
         while lines and lines[-1].strip() in ("}", ""):
             lines.pop()
+        # Strip { inline with content on first line e.g. "{ type hal_vehicle domain;"
+        if lines and lines[0].strip().startswith("{"):
+            lines[0] = lines[0].lstrip().lstrip("{").lstrip()
         return "\n".join(lines).strip()
 
     def _write_selinux(self, domain: str, content: str) -> list[Path]:
