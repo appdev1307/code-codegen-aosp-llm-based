@@ -120,11 +120,39 @@ class RAGDSPyArchitectAgent:
 
         return written
 
-    def _write_cpp(self, domain: str, content: str) -> list[Path]:
-        """Write C++ implementation file."""
-        domain_cap = domain.capitalize()
-        fname = f"VehicleHalService{domain_cap}.cpp"
-        return [self._write(f"{self._CPP_DIR}/{fname}", content)]
+    def _write_cpp(self, domain: str, content) -> list[Path]:
+        """Write C++ files. Accepts either a string (impl only) or a dict
+        (header, impl, main_service, android_bp) from the modern agent."""
+        domain_cap  = domain.capitalize()
+        domain_lower = domain.lower()
+        written = []
+
+        if isinstance(content, dict):
+            # Modern multi-file output from RagDspyCppAgent.generate()
+            # Write all 4 files under impl/ using VehicleHalService{Domain} naming
+            # — consistent with legacy path and apply_aosp14_fixes.sh
+            if content.get("header"):
+                written.append(self._write(
+                    f"{self._CPP_DIR}/VehicleHalService{domain_cap}.h",
+                    content["header"]))
+            if content.get("impl"):
+                written.append(self._write(
+                    f"{self._CPP_DIR}/VehicleHalService{domain_cap}.cpp",
+                    content["impl"]))
+            if content.get("main_service"):
+                written.append(self._write(
+                    f"{self._CPP_DIR}/VehicleService{domain_cap}.cpp",
+                    content["main_service"]))
+            if content.get("android_bp"):
+                written.append(self._write(
+                    f"{self._CPP_DIR}/Android_{domain_lower}.bp",
+                    content["android_bp"]))
+        else:
+            # Legacy string output — write single impl file
+            fname = f"VehicleHalService{domain_cap}.cpp"
+            written.append(self._write(f"{self._CPP_DIR}/{fname}", content))
+
+        return written
 
     @staticmethod
     def _clean_selinux(content: str) -> str:
@@ -206,7 +234,11 @@ class RAGDSPyArchitectAgent:
         sub_agents = [
             ("AIDL",    RAGDSPyAIDLAgent,    lambda a: a.run(module_spec),
              lambda d, c: self._write_aidl(d, c)),
-            ("CPP",     RAGDSPyCppAgent,     lambda a: a.run(module_spec),
+            ("CPP",     RAGDSPyCppAgent,
+             lambda a: a.inner.generate(
+                 domain     = module_spec.domain,
+                 properties = module_spec.to_llm_spec(),
+             ),
              lambda d, c: self._write_cpp(d, c)),
             ("SELinux", RAGDSPySELinuxAgent, lambda a: a.run(module_spec),
              lambda d, c: self._write_selinux(d, c)),
