@@ -65,7 +65,7 @@ mkdir -p "$AIDL_DIR" "$IMPL_DIR" "$SEPOLICY_DIR"
 
 
 # ═══════════════════════════════════════════════════════════════
-# [1/4] Copy generated files to AOSP tree
+# [1/3] Copy generated files to AOSP tree
 # ═══════════════════════════════════════════════════════════════
 echo "[1/6] Copying generated files to AOSP tree..."
 
@@ -120,7 +120,7 @@ RC_SRC=$(find "$OUTPUT_DIR" -name "*.rc" -not -path "*/.llm_draft/*" | head -1)
 
 
 # ═══════════════════════════════════════════════════════════════
-# [2/4] Register AIDL files in aidl_interface Android.bp
+# [2/3] Register AIDL files in aidl_interface Android.bp
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[2/6] Registering new AIDL file(s) in aidl_interface..."
@@ -154,50 +154,7 @@ fi
 
 
 # ═══════════════════════════════════════════════════════════════
-# [3/4] Fix C++ impl Android.bp
-# ═══════════════════════════════════════════════════════════════
-echo ""
-echo "[3/4] Fixing C++ Android.bp (safety net — agent should already emit vendor:true and V3-ndk)..."
-
-GEN_BP="$IMPL_DIR/Android.bp.generated"
-
-if [ -f "$GEN_BP" ]; then
-    # Fix module name — must not conflict with existing AOSP
-    sed -i 's/name: "android\.hardware\.automotive\.vehicle-service"/name: "vendor.vss.adas-service"/' "$GEN_BP"
-    sed -i 's/name: "android\.hardware\.automotive\.vehicle"/name: "vendor.vss.adas-service"/' "$GEN_BP"
-
-    # Ensure vendor: true
-    if ! grep -q "vendor: true" "$GEN_BP"; then
-        sed -i '/{/a\    vendor: true,' "$GEN_BP"
-        ok "Added vendor: true"
-        ((FIXES++))
-    fi
-
-    # Ensure relative_install_path
-    if ! grep -q "relative_install_path" "$GEN_BP"; then
-        sed -i '/vendor: true/a\    relative_install_path: "hw",' "$GEN_BP"
-        ok "Added relative_install_path"
-        ((FIXES++))
-    fi
-
-    # Fix HIDL library → AIDL
-    sed -i 's/android\.hardware\.automotive\.vehicle@2\.0/android.hardware.automotive.vehicle-V3-ndk/g' "$GEN_BP"
-
-    # Install as the impl Android.bp if none exists
-    if [ ! -f "$IMPL_DIR/Android.bp" ]; then
-        mv "$GEN_BP" "$IMPL_DIR/Android.bp"
-        ok "Installed Android.bp"
-    else
-        info "Existing Android.bp preserved; generated at Android.bp.generated"
-    fi
-else
-    warn "No generated Android.bp found"
-    ((WARNINGS++))
-fi
-
-
-# ═══════════════════════════════════════════════════════════════
-# [4/4] Fix SELinux
+# [3/3] Fix SELinux
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[4/4] Fixing SELinux policy..."
