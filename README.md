@@ -51,16 +51,19 @@ C3/C4 generate a from-scratch `IVehicleHardware` implementation that wraps insid
 |-----------|--------|-------------|-----------|
 | C1 Baseline | `multi_main.py` | Vanilla LLM generation | 0.817 |
 | C2 Adaptive | `multi_main_adaptive.py` | Thompson Sampling prompt selection | 0.803 |
-| C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | 0.858 |
-| C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop | **0.876** |
+| C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | 0.796 * |
+| C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop | pending * |
+
+\* Scores from current re-run with fixed pipeline (cpp metric, architect 4-file output, build agent V3-ndk).
 | C5 VTS+HMI | `multi_main_c5.py` | VTS test generation + HMI app; scored separately | — |
 
 ```
         C1 (baseline LLM)
        /                \
   C2 (+ Thompson)    C3 (+ RAG + DSPy)
-       \                /
-        C4 (both + feedback loop)
+                         |
+        C4 (C3 + feedback loop)
+        Note: Thompson in C4 tracks stats only — not active prompt selection
                ↓
         C5 (VTS + HMI generation on Colab)
           ├── Agent 1: VTS test generation
@@ -185,7 +188,7 @@ cp -r output_adaptive/ output_adaptive_backup/
 rm -rf dspy_opt/saved/cpp_program/
 
 python dspy_opt/optimizer.py --mipro-auto light --train-size 8 --force
-ls dspy_opt/saved/*/program.json | wc -l   # expect: 11 (cpp re-optimises from scratch)
+ls dspy_opt/saved/*/program.json | wc -l   # expect: 12 after full optimizer run
 
 # ChromaDB singleton fix (before C3)
 python apply_chroma_fix.py
@@ -465,6 +468,29 @@ gcloud storage buckets add-iam-policy-binding gs://aosp-thesis-temp \
 # gsutil cp output_c5.zip gs://aosp-thesis-temp/
 ```
 
+### Step 4b — Reset AOSP Tree for Re-testing
+
+If you already applied a previous C3/C4 run and need to test a new one,
+restore the AOSP tree to its original state before applying new generated files.
+
+```bash
+cd ~/aosp-14-auto
+
+# Restore modified tracked files to AOSP originals
+cd hardware/interfaces && git checkout -- . && cd ~/aosp-14-auto
+cd system/sepolicy && git checkout -- . && cd ~/aosp-14-auto
+
+# Remove generated (untracked) files
+clean_hal
+
+# Verify clean state — should show no modified or untracked generated files
+cd hardware/interfaces && git status && cd ~/aosp-14-auto
+cd system/sepolicy && git status && cd ~/aosp-14-auto
+```
+
+Incremental rebuild after cleanup is much faster than the initial full build
+— only changed files recompile (~10-20 min vs several hours).
+
 ### Step 5 — Download and Build on GCP VM
 
 ```bash
@@ -490,11 +516,17 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 ```bash
 # Clean only LLM-generated files — NOT AOSP originals
 clean_hal() {
-    rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl
-    rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyVss.aidl
-    rm -f hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.cpp
-    rm -f hardware/interfaces/automotive/vehicle/impl/Android.bp.generated
+    # AIDL
+    rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty{Adas,Body,Cabin,Chassis,Hvac,Infotainment,Powertrain}.aidl
+    # C++ (architect generates 4 files per domain)
+    rm -f hardware/interfaces/automotive/vehicle/aidl/impl/VehicleHalService*.cpp
+    rm -f hardware/interfaces/automotive/vehicle/aidl/impl/VehicleHalService*.h
+    rm -f hardware/interfaces/automotive/vehicle/aidl/impl/VehicleService*.cpp
+    rm -f hardware/interfaces/automotive/vehicle/aidl/impl/Android_*.bp
+    rm -f hardware/interfaces/automotive/vehicle/aidl/impl/Android.bp.generated
+    # SELinux
     rm -f system/sepolicy/vendor/vehicle_hal_*.te
+    rm -f system/sepolicy/vendor/file_contexts.vss
 }
 
 # Restore AOSP tree to original state
@@ -556,9 +588,9 @@ m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 ```
 
 **Common pitfalls:**
-- Never delete `aidl_api/` — removes frozen snapshots
 - Never manually sed V3→V4 in Android.bp files
 - Always `rm -rf out/` between frozen/unfrozen transitions
+- AIDL API freeze (`m android.hardware.automotive.vehicle-update-api`) must be run after adding new AIDL files
 
 **Recovery:**
 ```bash
@@ -600,19 +632,23 @@ cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-# Copy C3/C4 generated service files into the AOSP tree
-mkdir -p hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
-cp ~/output_c4/hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/*.{h,cpp} \
-   hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
-cp ~/output_c4/hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/Android.bp \
-   hardware/interfaces/automotive/vehicle/aidl/impl/vss_impl/
+# apply_aosp14_fixes.sh already copied the C++ files (step 1).
+# Files are in hardware/interfaces/automotive/vehicle/aidl/impl/:
+#   VehicleHalService{Domain}.h
+#   VehicleHalService{Domain}.cpp
+#   VehicleService{Domain}.cpp
+#   Android_{domain}.bp
 
-# Build just the VHAL service binary
-m android.hardware.automotive.vehicle@V3-vss-service
+# Build each domain module (one per domain)
+for DOMAIN in adas body cabin chassis hvac infotainment powertrain; do
+    mmm hardware/interfaces/automotive/vehicle/aidl/impl/ 2>&1 | tail -5
+done
 
-# Verify binary produced
-ls $OUT/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
-# Expected: file present, ~1-2 MB
+# Or build all at once
+m android.hardware.automotive.vehicle@V3-vss-service 2>&1 | tail -10
+
+# Verify binaries produced
+ls $OUT/vendor/bin/hw/vendor.vss.*-service
 ```
 
 > **Note:** If the build fails with missing headers (`IVehicleHardware.h`, `DefaultVehicleHal.h`),
@@ -789,11 +825,11 @@ gcloud compute instances start aosp-builder-cutterfish --zone=us-central1-a
 |-----------|-----------|--------|----------|-------------|
 | C1 Baseline | 0.817 | 0.912 | 0.518 | — |
 | C2 Adaptive | 0.803 | 0.886 | 0.526 | r = -0.015 |
-| C3 RAG+DSPy | 0.858 | 0.898 | 0.679 | r = 0.169 |
-| C4 Feedback | **0.876** | **0.924** | **0.692** | r = 0.245 * |
+| C3 RAG+DSPy | 0.796 * | — | — | — |
+| C4 Feedback | **pending** * | — | — | — |
 
-Kruskal-Wallis H = 8.32, p = 0.040 (significant at α = 0.05).
-C1 vs C4 pairwise: U = 1651.0, p = 0.016 *, r = 0.245 (small-to-medium effect size).
+\* Scores from re-run with fixed pipeline. C1/C2 scores unchanged (not re-run).
+Statistical analysis will be updated after C4 re-run completes.
 C5 results (VTS pass rate, HMI score) reported separately.
 
 ---
@@ -806,7 +842,7 @@ C5 results (VTS pass rate, HMI score) reported separately.
 - **Do not clone `aosp_source/` inside the AOSP build tree.** Soong scans all directories for `Android.bp` and fails with "module already defined". Fix: `mv ~/aosp-14-auto/aosp_source ~/aosp_source_rag`
 - **`clean_hal` must not glob `VehicleProperty*.aidl`** — deletes AOSP originals (`VehiclePropertyStatus.aidl`, etc.). Only delete specific generated files.
 - **Overlapping domain property IDs:** C1-C4 generate per-domain AIDL enums with domain-specific base addresses (ADAS=0x1000, Body=0x2000, etc.) to prevent ID conflicts.
-- **SELinux feedback loop ineffective:** `checkpolicy` reports missing macro definitions that exist only in the full AOSP sepolicy tree. SELinux passes AOSP build validation via `apply_aosp14_fixes.sh`.
+- **SELinux Colab score 0.697–0.747 is expected:** The LLM generates valid AOSP SELinux using m4 macros (`binder_call`, `hal_attribute`, `get_prop`) that standalone `checkpolicy` on Colab cannot expand. Every attempt — including C4 retries — scores ~0.300 in the retry validator and ~0.747 in the final metric (partial credit from structural heuristics). The `.te` files are correct AOSP SELinux; they compile cleanly on GCP with the full policy tree. `apply_aosp14_fixes.sh` step 4 prepends mandatory type declarations.
 - **IVehicle/default conflict:** Only one service can register `IVehicle/default`. Stop the stock VHAL (`adb shell stop vendor.vehicle-default`) before starting VssVehicleHardware, or the second `AServiceManager_addService` call fails silently.
 
 ---
@@ -818,7 +854,7 @@ C5 results (VTS pass rate, HMI score) reported separately.
 - **3-layer HIDL defense:** Layer 1 (indexer) — `aosp_indexer.py` excludes HIDL by path patterns only. Layer 2 (cpp agent) — `_CONTRACT` block in `RAGDSPyCppAgent` explicitly forbids `HIDL_FETCH_*`, `hidl/` headers, `Return<>`, `BnVehicle` base, and `.valueType`. Layer 3 (validator) — `_validate_cpp` in C4 checks AIDL contract violations before clang, so the retry prompt is specific and actionable.
 - **HIDL exclusion in RAG corpus:** Path-only exclusion (no content filtering) in `aosp_indexer.py`. Content filtering wrongly dropped AIDL reference files (`DefaultVehicleHal.cpp`, `IVehicleHardware.h`) because both HIDL and AIDL contain the same keyword patterns.
 - **Hybrid RAG retrieval:** `aosp_retriever.py` uses dense retrieval (all-MiniLM-L6-v2) + BM25 sparse channel + optional cross-encoder reranking. `DEFAULT_TOP_K` raised 3→6 and `max_chars_per_chunk` raised 800→1500 so method signatures are not truncated. The embedding model must stay in sync with the indexer — changing it requires reindexing all 7 collections.
-- **Two cpp agent classes:** `rag_dspy_cpp_agent.py` contains `RAGDSPyCppAgent` (mixin-based, used by `RAGDSPyArchitectAgent` and the C4 retry engine via `run(module_spec)`) and `RagDspyCppAgent` (standalone, used by C3 `multi_main_rag_dspy.py` for the direct 4-file generation call). Both share `_QUERIES` and `_CONTRACT` constants to stay in sync.
+- **Two cpp agent classes:** `rag_dspy_cpp_agent.py` contains `RAGDSPyCppAgent` (thin wrapper, used by the architect and C4 retry engine) and `RagDspyCppAgent` (inner implementation). The architect calls `inner.generate()` directly to get all 4 files (header, impl, main_service, android_bp). C3 no longer has a separate standalone cpp call — the architect handles all 4 files. Both classes share `_QUERIES` and `_CONTRACT` to stay in sync.
 - **C4 post-validation architecture:** C4 uses `architect.run()` identically to C3 for initial generation, then post-validates output files and retries only failed agents. Error feedback goes into a separate prompt field to avoid polluting RAG context. C4's floor is always ≥ C3.
 - **ChromaDB singleton:** Multiple agents sharing the same ChromaDB path causes "instance already exists" errors. `fix_chroma_singleton.py` monkey-patches `chromadb.PersistentClient` to return a shared singleton.
 - **Domain-specific AIDL base addresses:** `DOMAIN_BASE` (ADAS=0x1000, Body=0x2000, Cabin=0x3000, Chassis=0x4000, HVAC=0x5000, Infotainment=0x6000, Powertrain=0x7000) ensures globally unique property IDs across domains. A global running counter in C5 (`global_idx`) prevents collisions when encoding `group|area|type|index`.
