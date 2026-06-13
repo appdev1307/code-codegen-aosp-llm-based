@@ -7,10 +7,10 @@
 # Handles ALL build system integration points:
 #   1. Copy generated files to correct AOSP paths
 #   2. Register new AIDL in aidl_interface Android.bp srcs
-#   3. Handle AIDL API freeze (remove stale hash)
-#   4. Fix C++ Android.bp (module name, vendor, deps)
-#   5. Fix SELinux (type declarations, file_contexts)
-#   6. Fix C++ HIDL→AIDL patterns
+#   3. Fix C++ Android.bp (vendor:true + V3-ndk safety net)
+#   4. Fix SELinux (type declarations, file_contexts)
+#   Note: AIDL API freeze handled separately by operator
+#   Note: HIDL→AIDL C++ fix removed — contract enforcement prevents HIDL
 #
 # Usage:
 #   ./apply_aosp14_fixes.sh <output_dir> [aosp_root]
@@ -65,7 +65,7 @@ mkdir -p "$AIDL_DIR" "$IMPL_DIR" "$SEPOLICY_DIR"
 
 
 # ═══════════════════════════════════════════════════════════════
-# [1/6] Copy generated files to AOSP tree
+# [1/4] Copy generated files to AOSP tree
 # ═══════════════════════════════════════════════════════════════
 echo "[1/6] Copying generated files to AOSP tree..."
 
@@ -78,32 +78,33 @@ while IFS= read -r f; do
 done < <(find "$OUTPUT_DIR" -name "*.aidl" -not -path "*/.llm_draft/*" 2>/dev/null)
 [ $AIDL_COUNT -eq 0 ] && { warn "No AIDL files found"; ((WARNINGS++)); }
 
-# C++
-CPP_SRC=$(find "$OUTPUT_DIR" -name "*.cpp" -not -path "*/.llm_draft/*" | head -1)
-if [ -n "$CPP_SRC" ]; then
-    cp "$CPP_SRC" "$IMPL_DIR/$(basename "$CPP_SRC")"
-    ok "C++: $(basename "$CPP_SRC")"
-else
-    warn "No C++ file found"; ((WARNINGS++))
-fi
+# C++ and headers — copy all generated files
+CPP_COUNT=0
+while IFS= read -r f; do
+    cp "$f" "$IMPL_DIR/$(basename "$f")"
+    ok "C++: $(basename "$f")"
+    ((CPP_COUNT++))
+done < <(find "$OUTPUT_DIR" -name "VehicleHalService*.cpp"               -o -name "VehicleHalService*.h"               -o -name "VehicleService*.cpp"               -o -name "Android_*.bp"          2>/dev/null | grep -v ".llm_draft")
+[ $CPP_COUNT -eq 0 ] && { warn "No C++ files found"; ((WARNINGS++)); }
 
-# Android.bp (save as .generated — will merge in step 4)
-BP_SRC=$(find "$OUTPUT_DIR" -name "Android.bp" -not -path "*/.llm_draft/*" | head -1)
-if [ -n "$BP_SRC" ]; then
-    cp "$BP_SRC" "$IMPL_DIR/Android.bp.generated"
-    ok "Android.bp → Android.bp.generated"
-else
-    warn "No Android.bp found"; ((WARNINGS++))
-fi
+# Android.bp — copy per-domain bp files and main Android.bp
+BP_COUNT=0
+while IFS= read -r f; do
+    cp "$f" "$IMPL_DIR/$(basename "$f").generated"
+    ok "Android.bp: $(basename "$f") → $(basename "$f").generated"
+    ((BP_COUNT++))
+done < <(find "$OUTPUT_DIR" \( -name "Android_*.bp" -o -name "Android.bp" \) \
+              -not -path "*/.llm_draft/*" 2>/dev/null)
+[ $BP_COUNT -eq 0 ] && { warn "No Android.bp found"; ((WARNINGS++)); }
 
-# SELinux .te
-TE_SRC=$(find "$OUTPUT_DIR" -name "*.te" -not -path "*/.llm_draft/*" | head -1)
-if [ -n "$TE_SRC" ]; then
-    cp "$TE_SRC" "$SEPOLICY_DIR/$(basename "$TE_SRC")"
-    ok "SELinux: $(basename "$TE_SRC")"
-else
-    warn "No .te file found"; ((WARNINGS++))
-fi
+# SELinux — copy all generated .te files
+TE_COUNT=0
+while IFS= read -r f; do
+    cp "$f" "$SEPOLICY_DIR/$(basename "$f")"
+    ok "SELinux: $(basename "$f")"
+    ((TE_COUNT++))
+done < <(find "$OUTPUT_DIR" -name "*.te" -not -path "*/.llm_draft/*" 2>/dev/null)
+[ $TE_COUNT -eq 0 ] && { warn "No .te file found"; ((WARNINGS++)); }
 
 # file_contexts
 FC_SRC=$(find "$OUTPUT_DIR" -name "file_contexts" -not -path "*/.llm_draft/*" | head -1)
@@ -119,7 +120,7 @@ RC_SRC=$(find "$OUTPUT_DIR" -name "*.rc" -not -path "*/.llm_draft/*" | head -1)
 
 
 # ═══════════════════════════════════════════════════════════════
-# [2/6] Register AIDL files in aidl_interface Android.bp
+# [2/4] Register AIDL files in aidl_interface Android.bp
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[2/6] Registering new AIDL file(s) in aidl_interface..."
@@ -153,43 +154,10 @@ fi
 
 
 # ═══════════════════════════════════════════════════════════════
-# [3/6] Handle AIDL API freeze / hash
+# [3/4] Fix C++ impl Android.bp
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[3/6] Handling AIDL API version freeze..."
-
-if [ -f "$AIDL_BP" ]; then
-    # Set frozen: false so Soong doesn't check the API hash
-    if grep -q "frozen: true" "$AIDL_BP"; then
-        sed -i 's/frozen: true/frozen: false/' "$AIDL_BP"
-        ok "Set frozen: false in aidl_interface"
-        ((FIXES++))
-    elif grep -q "frozen:" "$AIDL_BP"; then
-        ok "Already frozen: false"
-    else
-        info "No frozen: field found (may not need it)"
-    fi
-
-    # Remove frozen API snapshots — Soong will regenerate
-    if [ -d "$AIDL_API_DIR" ]; then
-        # Back up first
-        HASH_FILE=$(find "$AIDL_API_DIR" -name ".hash" 2>/dev/null | head -1)
-        [ -n "$HASH_FILE" ] && cp "$HASH_FILE" "${HASH_FILE}.bak" && ok "Backed up API hash"
-
-        rm -rf "$AIDL_API_DIR"
-        ok "Removed aidl_api/ frozen snapshots (Soong will regenerate)"
-        ((FIXES++))
-    else
-        info "No aidl_api/ directory found"
-    fi
-fi
-
-
-# ═══════════════════════════════════════════════════════════════
-# [4/6] Fix C++ impl Android.bp
-# ═══════════════════════════════════════════════════════════════
-echo ""
-echo "[4/6] Fixing C++ Android.bp..."
+echo "[3/4] Fixing C++ Android.bp (safety net — agent should already emit vendor:true and V3-ndk)..."
 
 GEN_BP="$IMPL_DIR/Android.bp.generated"
 
@@ -229,10 +197,10 @@ fi
 
 
 # ═══════════════════════════════════════════════════════════════
-# [5/6] Fix SELinux
+# [4/4] Fix SELinux
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[5/6] Fixing SELinux policy..."
+echo "[4/4] Fixing SELinux policy..."
 
 TE_FILE=$(find "$SEPOLICY_DIR" -name "vehicle_hal_*.te" 2>/dev/null | head -1)
 if [ -n "$TE_FILE" ] && [ -f "$TE_FILE" ]; then
@@ -286,70 +254,6 @@ fi
 
 
 # ═══════════════════════════════════════════════════════════════
-# [6/6] Fix C++ HIDL → AIDL patterns
-# ═══════════════════════════════════════════════════════════════
-echo ""
-echo "[6/6] Fixing C++ HIDL→AIDL patterns..."
-
-CPP_FILE=$(find "$IMPL_DIR" -name "VehicleHalService*.cpp" 2>/dev/null | head -1)
-if [ -n "$CPP_FILE" ] && [ -f "$CPP_FILE" ]; then
-    CHANGED=0
-
-    # Replace HIDL includes
-    if grep -q "hidl/" "$CPP_FILE"; then
-        sed -i 's|#include <hidl/Status.h>|#include <aidl/android/hardware/automotive/vehicle/BnVehicle.h>|' "$CPP_FILE"
-        sed -i '/#include <hidl\//d' "$CPP_FILE"
-        ok "Fixed HIDL includes"
-        ((CHANGED++))
-    fi
-
-    # Replace HIDL types with AIDL equivalents
-    if grep -q "Return<" "$CPP_FILE"; then
-        sed -i 's/Return<void>/ndk::ScopedAStatus/g' "$CPP_FILE"
-        sed -i 's/Return<bool>/ndk::ScopedAStatus/g' "$CPP_FILE"
-        sed -i 's/Return<StatusCode>/ndk::ScopedAStatus/g' "$CPP_FILE"
-        ok "Fixed Return<> → ScopedAStatus"
-        ((CHANGED++))
-    fi
-
-    if grep -q "hidl_vec" "$CPP_FILE"; then
-        sed -i 's/hidl_vec</std::vector</g' "$CPP_FILE"
-        ok "Fixed hidl_vec → std::vector"
-        ((CHANGED++))
-    fi
-
-    if grep -q "return Void()" "$CPP_FILE"; then
-        sed -i 's/return Void();/return ndk::ScopedAStatus::ok();/g' "$CPP_FILE"
-        ok "Fixed Void() → ScopedAStatus::ok()"
-        ((CHANGED++))
-    fi
-
-    # Remove HIDL factory function
-    if grep -q "HIDL_FETCH_" "$CPP_FILE"; then
-        sed -i '/HIDL_FETCH_/d' "$CPP_FILE"
-        ok "Removed HIDL_FETCH_ factory"
-        ((CHANGED++))
-    fi
-
-    # Remove _hidl_cb callback pattern
-    if grep -q "_hidl_cb" "$CPP_FILE"; then
-        sed -i 's/_hidl_cb(.*);/\/\/ callback removed — use AIDL return/g' "$CPP_FILE"
-        ok "Replaced _hidl_cb callbacks"
-        ((CHANGED++))
-    fi
-
-    if [ $CHANGED -gt 0 ]; then
-        ((FIXES++))
-        ok "Applied $CHANGED HIDL→AIDL fixes to $(basename "$CPP_FILE")"
-    else
-        info "No HIDL patterns found in $(basename "$CPP_FILE")"
-    fi
-else
-    warn "No VehicleHalService*.cpp found"
-    ((WARNINGS++))
-fi
-
-
 # ═══════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════
