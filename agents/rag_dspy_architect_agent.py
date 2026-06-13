@@ -156,7 +156,7 @@ class RAGDSPyArchitectAgent:
 
     @staticmethod
     def _clean_selinux(self, content: str) -> str:
-        """Clean SELinux .te policy to make checkpolicy happy."""
+        """Clean SELinux .te policy to pass checkpolicy."""
         if not content or not content.strip():
             return content
 
@@ -164,9 +164,10 @@ class RAGDSPyArchitectAgent:
         content = re.sub(r'```(?:te|selinux|policy)?\s*', '', content, flags=re.IGNORECASE)
         content = re.sub(r'```\s*$', '', content, flags=re.MULTILINE)
 
+        # Remove leading/trailing whitespace
         content = content.strip()
 
-        # Remove leading '{' 
+        # Remove leading '{' if present
         if content.startswith('{'):
             content = content[1:].strip()
 
