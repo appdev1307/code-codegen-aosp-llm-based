@@ -31,6 +31,7 @@ from agents.rag_dspy_aidl_agent    import RAGDSPyAIDLAgent
 from agents.rag_dspy_cpp_agent     import RAGDSPyCppAgent
 from agents.rag_dspy_selinux_agent import RAGDSPySELinuxAgent
 from agents.rag_dspy_build_agent   import RAGDSPyBuildAgent
+import re
 
 
 class RAGDSPyArchitectAgent:
@@ -154,9 +155,8 @@ class RAGDSPyArchitectAgent:
 
         return written
 
-    @staticmethod
     def _clean_selinux(self, content: str) -> str:
-        """Clean SELinux policy - remove common issues that break checkpolicy."""
+        """Clean SELinux .te policy to pass checkpolicy."""
         if not content or not isinstance(content, str):
             return content or ""
 
@@ -166,11 +166,11 @@ class RAGDSPyArchitectAgent:
 
         content = content.strip()
 
-        # Remove leading '{' 
+        # Remove leading '{'
         if content.startswith('{'):
             content = content[1:].strip()
 
-        # Clean empty lines
+        # Clean lines
         lines = [line.rstrip() for line in content.splitlines() if line.strip()]
         cleaned = '\n'.join(lines).strip()
 
