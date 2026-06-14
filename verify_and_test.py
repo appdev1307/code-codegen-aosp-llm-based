@@ -167,7 +167,7 @@ def compile_aidl(filepath: Path) -> tuple[bool, str]:
     content = filepath.read_text(errors="replace")
     errors = []
 
-    if "package " not in content:
+    if not re.search(r"^\s*package\s+[\w.]+\s*;", content, re.MULTILINE):
         errors.append("Missing package declaration")
     if not re.search(r"(interface|parcelable)\s+\w+", content):
         errors.append("Missing interface or parcelable declaration")

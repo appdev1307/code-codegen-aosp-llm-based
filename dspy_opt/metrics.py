@@ -164,7 +164,7 @@ def metric_aidl(example, prediction, trace=None) -> float:
     if not code:
         return 0.0
     structural = _heuristic([
-        ("package "        in code,                                          0.20),
+        (bool(re.search(r"^\s*package\s+[\w.]+\s*;", code, re.MULTILINE)), 0.20),
         ("interface "      in code,                                          0.20),
         (_balanced_braces(code),                                             0.15),
         (any(t in code for t in ["boolean","int","float","String","byte[]"]),0.20),

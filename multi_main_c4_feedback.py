@@ -261,8 +261,11 @@ class ValidatorFeedback:
     @staticmethod
     def _validate_aidl(code: str) -> tuple[bool, str, float]:
         issues = []
-        if "package " not in code:
-            issues.append("Missing package declaration")
+        if not re.search(
+                r"^\s*package\s+[\w.]+\s*;", code, re.MULTILINE):
+            issues.append(
+                "Missing package declaration — add e.g. 'package android.hardware.automotive.vehicle;' "
+                "as first non-comment line")
         if not re.search(r"(interface|parcelable|enum)\s+\w+", code):
             issues.append("Missing interface, enum, or parcelable declaration")
         if code.count("{") != code.count("}"):

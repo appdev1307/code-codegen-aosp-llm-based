@@ -151,10 +151,14 @@ def discover_scoreable_files(output_dir: Path) -> list[tuple[str, Path]]:
 
 def score_structure(content: str, agent_type: str) -> float:
     if agent_type == "aidl":
-        checks = ["package ", "@VintfStability"]
+        # Use regex for package — loose string check misses comments containing "package"
+        checks = ["@VintfStability"]
+        has_package = bool(re.search(r"^\s*package\s+[\w.]+\s*;", content, re.MULTILINE))
         # Accept interface, enum, or parcelable
         has_type_decl = bool(re.search(r"(interface|parcelable|enum)\s+\w+", content))
         hits = sum(1 for c in checks if c in content)
+        if has_package:
+            hits += 1
         if has_type_decl:
             hits += 1
         # Enum-specific bonus: @Backing annotation, hex constants
@@ -236,7 +240,7 @@ def score_syntax(content: str, agent_type: str) -> float:
 def _syntax_aidl(content: str) -> float:
     issues = 0
     total = 5
-    if "package " not in content: issues += 1
+    if not re.search(r"^\s*package\s+[\w.]+\s*;", content, re.MULTILINE): issues += 1
     if not re.search(r"(interface|parcelable|enum)\s+\w+", content): issues += 1
     if content.count("{") != content.count("}"): issues += 1
     if "@VintfStability" not in content: issues += 0.5
