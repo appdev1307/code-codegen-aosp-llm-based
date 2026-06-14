@@ -157,30 +157,48 @@ class RAGDSPyArchitectAgent:
         return written
 
     def _clean_selinux(self, content: str) -> str:
-        """Aggressive clean only - no hard fallback."""
+        """Strip everything before the first valid SELinux statement.
+
+        Anchors on the first line starting with a known SELinux keyword
+        (type, allow, require, etc.) and discards everything before it —
+        markdown fences, bare braces, JSON wrappers, comments.
+        Lone { } lines are removed from the body.
+        Inline leading { on a line is stripped.
+        """
         if not content or not isinstance(content, str):
             return content or ""
 
-        # Remove markdown fences
-        content = re.sub(r'```(?:te|selinux|policy|shell)?\s*', '', content, flags=re.IGNORECASE | re.MULTILINE)
-        content = re.sub(r'```\s*$', '', content, flags=re.MULTILINE)
+        # Strip markdown code fences
+        content = re.sub(r'```[a-zA-Z]*', '', content)
 
-        content = content.strip()
+        SEL_KW = (
+            "type ", "allow ", "neverallow ", "dontaudit ", "auditallow ",
+            "require", "typeattribute ", "attribute ", "permissive ",
+            "typetransition ", "typechange ", "typemember ",
+        )
 
-        # Remove leading garbage
-        while content and content[0] in '{}\n\t `':
-            content = content[1:].strip()
+        lines = content.splitlines()
 
-        # Remove bad lines
-        lines = []
-        for line in content.splitlines():
+        # Find first line starting with a real SELinux keyword
+        start = 0
+        for i, line in enumerate(lines):
             stripped = line.strip()
-            if stripped in {'{', '}', '```', ''}:
-                continue
-            lines.append(line)
+            if any(stripped.startswith(kw) for kw in SEL_KW):
+                start = i
+                break
 
-        cleaned = '\n'.join(lines).strip()
-        return cleaned
+        # Keep from that line onward; drop lone { } and backtick lines
+        body = []
+        for line in lines[start:]:
+            stripped = line.strip()
+            if stripped in {"", "{", "}", "```"}:
+                continue
+            # Strip inline leading { e.g. "{ type foo domain;"
+            if stripped.startswith("{") and not stripped.startswith("{%"):
+                line = line.lstrip().lstrip("{").lstrip()
+            body.append(line)
+
+        return "\n".join(body).strip()
 
     def _write_selinux(self, domain: str, content: str) -> list[Path]:
         """Write SELinux .te policy file."""
