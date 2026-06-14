@@ -261,11 +261,19 @@ class ValidatorFeedback:
     @staticmethod
     def _validate_aidl(code: str) -> tuple[bool, str, float]:
         issues = []
-        if not re.search(
-                r"^\s*package\s+[\w.]+\s*;", code, re.MULTILINE):
+        pkg_match = re.search(
+                r"^\s*package\s+[\w.]+\s*;", code, re.MULTILINE)
+        if not pkg_match:
             issues.append(
                 "Missing package declaration — add e.g. 'package android.hardware.automotive.vehicle;' "
-                "as first non-comment line")
+                "as the very first statement (before @VintfStability and enum/interface)")
+        else:
+            type_before = re.search(
+                r"(interface|enum|parcelable)\s+\w+", code[:pkg_match.start()])
+            if type_before:
+                issues.append(
+                    "Package declaration must be the FIRST statement — move 'package ...' "
+                    "before @VintfStability and before enum/interface declarations")
         if not re.search(r"(interface|parcelable|enum)\s+\w+", code):
             issues.append("Missing interface, enum, or parcelable declaration")
         if code.count("{") != code.count("}"):
@@ -369,6 +377,7 @@ class PostValidationRetry:
         agent,
         gen_kwargs:   dict,
         tracker:      "ThompsonTracker",
+        extra_files:  list = None,
     ) -> dict:
         """
         Validate a generated file; retry the agent if it fails.
@@ -399,7 +408,12 @@ class PostValidationRetry:
 
         # ── Attempt 0: validate what the architect already wrote ──
         code = file_path.read_text(encoding="utf-8", errors="ignore")
-        passed, error_msg, score = ValidatorFeedback.validate(code, agent_type)
+        code_to_validate = code
+        if extra_files:
+            extra = "\n".join(
+                p.read_text(errors="ignore") for p in extra_files if p.exists())
+            code_to_validate = code + "\n" + extra
+        passed, error_msg, score = ValidatorFeedback.validate(code_to_validate, agent_type)
 
         best_code  = code
         best_score = score
@@ -452,8 +466,13 @@ class PostValidationRetry:
                     f"Attempt {attempt}: empty output")
                 continue
 
+            code_for_val = new_code
+            if extra_files:
+                extra = "\n".join(
+                    p.read_text(errors="ignore") for p in extra_files if p.exists())
+                code_for_val = new_code + "\n" + extra
             passed, error_msg, score = ValidatorFeedback.validate(
-                new_code, agent_type)
+                code_for_val, agent_type)
 
             if score > best_score:
                 best_code  = new_code
@@ -694,7 +713,19 @@ def _generate_one_module(
     for agent_type, files in agent_file_map.items():
         for fpath in files:
             code = fpath.read_text(encoding="utf-8", errors="ignore")
-            passed, _, score = ValidatorFeedback.validate(code, agent_type)
+            if agent_type == "cpp":
+                domain_cap = domain.capitalize()
+                impl_dir = fpath.parent
+                extra = "\n".join(
+                    p.read_text(errors="ignore")
+                    for p in [
+                        impl_dir / f"VehicleHalService{domain_cap}.h",
+                        impl_dir / f"VehicleService{domain_cap}.cpp",
+                    ] if p.exists())
+                code_combined = code + "\n" + extra
+            else:
+                code_combined = code
+            passed, _, score = ValidatorFeedback.validate(code_combined, agent_type)
 
             if passed:
                 tracker.record(agent_type, True)
@@ -729,12 +760,21 @@ def _generate_one_module(
             if agent_type == "selinux":
                 gen_kwargs["service_name"] = f"vendor.vss.{domain.lower()}"
 
+            extra_files = None
+            if agent_type == "cpp":
+                domain_cap = domain.capitalize()
+                impl_dir = fpath.parent
+                extra_files = [
+                    impl_dir / f"VehicleHalService{domain_cap}.h",
+                    impl_dir / f"VehicleService{domain_cap}.cpp",
+                ]
             m = retry_engine.validate_and_retry_file(
                 file_path=fpath,
                 agent_type=agent_type,
                 agent=sub_agent,
                 gen_kwargs=gen_kwargs,
                 tracker=tracker,
+                extra_files=extra_files,
             )
             retry_metrics.append(m)
 
