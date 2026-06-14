@@ -23,9 +23,10 @@ OUTPUT_FILE = RESULTS_DIR / "comparison.json"
 
 # Map condition key -> (label, result filename)
 CONDITIONS = [
-    ("baseline", "Condition 1 — Baseline (LLM-First)",     "baseline.json"),
-    ("adaptive", "Condition 2 — Adaptive (Thompson + RL)", "adaptive.json"),
-    ("rag_dspy", "Condition 3 — RAG + DSPy (MIPROv2)",     "rag_dspy.json"),
+    ("baseline",    "Condition 1 — Baseline (LLM-First)",     "baseline.json"),
+    ("adaptive",    "Condition 2 — Adaptive (Thompson + RL)", "adaptive.json"),
+    ("rag_dspy",    "Condition 3 — RAG + DSPy (MIPROv2)",     "rag_dspy.json"),
+    ("c4_feedback", "Condition 4 — Feedback Loop",            "c4_feedback.json"),
 ]
 
 ALL_AGENTS = [

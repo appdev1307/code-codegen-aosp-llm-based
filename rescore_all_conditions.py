@@ -479,16 +479,18 @@ def rescore(label: str, output_dir: Path, out_file: Path) -> dict:
     scores = [r["score"] for r in results]
     _avg = round(sum(scores) / len(scores), 4) if scores else 0.0
     _per = _per_agent_summary(results)
+    # per_agent_avg_scores must be {agent: float} for run_comparison.py/analyze_results.py
+    _per_flat = {k: v["avg"] if isinstance(v, dict) else v for k, v in _per.items()}
     summary = {
         "condition":            label,
         "output_dir":           str(output_dir),
         "num_files":            len(results),
         "avg_score":            _avg,
-        "avg_metric_score":     _avg,       # alias for run_comparison.py
+        "avg_metric_score":     _avg,
         "min_score":            round(min(scores), 4) if scores else 0.0,
         "max_score":            round(max(scores), 4) if scores else 0.0,
         "per_agent":            _per,
-        "per_agent_avg_scores": _per,       # alias for run_comparison.py
+        "per_agent_avg_scores": _per_flat,
         "files":                results,
     }
 
