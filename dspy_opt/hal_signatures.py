@@ -58,6 +58,13 @@ class AIDLSignature(dspy.Signature):
     (e.g. VehiclePropertyAdas for VehiclePropertyAdas.aidl).
 
     Requirements:
+    - CRITICAL FILE ORDER (violations cause build failure):
+        LINE 1: package android.hardware.automotive.vehicle;
+        LINE 2: @VintfStability
+        LINE 3: @Backing(type="int")
+        LINE 4: enum VehiclePropertyAdas {
+      The package declaration MUST be the FIRST line — before ANY annotation.
+      Never put @VintfStability or @Backing before the package declaration.
     - Package: android.hardware.automotive.vehicle (NO .V2_0, NO .adas)
     - Use @VintfStability and @Backing(type="int") annotations
     - Declare an ENUM (e.g. 'enum VehiclePropertyAdas'), NOT an interface
