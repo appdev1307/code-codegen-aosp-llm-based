@@ -477,15 +477,19 @@ def rescore(label: str, output_dir: Path, out_file: Path) -> dict:
         results.append(r)
 
     scores = [r["score"] for r in results]
+    _avg = round(sum(scores) / len(scores), 4) if scores else 0.0
+    _per = _per_agent_summary(results)
     summary = {
-        "condition": label,
-        "output_dir": str(output_dir),
-        "num_files": len(results),
-        "avg_score": round(sum(scores) / len(scores), 4),
-        "min_score": round(min(scores), 4),
-        "max_score": round(max(scores), 4),
-        "per_agent": _per_agent_summary(results),
-        "files": results,
+        "condition":            label,
+        "output_dir":           str(output_dir),
+        "num_files":            len(results),
+        "avg_score":            _avg,
+        "avg_metric_score":     _avg,       # alias for run_comparison.py
+        "min_score":            round(min(scores), 4) if scores else 0.0,
+        "max_score":            round(max(scores), 4) if scores else 0.0,
+        "per_agent":            _per,
+        "per_agent_avg_scores": _per,       # alias for run_comparison.py
+        "files":                results,
     }
 
     out_file.write_text(json.dumps(summary, indent=2))
