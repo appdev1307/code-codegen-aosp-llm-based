@@ -412,6 +412,26 @@ def score_file(agent_type: str, filepath: Path, output_root: Path) -> dict[str, 
     content = filepath.read_text(errors="replace")
     rel_path = str(filepath.relative_to(output_root))
 
+    # For cpp split-file architecture: combine header + impl + main_service
+    # so IVehicleHardware, DefaultVehicleHal, AServiceManager_addService are all visible
+    if agent_type == "cpp" and filepath.suffix == ".cpp":
+        stem = filepath.stem  # e.g. VehicleHalServiceAdas
+        domain_cap = ""
+        for prefix in ("VehicleHalService", "VehicleService"):
+            if stem.startswith(prefix):
+                domain_cap = stem[len(prefix):]
+                break
+        if domain_cap:
+            impl_dir = filepath.parent
+            parts = [content]
+            for extra in [
+                impl_dir / f"VehicleHalService{domain_cap}.h",
+                impl_dir / f"VehicleService{domain_cap}.cpp",
+            ]:
+                if extra.exists() and extra != filepath:
+                    parts.append(extra.read_text(errors="replace"))
+            content = "\n".join(parts)
+
     if len(content.strip()) < 20:
         return {"file": rel_path, "agent": agent_type, "score": 0.0,
                 "struct": 0.0, "syntax": 0.0, "coverage": 0.0, "skipped": "empty"}
