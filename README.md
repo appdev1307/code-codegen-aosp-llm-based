@@ -528,10 +528,13 @@ clean_hal() {
 }
 
 # Full reset — removes ALL generated files (AIDL + C++ + SELinux)
-# and restores AOSP originals. Use before applying a new C3/C4 output.
 restore_aosp() {
-    cd ~/aosp-14-auto/hardware/interfaces && git checkout .
-    cd ~/aosp-14-auto/system/sepolicy && git checkout .
+    cd ~/aosp-14-auto/hardware/interfaces
+    git checkout .
+    git clean -fd -- android/hardware/automotive/vehicle/aidl/
+    cd ~/aosp-14-auto/system/sepolicy
+    git checkout .
+    git clean -fd -- vendor/
     cd ~/aosp-14-auto && echo "✓ AOSP tree restored (all generated files removed)"
 }
 ```
@@ -543,64 +546,121 @@ restore_aosp() {
 ### Step 6 — Full AOSP Image Build
 
 ```bash
-# For first-time apply:
-COND=c4
-~/apply_aosp14_fixes.sh ~/output_$COND ~/aosp-14-auto
-m -j$(nproc) 2>&1 | tee ~/build_full_${COND}.log
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-# For re-applying after a previous run (full reset):
+# Build
+m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
+```
+
+**For re-applying after a previous run (full reset):**
+```bash
 restore_aosp   # removes all generated files, restores AOSP originals
-~/apply_aosp14_fixes.sh ~/output_$COND ~/aosp-14-auto
-m -j$(nproc) 2>&1 | tee ~/build_full_${COND}.log
+# then repeat the steps above from [1/3]
 ```
 
 ### Step 6a — AIDL Frozen API Integration
 
-Adding a new `.aidl` file requires updating the frozen API version.
+Adding new `.aidl` files requires copying them, registering in `Android.bp`,
+cleaning SELinux, and handling the frozen API. Run in order:
 
 ```bash
 cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-# 1. Copy generated AIDL enum file
-cp ~/output_c4/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl \
-   hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
+restore_aosp   # full reset — removes all generated files
 
-# 2. Add to srcs in aidl_interface Android.bp
-AIDL_BP=hardware/interfaces/automotive/vehicle/aidl/Android.bp
-LAST_AIDL=$(grep -n '\.aidl"' "$AIDL_BP" | tail -1 | cut -d: -f1)
-sed -i "${LAST_AIDL}a\\        \"android/hardware/automotive/vehicle/VehiclePropertyAdas.aidl\"," "$AIDL_BP"
+AOSP=~/aosp-14-auto
+OUT=~/output_c4
+AIDL_DEST="$AOSP/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
+IMPL_DEST="$AOSP/hardware/interfaces/automotive/vehicle/aidl/impl"
+SEPOL_DEST="$AOSP/system/sepolicy/vendor"
+AIDL_BP="$AOSP/hardware/interfaces/automotive/vehicle/aidl/Android.bp"
 
-# 3. Temporarily unfreeze
+# [1/3] Copy generated files
+for f in $OUT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/*.aidl; do
+    cp "$f" "$AIDL_DEST/" && echo "✓ AIDL: $(basename $f)"
+done
+
+mkdir -p "$IMPL_DEST"
+for f in $OUT/hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.cpp \
+          $OUT/hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.h \
+          $OUT/hardware/interfaces/automotive/vehicle/impl/VehicleService*.cpp \
+          $OUT/hardware/interfaces/automotive/vehicle/impl/Android_*.bp; do
+    [ -f "$f" ] && cp "$f" "$IMPL_DEST/" && echo "✓ C++: $(basename $f)"
+done
+
+for f in $OUT/sepolicy/vehicle_hal_*.te; do
+    cp "$f" "$SEPOL_DEST/" && echo "✓ SELinux: $(basename $f)"
+done
+
+# [2/3] Register AIDL files in aidl_interface Android.bp
+for BASENAME in VehiclePropertyAdas.aidl VehiclePropertyBody.aidl VehiclePropertyCabin.aidl \
+                VehiclePropertyChassis.aidl VehiclePropertyHvac.aidl \
+                VehiclePropertyInfotainment.aidl VehiclePropertyPowertrain.aidl; do
+    REL_PATH="android/hardware/automotive/vehicle/$BASENAME"
+    if grep -q "$BASENAME" "$AIDL_BP"; then
+        echo "✓ Already registered: $BASENAME"
+    else
+        LAST_LINE=$(grep -n '\.aidl"' "$AIDL_BP" | tail -1 | cut -d: -f1)
+        sed -i "${LAST_LINE}a\        \"${REL_PATH}\"," "$AIDL_BP"
+        echo "✓ Registered: $BASENAME"
+    fi
+done
+
+# [3/3] Replace SELinux .te files with clean minimal policy
+# LLM-generated content contains undefined types and stray macro artifacts —
+# replace entirely with a valid minimal policy using AOSP m4 macros.
+for TE_FILE in $AOSP/system/sepolicy/vendor/vehicle_hal_*.te; do
+    DOMAIN=$(basename "$TE_FILE" .te)
+    cat > "$TE_FILE" << EOF
+type ${DOMAIN}, domain;
+type ${DOMAIN}_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(${DOMAIN})
+binder_use(${DOMAIN})
+binder_call(${DOMAIN}, system_server)
+add_hwservice(${DOMAIN}, hal_vehicle_hwservice)
+
+allow ${DOMAIN} vndbinder_device:chr_file { read write open };
+allow ${DOMAIN} hwbinder_device:chr_file { read write open };
+allow ${DOMAIN} fwk_vehicle_hwservice:hwservice_manager find;
+EOF
+    echo "✓ SELinux: $DOMAIN"
+done
+
+# [4/4] Handle AIDL API freeze and build
+
+# Temporarily unfreeze — allows adding new .aidl files
 sed -i 's/frozen: true,/frozen: false,/' "$AIDL_BP"
 
-# 4. Clean and update API
+# Clean out/ and update API snapshot to include new AIDL files
 rm -rf out/
 source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 m android.hardware.automotive.vehicle-update-api
 
-# 5. Re-freeze
+# Re-freeze
 sed -i 's/frozen: false,/frozen: true,/' "$AIDL_BP"
 
-# 6. FCM exclude list (types-only package)
+# FCM exclude list — required for types-only AIDL package
 sed -i '/static std::vector<std::string> excluded_exact{/a\            "android.hardware.automotive.vehicle@4",' \
     hardware/interfaces/compatibility_matrices/exclude/fcm_exclude.cpp
 
-# 7. Full build
-rm -rf out/
-source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+# Full build
 m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 ```
 
 **Common pitfalls:**
 - Never manually sed V3→V4 in Android.bp files
-- Always `rm -rf out/` between frozen/unfrozen transitions
-- AIDL API freeze (`m android.hardware.automotive.vehicle-update-api`) must be run after adding new AIDL files
+- AIDL registration [2/3] must be done before running `update-api`
+- SELinux [3/3] must replace LLM content entirely — do not append
+- Do not `rm -rf out/` before the build — incremental build reuses the base image
 
 **Recovery:**
 ```bash
-cd ~/aosp-14-auto/hardware/interfaces && git checkout -- . && cd ~/aosp-14-auto
-cd ~/aosp-14-auto/system/sepolicy && git checkout -- . && cd ~/aosp-14-auto
-rm -rf out/
+restore_aosp
 ```
 
 <details>
