@@ -502,11 +502,6 @@ gcloud storage cp gs://aosp-thesis-temp/output_c5.zip ~/
 unzip ~/output_c4.zip -d ~/output_c4
 unzip ~/output_c5.zip -d ~/output_c5
 
-# Get fix script
-curl -o ~/apply_aosp14_fixes.sh \
-    https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/apply_aosp14_fixes.sh
-chmod +x ~/apply_aosp14_fixes.sh
-
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
