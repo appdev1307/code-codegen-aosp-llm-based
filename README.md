@@ -632,6 +632,11 @@ done
 sed -i 's/frozen: true,/frozen: false,/' "$AIDL_BP"
 
 # Clean out/ and update API snapshot to include new AIDL files
+# Remove the stray version 4 directory
+rm -rf hardware/interfaces/automotive/vehicle/aidl/aidl_api/android.hardware.automotive.vehicle/4
+# Verify only 1,2,3,current remain
+ls hardware/interfaces/automotive/vehicle/aidl/aidl_api/android.hardware.automotive.vehicle/
+
 rm -rf out/
 source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 m android.hardware.automotive.vehicle-update-api
