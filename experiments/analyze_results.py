@@ -24,14 +24,16 @@ REPORT_FILE = RESULTS_DIR / "analysis_report.md"
 
 CONDITION_ORDER  = ["baseline", "adaptive", "rag_dspy"]
 CONDITION_LABELS = {
-    "baseline": "C1 Baseline",
-    "adaptive": "C2 Adaptive",
-    "rag_dspy": "C3 RAG+DSPy",
+    "baseline":    "C1 Baseline",
+    "adaptive":    "C2 Adaptive",
+    "rag_dspy":    "C3 RAG+DSPy",
+    "c4_feedback": "C4 Feedback",
 }
 CONDITION_COLORS = {
-    "baseline": "#4C72B0",
-    "adaptive": "#55A868",
-    "rag_dspy": "#C44E52",
+    "baseline":    "#4C72B0",
+    "adaptive":    "#DD8452",
+    "rag_dspy":    "#55A868",
+    "c4_feedback": "#C44E52",
 }
 
 ALL_AGENTS = [
