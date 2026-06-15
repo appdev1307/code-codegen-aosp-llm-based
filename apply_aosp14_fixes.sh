@@ -31,6 +31,9 @@ echo ""
 AIDL_DIR="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
 VSS_DIR="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
 SEPOL_DEST="$AOSP_ROOT/system/sepolicy/vendor"
+FCM_EXCLUDE="$AOSP_ROOT/hardware/interfaces/compatibility_matrices/exclude/fcm_exclude.cpp"
+VHAL_BP="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/impl/vhal/Android.bp"
+VHAL_DEFAULT_XML_OUT="$AOSP_ROOT/out/target/product/vsoc_x86_64_only/vendor/etc/vintf/manifest/vhal-default-service.xml"
 
 mkdir -p "$AIDL_DIR" "$VSS_DIR" "$SEPOL_DEST"
 
@@ -96,10 +99,54 @@ if [ -f "$OUT/sepolicy/private/file_contexts" ]; then
 fi
 
 VINTF_SRC=$(find "$OUT" -name "manifest*.xml" -not -path "*/.llm_draft/*" | head -1)
-[ -n "$VINTF_SRC" ] && cp "$VINTF_SRC" "$VSS_DIR/manifest_vss.xml" && ok "VINTF: $(basename $VINTF_SRC)" || warn "No VINTF manifest found"
+[ -n "$VINTF_SRC" ] && cp "$VINTF_SRC" "$VSS_DIR/manifest_vss.xml" \
+    && ok "VINTF: $(basename $VINTF_SRC)" || warn "No VINTF manifest found"
 
 RC_SRC=$(find "$OUT" -name "*.rc" -not -path "*/.llm_draft/*" | head -1)
-[ -n "$RC_SRC" ] && cp "$RC_SRC" "$VSS_DIR/$(basename $RC_SRC)" && ok "init.rc: $(basename $RC_SRC)" || warn "No init.rc found"
+[ -n "$RC_SRC" ] && cp "$RC_SRC" "$VSS_DIR/$(basename $RC_SRC)" \
+    && ok "init.rc: $(basename $RC_SRC)" || warn "No init.rc found"
+
+# ═══════════════════════════════════════════════════════════════
+# [4/4] AOSP 14 one-time fixes (idempotent)
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "[4/4] Applying AOSP 14 one-time fixes..."
+
+# Fix 1: Add android.hardware.automotive.vehicle@4 to FCM exempt list
+# Required when adding new AIDL types-only package (VehiclePropertyAdas)
+if [ -f "$FCM_EXCLUDE" ]; then
+    if grep -q "automotive.vehicle@4" "$FCM_EXCLUDE"; then
+        ok "FCM exempt: vehicle@4 already present"
+    else
+        sed -i '/static std::vector<std::string> excluded_exact{/a\            "android.hardware.automotive.vehicle@4",' \
+            "$FCM_EXCLUDE"
+        ok "FCM exempt: added android.hardware.automotive.vehicle@4"
+    fi
+else
+    warn "fcm_exclude.cpp not found: $FCM_EXCLUDE"
+fi
+
+# Fix 2: Remove vintf_fragments from vhal/Android.bp to avoid
+# conflict between vhal-default-service.xml and vhal-emulator-service.xml
+# (both register IVehicle/default@3 — Cuttlefish uses emulator service)
+if [ -f "$VHAL_BP" ]; then
+    if grep -q "vintf_fragments.*vhal-default-service" "$VHAL_BP"; then
+        sed -i '/vintf_fragments.*vhal-default-service.xml/d' "$VHAL_BP"
+        ok "Removed conflicting vintf_fragments from vhal/Android.bp"
+    else
+        ok "vhal/Android.bp already clean"
+    fi
+else
+    warn "vhal/Android.bp not found: $VHAL_BP"
+fi
+
+# Fix 3: Remove stale vhal-default-service.xml from out/ if present
+if [ -f "$VHAL_DEFAULT_XML_OUT" ]; then
+    rm -f "$VHAL_DEFAULT_XML_OUT"
+    ok "Removed stale vhal-default-service.xml from out/"
+else
+    ok "No stale vhal-default-service.xml in out/"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
