@@ -169,6 +169,8 @@ fi
 # Fix 3: Update AIDL API snapshot to include new generated AIDL files
 # Required after adding VehicleProperty{Domain}.aidl — AIDL interface is frozen,
 # must be unfrozen, updated, then re-frozen.
+# NOTE: caller must have already run:
+#   source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 echo ""
 echo "[4/4b] Updating AIDL API snapshot..."
 AIDL_BP_FILE="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/Android.bp"
@@ -177,14 +179,10 @@ if [ -f "$AIDL_BP_FILE" ]; then
     sed -i 's/frozen: true,/frozen: false,/' "$AIDL_BP_FILE"
     ok "AIDL interface unfrozen"
 
-    # Update API snapshot
-    rm -rf out/
-    (cd "$AOSP_ROOT" && source build/envsetup.sh &&      lunch aosp_cf_x86_64_auto-trunk_staging-userdebug &&      m android.hardware.automotive.vehicle-update-api)
-    ok "AIDL API snapshot updated"
-
-    # Re-freeze
-    sed -i 's/frozen: false,/frozen: true,/' "$AIDL_BP_FILE"
-    ok "AIDL interface re-frozen"
+    # Update API snapshot — requires build env already sourced by caller
+    rm -rf "$AOSP_ROOT/out/"
+    (cd "$AOSP_ROOT" && m android.hardware.automotive.vehicle-update-api)
+    ok "AIDL API snapshot updated (frozen: false — kept for research use)"
 else
     warn "AIDL Android.bp not found — skipping API update"
 fi

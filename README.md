@@ -565,7 +565,7 @@ m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 4. One-time AOSP fixes:
    - Remove conflicting `vintf_fragments` from `vhal/Android.bp` (avoids `IVehicle/default@3` conflict with Cuttlefish emulator service)
    - Remove stale `vhal-default-service.xml` from `out/` if present
-   - Unfreeze AIDL interface → `m android.hardware.automotive.vehicle-update-api` → re-freeze (required when adding new `VehicleProperty*.aidl` files)
+   - Unfreeze AIDL interface → `m android.hardware.automotive.vehicle-update-api` (kept unfrozen — sufficient for research use)
    - Add `android.hardware.automotive.vehicle@4` to `fcm_exclude.cpp` (required for types-only AIDL package)
 
 **Re-applying after a previous run:**
