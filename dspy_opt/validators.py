@@ -411,7 +411,7 @@ def _selinux_regex_fallback(policy: str) -> ValidatorResult:
     else: errors.append("No 'allow' rules found")
     if any(k in policy for k in ["hal_vehicle","vhal","hal_attribute"]): score += 0.25
     else: errors.append("No VHAL-specific type declarations")
-    if any(k in policy for k in ["binder_call","hwservice_use","add_hwservice"]): score += 0.20
+    if any(k in policy for k in ["binder_call","binder_use","hal_server_domain","init_daemon_domain"]): score += 0.20
     return ValidatorResult(ok=score>=0.7 and not errors, score=round(score,3),
                            errors=errors, tool=tool)
 
@@ -513,14 +513,15 @@ def validate_vintf_xml(content: str) -> ValidatorResult:
     else:
         errors.append("Missing <name> inside <hal>")
 
-    # <transport>
+    # <transport> — AIDL HALs (Android 14+) omit <transport>; HIDL uses hwbinder
     transport = root.find(".//transport")
     if transport is not None:
-        score += 0.10
-        if transport.text not in ("hwbinder","passthrough","binder"):
-            errors.append(f"Unknown transport: '{transport.text}'")
+        if transport.text == "hwbinder":
+            errors.append("HIDL transport 'hwbinder' found — use AIDL format (omit <transport>)")
+        else:
+            score += 0.10
     else:
-        errors.append("Missing <transport> element")
+        score += 0.10  # AIDL: no <transport> is correct
 
     # init.rc block
     if rc_part and "service " in rc_part and ("class hal" in rc_part or "user " in rc_part):

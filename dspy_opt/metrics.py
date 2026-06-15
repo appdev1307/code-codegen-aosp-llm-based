@@ -228,7 +228,7 @@ def metric_selinux(example, prediction, trace=None) -> float:
         (any(k in policy for k in
              ["hal_vehicle","vhal","hal_attribute"]),                         0.25),
         (any(k in policy for k in
-             ["binder_call","hwservice_use","add_hwservice"]),                0.25),
+             ["binder_call","binder_use","hal_server_domain","init_daemon_domain"]),  0.25),
     ])
     syntax_res = validate("selinux", policy)
     coverage   = _type_coverage(example, policy)   # VSS names don't appear in .te files
