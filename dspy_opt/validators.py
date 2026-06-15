@@ -358,69 +358,63 @@ def _cpp_regex_fallback(code: str) -> ValidatorResult:
 
 # Minimal class/common declarations so a standalone .te snippet compiles
 _SELINUX_PRELUDE = """\
-class binder  { call set_context_mgr transfer impersonate }
-class file    { read write open getattr }
-class dir     { read open search }
-class service_manager { add find list }
-class hwservice_manager { add find list }
-class property_service { set }
-common file_class_set { ioctl read write create getattr setattr lock relabelfrom relabelto append unlink link rename execute }
-class file inherits file_class_set { execute_no_trans entrypoint open }
+security_classes = {binder file dir service_manager hwservice_manager property_service chr_file}
+initial_sids = {kernel}
+sid kernel
 """
 
 def validate_selinux(policy: str) -> ValidatorResult:
     """
-    Validate a SELinux .te policy file using checkpolicy.
+    Validate a SELinux .te policy file.
 
-    checkpolicy is a native Linux tool (policycoreutils) that compiles
-    SELinux policy. Android and Linux use the same SELinux policy
-    language — no cross-compilation needed.
+    checkpolicy requires a full AOSP policy tree to parse standalone .te
+    files — it cannot validate them in isolation on a host machine.
+    We use a structural regex validator instead, which checks for correct
+    AOSP 14 AIDL patterns and rejects HIDL patterns.
     """
-    tool = "checkpolicy"
-    if not policy.strip():
-        return ValidatorResult(ok=False, score=0.0, errors=["Empty policy"], tool=tool)
-
-    if not _tool("checkpolicy"):
-        return _selinux_regex_fallback(policy)
-
     # Strip stray leading/trailing braces — common LLM artifact
-    # checkpolicy fails with "syntax error at token '{'" on line 1
     policy = policy.strip()
     while policy.startswith("{"):
         policy = policy[1:].strip()
     while policy.endswith("}"):
         policy = policy[:-1].strip()
 
-    combined = _SELINUX_PRELUDE + "\n" + policy
-
-    fd, tmp = tempfile.mkstemp(suffix=".te")
-    try:
-        os.write(fd, combined.encode())
-        os.close(fd)
-        rc, stdout, stderr = _run(["checkpolicy", "-M", "-C", "-o", "/dev/null", tmp])
-    finally:
-        os.unlink(tmp)
-
-    output = stdout + stderr
-    if rc == 0 and "error" not in output.lower():
-        return ValidatorResult(ok=True, score=1.0, tool=tool)
-
-    error_lines = [l for l in output.splitlines()
-                   if "error" in l.lower() or "undefined" in l.lower()]
-    partial = _partial(len(error_lines))
-    return ValidatorResult(ok=False, score=partial,
-                           errors=error_lines[:5], tool=tool)
+    return _selinux_regex_fallback(policy)
 
 
 def _selinux_regex_fallback(policy: str) -> ValidatorResult:
-    tool, errors, score = "selinux-regex-fallback", [], 0.0
-    if "type "   in policy: score += 0.25
-    if "allow "  in policy: score += 0.30
-    else: errors.append("No 'allow' rules found")
-    if any(k in policy for k in ["hal_vehicle","vhal","hal_attribute"]): score += 0.25
-    else: errors.append("No VHAL-specific type declarations")
-    if any(k in policy for k in ["binder_call","binder_use","hal_server_domain","init_daemon_domain"]): score += 0.20
-    return ValidatorResult(ok=score>=0.7 and not errors, score=round(score,3),
+    tool, errors, score = "selinux-regex", [], 0.0
+
+    # HIDL detection — fail immediately
+    hidl_patterns = ["hal_attribute_hwservice", "add_hwservice", "find_hwservice",
+                     "hwservice_manager", "hwbinder_device", "fwk_vehicle_hwservice"]
+    found_hidl = [p for p in hidl_patterns if p in policy]
+    if found_hidl:
+        return ValidatorResult(ok=False, score=0.1,
+                               errors=[f"HIDL pattern found: {found_hidl[0]}"],
+                               tool=tool)
+
+    # AIDL structural checks
+    if "type " in policy:                                          score += 0.20
+    else: errors.append("No type declarations")
+
+    if "domain" in policy:                                         score += 0.10
+    else: errors.append("No domain type")
+
+    if "init_daemon_domain" in policy:                             score += 0.20
+    else: errors.append("Missing init_daemon_domain")
+
+    if "hal_server_domain" in policy:                              score += 0.20
+    else: errors.append("Missing hal_server_domain(x, hal_vehicle)")
+
+    if any(k in policy for k in ["binder_call", "binder_use"]):   score += 0.15
+    else: errors.append("Missing binder_call/binder_use")
+
+    if "vndbinder_device" in policy:                               score += 0.15
+    else: errors.append("Missing vndbinder_device allow rule")
+
+    ok = score >= 0.70 and len(errors) == 0
+    return ValidatorResult(ok=ok, score=round(score, 3),
                            errors=errors, tool=tool)
 
 
@@ -877,10 +871,9 @@ def validator_availability_report() -> dict[str, dict]:
                            "available": bool(_tool("clang++") or _tool("clang")),
                            "fallback": "cpp-regex",
                            "note": "Syntax only; AOSP headers stubbed in"},
-        "selinux":        {"tool": "checkpolicy",
-                           "available": bool(_tool("checkpolicy")),
-                           "fallback": "selinux-regex",
-                           "note": "Full policy compile; no cross-compilation needed"},
+        "selinux":        {"tool": "selinux-regex",
+                           "available": True,
+                           "note": "Structural AIDL/HIDL pattern check; checkpolicy needs full AOSP tree"},
         "build":          {"tool": "Python Android.bp parser",
                            "available": True,
                            "note": "Host-native; Soong not available on host"},
