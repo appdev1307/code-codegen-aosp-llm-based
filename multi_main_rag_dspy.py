@@ -30,6 +30,13 @@ Prerequisites (run once before this script):
 
 from __future__ import annotations
 
+# ── ChromaDB singleton fix (prevents "instance already exists" error) ──
+try:
+    import fix_chroma_singleton
+    fix_chroma_singleton.patch_chromadb()
+except Exception as _e:
+    print(f"[WARNING] ChromaDB singleton fix not applied: {_e}")
+
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
