@@ -469,6 +469,7 @@ class RAGDSPyMixin:
             "ollama/qwen2.5-coder:32b",
             api_base="http://localhost:11434",
             cache=False,
+            max_tokens=4096,  # prevent truncation of long SELinux/C++ output
         )
         dspy.configure(lm=lm)
         logger.info("[RAGDSPyMixin] DSPy configured with qwen2.5-coder:32b")
