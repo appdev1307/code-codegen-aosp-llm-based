@@ -114,9 +114,10 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
     STRICT RULES — NO EXCEPTIONS, NO HIDL ANYWHERE:
 
     1. HEADER FILE (VssVehicleHardware.h) **MUST START EXACTLY** WITH:
-       #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>
+       #include <IVehicleHardware.h>
        #include <android/log.h>
-       #include <ndk/ScopedAStatus.h>
+       #include <android/binder_manager.h>
+       #include <android/binder_status.h>
        #include <vector>
        #include <memory>
        #include <string>
@@ -130,6 +131,10 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
 
     FORBIDDEN (never output these):
     - hidl_interface, @2.0, HIDL_FETCH_*, hidl/, libhidlbase, libhidltransport, BnVehicle, Return<>, .valueType
+    - #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>  (wrong path, use <IVehicleHardware.h>)
+    - #include <ndk/ScopedAStatus.h>  (wrong, use <android/binder_status.h>)
+    - #include <binder/AServiceManager.h>  (wrong, use <android/binder_manager.h>)
+    - aidlvhal:: prefix (use namespace directly via 'using namespace')
 
     Android.bp MUST be pure AIDL style only.
     """
