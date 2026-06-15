@@ -537,24 +537,7 @@ restore_aosp() {
 > Soong picks up duplicate `Android.bp` files and fails with "module already defined".
 > If this happens: `mv ~/aosp-14-auto/aosp_source ~/aosp_source_rag`
 
-### Step 6 — Full AOSP Image Build
-
-```bash
-cd ~/aosp-14-auto
-source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-
-# Build
-m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
-```
-
-**For re-applying after a previous run (full reset):**
-```bash
-restore_aosp   # removes all generated files, restores AOSP originals
-# then repeat the steps above from [1/3]
-```
-
-### Step 6a — Apply Generated Files to AOSP Tree
+### Step 6 — Apply Generated Files and Full Build
 
 `apply_aosp14_fixes.sh` handles all integration — copy-only, no patching.
 C3/C4 agents generate correct AIDL output directly; Soong auto-discovers
@@ -570,12 +553,11 @@ restore_aosp   # full reset before applying new C3/C4 run
 # Apply all generated files (AIDL, C++, SELinux, VINTF, init.rc)
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
 
-# Full build
+# Full image build — Soong auto-discovers aidl/impl/vss/Android.bp
 m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 ```
 
-`apply_aosp14_fixes.sh` does 5 things (all idempotent):
-0. Platform build fixes — disable `sv_2d_session_tests`, `sv_3d_session_tests`, `continuous_native_tests` that cause build failure in custom AAOS builds
+`apply_aosp14_fixes.sh` does 4 things (all idempotent):
 1. Copy AIDL files → `aidl/android/hardware/automotive/vehicle/`
 2. Copy C++ files → `aidl/impl/vss/` + generate `VssVehicleHardware Android.bp`
    (Soong auto-discovers this — no registration in `aidl/Android.bp` needed)
@@ -586,44 +568,12 @@ m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
    - Unfreeze AIDL interface → `m android.hardware.automotive.vehicle-update-api` → re-freeze (required when adding new `VehicleProperty*.aidl` files)
    - Add `android.hardware.automotive.vehicle@4` to `fcm_exclude.cpp` (required for types-only AIDL package)
 
-**Recovery:**
+**Re-applying after a previous run:**
 ```bash
-restore_aosp
+restore_aosp   # removes all generated files, restores AOSP originals
+~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
+m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 ```
-
-
-### Step 6b — Build VssVehicleHardware Service (C3/C4 output)
-
-Copy the generated C++ service into the AOSP tree and build it as a standalone
-module — much faster than a full image rebuild.
-
-```bash
-cd ~/aosp-14-auto
-source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-
-# apply_aosp14_fixes.sh already copied the C++ files (step 1).
-# Files are in hardware/interfaces/automotive/vehicle/aidl/impl/:
-#   VehicleHalService{Domain}.h
-#   VehicleHalService{Domain}.cpp
-#   VehicleService{Domain}.cpp
-#   Android_{domain}.bp
-
-# Build each domain module (one per domain)
-for DOMAIN in adas body cabin chassis hvac infotainment powertrain; do
-    mmm hardware/interfaces/automotive/vehicle/aidl/impl/ 2>&1 | tail -5
-done
-
-# Or build all at once
-m android.hardware.automotive.vehicle@V3-vss-service 2>&1 | tail -10
-
-# Verify binaries produced
-ls $OUT/vendor/bin/hw/vendor.vss.*-service
-```
-
-> **Note:** If the build fails with missing headers (`IVehicleHardware.h`, `DefaultVehicleHal.h`),
-> confirm `header_libs: ["IVehicleHardware"]` and `static_libs: ["DefaultVehicleHal", "VehicleHalUtils"]`
-> are in the generated `Android.bp`. Run `mmm` on the module to see the exact error.
 
 ### Step 7 — Launch Cuttlefish and Verify Base Image
 
@@ -655,14 +605,18 @@ adb -s 0.0.0.0:6520 shell lshal | grep automotive.vehicle
 # Verify IVehicle/default is registered
 ```
 
-### Step 8 — Deploy VssVehicleHardware and Run VTS
+### Step 8 — Build VTS, Deploy VssVehicleHardware, Run Tests
 
-VssVehicleHardware is already built in Step 6b. This step deploys it on the
-running Cuttlefish instance, builds the C5 VTS test, and runs validation.
+VssVehicleHardware is built into the full image (Step 6).
+This step builds the C5 VTS test, deploys on Cuttlefish, and runs validation.
 
-#### 8a — Build VTS Test
+#### 8a — Build VTS Test (C5 output)
 
 ```bash
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+
 # Copy C5 VTS test into AOSP tree
 rm -rf test/vts/vss_vehicle
 mkdir -p test/vts/vss_vehicle
@@ -683,41 +637,43 @@ mmm test/vts/vss_vehicle
 #### 8b — Deploy VssVehicleHardware on Cuttlefish
 
 ```bash
-# Cuttlefish must be running
-adb root && adb remount
+# Cuttlefish must be running (Step 7)
+adb -s 0.0.0.0:6520 root && adb -s 0.0.0.0:6520 remount
 
-# Push VssVehicleHardware binary
-adb push out/target/product/vsoc_x86_64/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service \
+# Push VssVehicleHardware binary (built into full image in Step 6)
+adb -s 0.0.0.0:6520 push \
+    out/target/product/vsoc_x86_64_only/vendor/bin/hw/VssVehicleHardware \
     /vendor/bin/hw/
 
 # Stop stock VHAL — only one service can own IVehicle/default
-adb shell stop vendor.vehicle-default
-# Verify stock VHAL stopped:
-adb shell "ps -A | grep -i vehicle"
+adb -s 0.0.0.0:6520 shell stop vendor.vehicle-default
+# Verify stopped:
+adb -s 0.0.0.0:6520 shell "ps -A | grep -i vehicle"
 
 # Start VssVehicleHardware
-adb shell /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service &
+adb -s 0.0.0.0:6520 shell /vendor/bin/hw/VssVehicleHardware &
 
 # Confirm it registered
-adb shell lshal | grep automotive.vehicle
+adb -s 0.0.0.0:6520 shell lshal | grep automotive.vehicle
 # Expected: android.hardware.automotive.vehicle.IVehicle/default
-adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default
-# Shows: VssVehicleHardware: N properties
 ```
 
 #### 8c — Run VTS
 
 ```bash
 # Push VTS binary to device
-adb push out/target/product/vsoc_x86_64/data/nativetest64/vendor/VtsHalAutomotiveVehicleVss \
+adb -s 0.0.0.0:6520 push \
+    out/target/product/vsoc_x86_64_only/data/nativetest64/vendor/VtsHalAutomotiveVehicleVss \
     /data/local/tmp/
+adb -s 0.0.0.0:6520 shell chmod +x /data/local/tmp/VtsHalAutomotiveVehicleVss
 
 # Run tests (4 tests expected to pass)
-adb shell /data/local/tmp/VtsHalAutomotiveVehicleVss
-# Tests: ServiceAvailable, VssPropertiesRegistered, AllIdsUnique, AllIdsWellFormed
+adb -s 0.0.0.0:6520 shell /data/local/tmp/VtsHalAutomotiveVehicleVss
+# Expected: ServiceAvailable, VssPropertiesRegistered, AllIdsUnique, AllIdsWellFormed
 
-# Or via atest if test module is registered
-atest VtsHalAutomotiveVehicleVss -c
+# Or via atest
+cd ~/aosp-14-auto && source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+atest VtsHalAutomotiveVehicleVss -- --serial 0.0.0.0:6520
 ```
 
 #### 8d — Install and verify HMI app
