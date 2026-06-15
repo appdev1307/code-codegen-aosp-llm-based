@@ -27,6 +27,38 @@ echo ""
 [ -d "$OUT" ]              || fail "Output dir not found: $OUT"
 [ -d "$AOSP_ROOT/build" ]  || fail "AOSP root invalid: $AOSP_ROOT"
 
+# ═══════════════════════════════════════════════════════════════
+# [0/4] Platform build fixes (idempotent — must run before anything else)
+# ═══════════════════════════════════════════════════════════════
+echo "[0/4] Applying platform build fixes..."
+
+# Fix: Disable sv_2d_session_tests / sv_3d_session_tests / continuous_native_tests
+# These cause build failure in custom AAOS builds.
+CONT_TESTS="$AOSP_ROOT/platform_testing/build/tasks/continuous_native_tests.mk"
+if grep -q "sv_2d_session_tests\|sv_3d_session_tests" "$CONT_TESTS" 2>/dev/null ||    [ ! -f "$CONT_TESTS" ] || ! grep -q "Disabled" "$CONT_TESTS" 2>/dev/null; then
+    cat > "$CONT_TESTS" << 'EOF'
+# Disabled to avoid sv_2d_session_tests and sv_3d_session_tests build failure
+# in custom AAOS builds (platform_testing broken test modules)
+EOF
+    ok "Disabled continuous_native_tests.mk"
+else
+    ok "continuous_native_tests.mk already patched"
+fi
+
+DEVICE_MK="$AOSP_ROOT/device/google/cuttlefish/shared/device.mk"
+if [ -f "$DEVICE_MK" ] && ! grep -q "sv_2d_session_tests" "$DEVICE_MK"; then
+    cat >> "$DEVICE_MK" << 'EOF'
+
+# Disable broken test modules (custom AAOS build)
+PRODUCT_PACKAGES += -sv_2d_session_tests -sv_3d_session_tests
+PRODUCT_PACKAGES += -continuous_native_tests
+EOF
+    ok "Disabled broken test modules in device.mk"
+else
+    ok "device.mk already patched"
+fi
+
+echo ""
 # ── Destination paths ────────────────────────────────────────
 AIDL_DIR="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
 VSS_DIR="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
@@ -112,21 +144,7 @@ RC_SRC=$(find "$OUT" -name "*.rc" -not -path "*/.llm_draft/*" | head -1)
 echo ""
 echo "[4/4] Applying AOSP 14 one-time fixes..."
 
-# Fix 1: Add android.hardware.automotive.vehicle@4 to FCM exempt list
-# Required when adding new AIDL types-only package (VehiclePropertyAdas)
-if [ -f "$FCM_EXCLUDE" ]; then
-    if grep -q "automotive.vehicle@4" "$FCM_EXCLUDE"; then
-        ok "FCM exempt: vehicle@4 already present"
-    else
-        sed -i '/static std::vector<std::string> excluded_exact{/a\            "android.hardware.automotive.vehicle@4",' \
-            "$FCM_EXCLUDE"
-        ok "FCM exempt: added android.hardware.automotive.vehicle@4"
-    fi
-else
-    warn "fcm_exclude.cpp not found: $FCM_EXCLUDE"
-fi
-
-# Fix 2: Remove vintf_fragments from vhal/Android.bp to avoid
+# Fix 1: Remove vintf_fragments from vhal/Android.bp to avoid
 # conflict between vhal-default-service.xml and vhal-emulator-service.xml
 # (both register IVehicle/default@3 — Cuttlefish uses emulator service)
 if [ -f "$VHAL_BP" ]; then
@@ -140,12 +158,48 @@ else
     warn "vhal/Android.bp not found: $VHAL_BP"
 fi
 
-# Fix 3: Remove stale vhal-default-service.xml from out/ if present
+# Fix 2: Remove stale vhal-default-service.xml from out/ if present
 if [ -f "$VHAL_DEFAULT_XML_OUT" ]; then
     rm -f "$VHAL_DEFAULT_XML_OUT"
     ok "Removed stale vhal-default-service.xml from out/"
 else
     ok "No stale vhal-default-service.xml in out/"
+fi
+
+# Fix 3: Update AIDL API snapshot to include new generated AIDL files
+# Required after adding VehicleProperty{Domain}.aidl — AIDL interface is frozen,
+# must be unfrozen, updated, then re-frozen.
+echo ""
+echo "[4/4b] Updating AIDL API snapshot..."
+AIDL_BP_FILE="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/Android.bp"
+if [ -f "$AIDL_BP_FILE" ]; then
+    # Unfreeze
+    sed -i 's/frozen: true,/frozen: false,/' "$AIDL_BP_FILE"
+    ok "AIDL interface unfrozen"
+
+    # Update API snapshot
+    rm -rf out/
+    (cd "$AOSP_ROOT" && source build/envsetup.sh &&      lunch aosp_cf_x86_64_auto-trunk_staging-userdebug &&      m android.hardware.automotive.vehicle-update-api)
+    ok "AIDL API snapshot updated"
+
+    # Re-freeze
+    sed -i 's/frozen: false,/frozen: true,/' "$AIDL_BP_FILE"
+    ok "AIDL interface re-frozen"
+else
+    warn "AIDL Android.bp not found — skipping API update"
+fi
+
+# Fix 4: Add android.hardware.automotive.vehicle@4 to FCM exempt list
+# Required for types-only AIDL package (VehiclePropertyAdas etc.)
+if [ -f "$FCM_EXCLUDE" ]; then
+    if grep -q "automotive.vehicle@4" "$FCM_EXCLUDE"; then
+        ok "FCM exempt: vehicle@4 already present"
+    else
+        sed -i '/static std::vector<std::string> excluded_exact{/a\            "android.hardware.automotive.vehicle@4",'             "$FCM_EXCLUDE"
+        ok "FCM exempt: added android.hardware.automotive.vehicle@4"
+    fi
+else
+    warn "fcm_exclude.cpp not found: $FCM_EXCLUDE"
 fi
 
 echo ""
