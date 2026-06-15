@@ -383,6 +383,14 @@ def validate_selinux(policy: str) -> ValidatorResult:
     if not _tool("checkpolicy"):
         return _selinux_regex_fallback(policy)
 
+    # Strip stray leading/trailing braces — common LLM artifact
+    # checkpolicy fails with "syntax error at token '{'" on line 1
+    policy = policy.strip()
+    while policy.startswith("{"):
+        policy = policy[1:].strip()
+    while policy.endswith("}"):
+        policy = policy[:-1].strip()
+
     combined = _SELINUX_PRELUDE + "\n" + policy
 
     fd, tmp = tempfile.mkstemp(suffix=".te")
