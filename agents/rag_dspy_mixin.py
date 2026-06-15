@@ -389,6 +389,16 @@ class RAGDSPyMixin:
             # Clean markdown fences and preamble before returning
             output = self._clean_output(output)
 
+            # ── Strip stray leading/trailing braces (SELinux common LLM artifact) ──
+            # checkpolicy fails with "syntax error at token '{'" when LLM
+            # wraps output in { ... } instead of raw .te statements.
+            if self.AGENT_TYPE == "selinux":
+                output = output.strip()
+                while output.startswith("{"):
+                    output = output[1:].strip()
+                while output.endswith("}"):
+                    output = output[:-1].strip()
+
             # ── Check for HIDL contamination in output ───────────
             hidl_found = self._has_hidl_contamination(output)
             if hidl_found:
