@@ -21,9 +21,10 @@ _CONTRACT = """
 === Android 14 AIDL VHAL V3 contract — NO EXCEPTIONS ===
 
 CRITICAL INCLUDES — ALWAYS ADD THESE AT THE TOP OF HEADER FILE:
-#include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>
+#include <IVehicleHardware.h>
 #include <android/log.h>
-#include <ndk/ScopedAStatus.h>
+#include <android/binder_manager.h>
+#include <android/binder_status.h>
 #include <vector>
 #include <memory>
 #include <string>
@@ -32,25 +33,31 @@ NAMESPACE:
 using namespace aidl::android::hardware::automotive::vehicle;
 
 ARCHITECTURE:
-  YourClass : public IVehicleHardware ← you implement this (vendor seam)
-  DefaultVehicleHal : public BnVehicle ← AOSP owns this (binder layer)
+  VssVehicleHardware : public IVehicleHardware  ← you implement this (vendor seam)
+  DefaultVehicleHal  ← AOSP binder layer (do NOT subclass this)
 
-MAIN SERVICE:
-  auto hw = std::make_unique<YourClass>();
+MAIN SERVICE (VehicleService{Domain}.cpp):
+  auto hw = std::make_unique<VssVehicleHardware>();
   auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw));
+  const std::string instance = std::string(IVehicle::descriptor) + "/default";
   AServiceManager_addService(vhal->asBinder().get(), instance.c_str());
 
-MANDATORY signatures (copy style exactly):
-  std::vector<aidlvhal::VehiclePropConfig> getAllPropertyConfigs() const override;
-  aidlvhal::StatusCode getValues(
+MANDATORY signatures in header (no aidlvhal:: prefix — use namespace directly):
+  std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
+  StatusCode getValues(
       std::shared_ptr<const GetValuesCallback> callback,
-      const std::vector<aidlvhal::GetValueRequest>& requests) const override;
-  aidlvhal::StatusCode setValues(
+      const std::vector<GetValueRequest>& requests) const override;
+  StatusCode setValues(
       std::shared_ptr<const SetValuesCallback> callback,
-      const std::vector<aidlvhal::SetValueRequest>& requests) override;
+      const std::vector<SetValueRequest>& requests) override;
 
 FORBIDDEN:
-  HIDL_FETCH_* | #include <hidl/> | Return<> | BnVehicle | BnIVehicle | .valueType | sync getValues
+  #include <hidl/>          — HIDL headers
+  #include <ndk/ScopedAStatus.h>  — wrong path, use <android/binder_status.h>
+  #include <binder/AServiceManager.h>  — wrong, use <android/binder_manager.h>
+  #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>  — wrong path, use <IVehicleHardware.h>
+  HIDL_FETCH_* | Return<> | BnVehicle | BnIVehicle | .valueType | sync getValues
+  aidlvhal:: prefix — use namespace directly via using namespace
 
 Start every .h file with the includes above. Do not omit them.
 """
