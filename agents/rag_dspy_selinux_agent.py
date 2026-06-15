@@ -1,18 +1,17 @@
 """
 agents/rag_dspy_selinux_agent.py
 ═══════════════════════════════════════════════════════════════════
-RAG+DSPy SELinux policy generation agent (condition 3).
+RAG+DSPy SELinux policy generation agent (condition 3/4).
 
-Retrieves real .te policy examples from ChromaDB (aosp_selinux
-collection) and uses a DSPy-optimised prompt to generate the
-SELinux Type Enforcement policy file for a VHAL service.
+Retrieves real AOSP 14 AIDL .te policy examples from ChromaDB and
+uses a DSPy-optimised prompt to generate SELinux Type Enforcement
+policy files for VHAL services.
 
-Interface matches original generate_selinux(full_spec) but as
-an instantiable class for consistency with other RAG+DSPy agents.
-
-Called from multi_main_rag_dspy.py:
-    agent = RAGDSPySELinuxAgent(...)
-    agent.run(full_spec)
+FIX (2026-06): RAG queries updated to retrieve AIDL-based patterns
+only (hal_server_domain, init_daemon_domain, binder_use).
+Old queries referenced hwservice/add_hwservice (HIDL) which caused
+the LLM to generate legacy HIDL SELinux policy despite Layer 1/2
+filtering.
 ═══════════════════════════════════════════════════════════════════
 """
 
@@ -54,7 +53,6 @@ class RAGDSPySELinuxAgent(RAGDSPyMixin):
         ----------
         full_spec : HALSpec
             Full pipeline spec with .domain and .properties attributes.
-            Same object passed to the original generate_selinux(full_spec).
 
         Returns
         -------
@@ -63,11 +61,14 @@ class RAGDSPySELinuxAgent(RAGDSPyMixin):
         domain       = getattr(full_spec, "domain", "VEHICLE")
         service_name = f"vendor.vss.{domain.lower()}"
 
-        # Retrieve real AOSP SELinux policy examples
+        # FIX: queries now target AIDL-based SELinux patterns only.
+        # Old queries ("add_hwservice find_hwservice hwservice") retrieved
+        # HIDL examples from ChromaDB, causing HIDL output even after
+        # Layer 1 (indexer) and Layer 2 (mixin) filtering.
         queries = [
-            f"hal_vehicle SELinux policy binder hwservice allow",
-            f"{domain.lower()} vendor hal selinux te type attribute",
-            f"add_hwservice find_hwservice binder_call vhal",
+            f"hal_vehicle SELinux AIDL Android 14 type enforcement binder",
+            f"{domain.lower()} vendor hal selinux te hal_server_domain init_daemon_domain",
+            f"binder_use binder_call vndbinder_device hal_vehicle type domain",
         ]
         aosp_context = self._retrieve_multi(queries)
 

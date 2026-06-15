@@ -177,25 +177,32 @@ class CppVehicleAssertions(dspy.Module):
 
 
 class SELinuxSignature(dspy.Signature):
-    """Generate a clean, valid SELinux Type Enforcement (.te) policy file for AOSP VHAL service.
+    """Generate a clean, valid SELinux Type Enforcement (.te) policy file for AOSP 14 VHAL service.
 
     STRICT RULES — NO EXCEPTIONS:
-    - Output ONLY the raw .te policy content. 
+    - Output ONLY the raw .te policy content.
     - NEVER use markdown fences (no ```te, no ```, no code blocks)
-    - Do NOT add any extra text, explanations, or leading '{'
-    - Start directly with valid SELinux statements (type, allow, gen_require, etc.)
-    - Use proper vehicle HAL naming (e.g. vss_xxx_hal)
-    - Follow AOSP patterns from retrieved examples
+    - Do NOT add any extra text, explanations, or leading \'{\'
+    - Start directly with valid SELinux statements (type, allow, init_daemon_domain, etc.)
+    - This is ANDROID 14 AIDL — NOT HIDL. Never use any HIDL macros.
 
-    Requirements:
-    - Define the HAL service type using hal_attribute_hwservice macro
-    - Add binder_call permissions between hal_client_domain and the service
-    - Include add_hwservice and find_hwservice rules
-    - Add necessary file access rules for /dev/vndbinder
+    FORBIDDEN (HIDL — causes build failure on Android 14):
+    - hal_attribute_hwservice, add_hwservice, find_hwservice
+    - hwservice_manager, hwbinder_device, fwk_vehicle_hwservice
+    - hwbinder_use, hidl_base_hwservice
+
+    REQUIRED (AOSP 14 AIDL pattern):
+    - Declare: type <server>, domain;
+    - Declare: type <server>_exec, exec_type, vendor_file_type, file_type;
+    - Use: init_daemon_domain(<server>)
+    - Use: binder_use(<server>)
+    - Use: binder_call(<server>, system_server) and binder_call(system_server, <server>)
+    - Use: hal_server_domain(<server>, hal_vehicle)
+    - Allow: <server> vndbinder_device:chr_file { read write open }
     """
     domain: str = dspy.InputField(desc="HAL domain name")
     service_name: str = dspy.InputField(desc="Full VHAL service name, e.g. vendor.vss.adas")
-    aosp_context: str = dspy.InputField(desc="Retrieved real AOSP .te policy file examples")
+    aosp_context: str = dspy.InputField(desc="Retrieved real AOSP 14 AIDL .te policy file examples")
 
     policy: str = dspy.OutputField(desc="Complete clean SELinux .te policy content ONLY - no extra text or fences")
 

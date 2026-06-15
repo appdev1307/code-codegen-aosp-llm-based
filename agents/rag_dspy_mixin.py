@@ -166,7 +166,26 @@ class RAGDSPyMixin:
     # was over-broad — patterns like "oneway void get" / "out bool" and the bare
     # presence of "ivehicle" dropped legitimate AIDL VHAL reference code. Kept
     # empty by design; the path-based index gate is authoritative.
-    _HIDL_CONTAMINATION_PATTERNS: list[str] = []
+    _HIDL_CONTAMINATION_PATTERNS: list[str] = [
+        # SELinux HIDL macros — cause build failure on Android 14
+        "hal_attribute_hwservice",
+        "add_hwservice",
+        "find_hwservice",
+        "hwservice_manager",
+        "hwbinder_device",
+        "fwk_vehicle_hwservice",
+        "hwbinder_use",
+        "hidl_base_hwservice",
+        # C++/AIDL HIDL includes
+        "hidl/status.h",
+        "vehicle/2.0/ivehicle.h",
+        "android.hardware.automotive.vehicle@2.0",
+        "v2_0",
+        # Android.bp HIDL libs
+        "libhidlbase",
+        "libhwbinder",
+        "libhidltransport",
+    ]
 
     @classmethod
     def _has_hidl_contamination(cls, text: str) -> list[str]:
