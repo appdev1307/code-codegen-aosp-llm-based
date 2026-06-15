@@ -240,30 +240,35 @@ class BuildFileSignature(dspy.Signature):
 class VINTFSignature(dspy.Signature):
     """
     Generate a VINTF manifest fragment XML and a corresponding init.rc
-    service definition for registering a VHAL service with Android's
-    hardware service manager.
+    service definition for registering an AIDL VHAL service on Android 14.
+
+    ANDROID 14 AIDL — NOT HIDL. Never use hwbinder or HIDL transport.
+
+    FORBIDDEN:
+    - <transport>hwbinder</transport>
+    - <fqname>@2.0::IVehicle/default</fqname>
+    - Any HIDL version format (e.g. 2.0, 1.0)
 
     Requirements:
-    - manifest.xml: include <hal> block with correct format, name, transport,
-      version, and <interface> entries
-    - init.rc: define service block with correct user/group (system/system),
-      capabilities, and class (hal)
-    - Use HIDL or AIDL transport as appropriate for Android 14
-    - Follow retrieved VINTF and init.rc examples for exact syntax
+    - manifest.xml: <hal format="aidl"> block with name, version (integer), <interface>
+    - <transport> must be omitted for AIDL HALs (not hwbinder)
+    - init.rc: service block with user/group (system/system), class hal
+    - Follow retrieved AOSP 14 AIDL VINTF examples for exact syntax
     """
     domain:       str = dspy.InputField(
         desc="HAL domain name"
     )
     hal_version:  str = dspy.InputField(
-        desc="HAL interface version, e.g. 2.0 or 1"
+        desc="HAL interface version integer, e.g. 3 (AIDL, not 2.0 HIDL)"
     )
     aosp_context: str = dspy.InputField(
-        desc="Retrieved real VINTF manifest.xml and init.rc examples"
+        desc="Retrieved real AOSP 14 AIDL VINTF manifest.xml and init.rc examples"
     )
     manifest:     str = dspy.OutputField(
         desc="Complete VINTF manifest XML followed by init.rc content, "
              "separated by a '# --- init.rc ---' comment line"
     )
+
 
 
 # ═══════════════════════════════════════════════════════════════════
