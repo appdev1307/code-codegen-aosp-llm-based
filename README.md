@@ -574,9 +574,6 @@ m clean-vintf
 rm -rf out/target/product/vsoc_x86_64_only/system/etc/vintf/compatibility_matrix*
 rm -rf out/target/product/vsoc_x86_64_only/obj/PACKAGING/check_vintf*
 
-# Rebuild vendor VINTF fragments
-m vendor_vintf_fragments -j$(nproc)
-
 # Verify
 m check-vintf-all
 
