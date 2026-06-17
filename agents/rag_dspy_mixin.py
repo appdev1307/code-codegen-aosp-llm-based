@@ -392,12 +392,18 @@ class RAGDSPyMixin:
             # ── Strip stray leading/trailing braces (SELinux common LLM artifact) ──
             # checkpolicy fails with "syntax error at token '{'" when LLM
             # wraps output in { ... } instead of raw .te statements.
+            # IMPORTANT: only strip standalone } not part of allow rule closing };
             if self.AGENT_TYPE == "selinux":
                 output = output.strip()
+                # Strip stray leading {
                 while output.startswith("{"):
                     output = output[1:].strip()
-                while output.endswith("}"):
-                    output = output[:-1].strip()
+                # Strip stray trailing } ONLY if standalone (not part of }; in allow rules)
+                # e.g. "allow x y:z { read write open };" must NOT be stripped
+                lines = output.splitlines()
+                while lines and lines[-1].strip() == "}":
+                    lines.pop()
+                output = "\n".join(lines)
 
             # ── Check for HIDL contamination in output ───────────
             hidl_found = self._has_hidl_contamination(output)

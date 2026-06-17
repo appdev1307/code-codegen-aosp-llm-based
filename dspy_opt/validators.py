@@ -373,11 +373,14 @@ def validate_selinux(policy: str) -> ValidatorResult:
     AOSP 14 AIDL patterns and rejects HIDL patterns.
     """
     # Strip stray leading/trailing braces — common LLM artifact
+    # IMPORTANT: only strip standalone } not part of allow rule closing };
     policy = policy.strip()
     while policy.startswith("{"):
         policy = policy[1:].strip()
-    while policy.endswith("}"):
-        policy = policy[:-1].strip()
+    lines = policy.splitlines()
+    while lines and lines[-1].strip() == "}":
+        lines.pop()
+    policy = "\n".join(lines)
 
     return _selinux_regex_fallback(policy)
 
