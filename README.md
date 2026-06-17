@@ -496,11 +496,11 @@ Incremental rebuild after cleanup is much faster than the initial full build
 **On Colab — upload outputs to GCS:**
 ```python
 import shutil
-shutil.make_archive("/content/output_c4", "zip",
+shutil.make_archive("/content/output_c4_feedback", "zip",
                     "/content/code-codegen-aosp-llm-based/output_c4_feedback")
 shutil.make_archive("/content/output_c5", "zip",
                     "/content/code-codegen-aosp-llm-based/output_c5")
-!gcloud storage cp /content/output_c4.zip gs://aosp-thesis-temp/
+!gcloud storage cp /content/output_c4_feedback.zip gs://aosp-thesis-temp/
 !gcloud storage cp /content/output_c5.zip gs://aosp-thesis-temp/
 !gcloud storage cp /content/code-codegen-aosp-llm-based/apply_aosp14_fixes.sh gs://aosp-thesis-temp/
 ```
