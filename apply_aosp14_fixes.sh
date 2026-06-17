@@ -77,7 +77,7 @@ COUNT=0
 for f in "$OUT"/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/*.aidl; do
     [ -f "$f" ] || continue
     cp "$f" "$AIDL_DIR/" && ok "AIDL: $(basename $f)"
-    ((COUNT++))
+    COUNT=$((COUNT + 1))
 done
 [ $COUNT -eq 0 ] && warn "No AIDL files found"
 
@@ -92,7 +92,7 @@ for f in "$OUT"/hardware/interfaces/automotive/vehicle/impl/*.cpp \
           "$OUT"/hardware/interfaces/automotive/vehicle/impl/*.h; do
     [ -f "$f" ] || continue
     cp "$f" "$VSS_DIR/" && ok "C++: $(basename $f)"
-    ((COUNT++))
+    COUNT=$((COUNT + 1))
 done
 [ $COUNT -eq 0 ] && warn "No C++ files found"
 
@@ -121,7 +121,7 @@ COUNT=0
 for f in "$OUT"/sepolicy/vehicle_hal_*.te; do
     [ -f "$f" ] || continue
     cp "$f" "$SEPOL_DEST/" && ok "SELinux: $(basename $f)"
-    ((COUNT++))
+    COUNT=$((COUNT + 1))
 done
 [ $COUNT -eq 0 ] && warn "No .te files found"
 
