@@ -46,6 +46,7 @@ gcloud compute instances create $VM_NAME \
   --boot-disk-size=$DISK_SIZE \
   --boot-disk-type=$DISK_TYPE \
   --network-interface=network=default,network-tier=PREMIUM \
+  --enable-nested-virtualization \
   --maintenance-policy=MIGRATE \
   --scopes=cloud-platform,storage-rw
 
@@ -70,5 +71,19 @@ echo "Your AOSP source tree should be fully available inside the VM."
 # echo "✅ Cleanup completed."
 
 # gcloud compute instances start aosp-builder-cutterfish --zone=us-east1-b
+
+NEW_ZONE="us-east1-b"
+# 1. Stop the instance
+gcloud compute instances stop aosp-builder-cutterfish --zone=$NEW_ZONE
+# 2. Enable nested virtualization
+gcloud compute instances update aosp-builder-cutterfish \
+  --enable-nested-virtualization \
+  --zone=$NEW_ZONE \
+  --min-cpu-platform="Intel Haswell"
+# 3. Start the instance again
+gcloud compute instances start aosp-builder-cutterfish --zone=$NEW_ZONE  
+
+# Example zone (common ones): us-central1-a, us-east1-b, asia-southeast1-a, etc.
+# Check your zone: gcloud compute instances describe aosp-builder-cutterfish --format='get(zone)'
 
 echo "=== Script finished ==="
