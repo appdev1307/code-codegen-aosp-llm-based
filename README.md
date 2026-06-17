@@ -569,6 +569,14 @@ restore_aosp   # full reset before applying new C3/C4 run
 # Apply all generated files (AIDL, C++, SELinux, VINTF, init.rc)
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
 
+# Clean VINTF cache
+m clean-vintf
+rm -rf out/target/product/vsoc_x86_64_only/system/etc/vintf/compatibility_matrix*
+rm -rf out/target/product/vsoc_x86_64_only/obj/PACKAGING/check_vintf*
+
+# Verify
+m check-vintf-all
+
 # Full image build — Soong auto-discovers aidl/impl/vss/Android.bp
 m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 ```
