@@ -69,4 +69,6 @@ echo "Your AOSP source tree should be fully available inside the VM."
 # gcloud compute snapshots delete $SNAPSHOT_NAME --quiet
 # echo "✅ Cleanup completed."
 
+# gcloud compute instances start aosp-builder-cutterfish --zone=us-east1-b
+
 echo "=== Script finished ==="
