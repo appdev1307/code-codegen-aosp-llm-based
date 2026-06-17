@@ -605,7 +605,7 @@ m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-launch_cvd --noresume --cpus=4 --memory_mb=4096
+launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader
 # Wait for: VIRTUAL_DEVICE_BOOT_COMPLETED
 ```
 
