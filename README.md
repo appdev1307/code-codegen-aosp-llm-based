@@ -502,7 +502,6 @@ shutil.make_archive("/content/output_c5", "zip",
                     "/content/code-codegen-aosp-llm-based/output_c5")
 !gcloud storage cp /content/output_c4_feedback.zip gs://aosp-thesis-temp/
 !gcloud storage cp /content/output_c5.zip gs://aosp-thesis-temp/
-!gcloud storage cp /content/code-codegen-aosp-llm-based/apply_aosp14_fixes.sh gs://aosp-thesis-temp/
 ```
 
 **On GCP VM:**
@@ -514,7 +513,6 @@ gcloud storage cp gs://aosp-thesis-temp/output_c4_feedback.zip ~/
 gcloud storage cp gs://aosp-thesis-temp/output_c5.zip ~/
 
 curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/apply_aosp14_fixes.sh
-chmod +x apply_aosp14_fixes.sh
 chmod +x ~/apply_aosp14_fixes.sh
 
 unzip ~/output_c4_feedback.zip -d ~/output_c4
