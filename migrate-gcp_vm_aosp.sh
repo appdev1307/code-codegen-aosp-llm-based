@@ -4,8 +4,7 @@
 # Migrated from us-central1-a to us-east1-b
 # Project: project-60b488c4-6afd-48d6-913
 # ================================================
-
-set -e  # Exit on error
+set -e # Exit on error
 
 echo "=== AOSP Builder Migration Script ==="
 
@@ -27,7 +26,7 @@ echo "2. Creating snapshot (if needed)..."
 if ! gcloud compute snapshots describe $SNAPSHOT_NAME >/dev/null 2>&1; then
   BOOT_DISK=$(gcloud compute instances describe $VM_NAME \
     --zone=$OLD_ZONE --format="value(disks[0].source.basename())")
-  
+ 
   echo "Creating snapshot from disk: $BOOT_DISK"
   gcloud compute disks snapshot $BOOT_DISK \
     --zone=$OLD_ZONE \
@@ -46,7 +45,6 @@ gcloud compute instances create $VM_NAME \
   --boot-disk-size=$DISK_SIZE \
   --boot-disk-type=$DISK_TYPE \
   --network-interface=network=default,network-tier=PREMIUM \
-  --enable-nested-virtualization \
   --maintenance-policy=MIGRATE \
   --scopes=cloud-platform,storage-rw
 
@@ -58,32 +56,53 @@ gcloud compute instances describe $VM_NAME \
   --zone=$NEW_ZONE \
   --format="table(name,zone,status,machineType,networkInterfaces[0].accessConfigs[0].natIP)"
 
+# ====================== 5. ENABLE NESTED VIRTUALIZATION (Critical for Cuttlefish) ======================
+echo ""
+echo "5. Enabling Nested Virtualization..."
+
+# Stop the instance
+echo "   Stopping instance..."
+gcloud compute instances stop $VM_NAME --zone=$NEW_ZONE
+
+# Export current config
+echo "   Exporting instance config..."
+gcloud compute instances export $VM_NAME --zone=$NEW_ZONE > nested_config.yaml
+
+# Add nested virtualization
+cat >> nested_config.yaml << EOF
+
+advancedMachineFeatures:
+  enableNestedVirtualization: true
+EOF
+
+echo "   Applying nested virtualization config..."
+gcloud compute instances update-from-file $VM_NAME \
+  --source=nested_config.yaml \
+  --most-disruptive-allowed-action=RESTART \
+  --zone=$NEW_ZONE
+
+# Start the instance
+echo "   Starting instance..."
+gcloud compute instances start $VM_NAME --zone=$NEW_ZONE
+
+echo "✅ Nested virtualization enabled successfully!"
+
+# ====================== 6. FINAL STATUS ======================
+echo ""
+echo "6. Final VM Status:"
+gcloud compute instances describe $VM_NAME \
+  --zone=$NEW_ZONE \
+  --format="table(name,zone,status,machineType,networkInterfaces[0].accessConfigs[0].natIP)"
+
 echo ""
 echo "=== How to access your VM ==="
 echo "gcloud compute ssh $VM_NAME --zone=$NEW_ZONE"
 echo ""
-echo "Your AOSP source tree should be fully available inside the VM."
-
-# ====================== 5. CLEANUP (Uncomment when ready) ======================
-# echo "5. Cleanup (old VM + snapshot)..."
-# gcloud compute instances delete $VM_NAME --zone=$OLD_ZONE --quiet
-# gcloud compute snapshots delete $SNAPSHOT_NAME --quiet
-# echo "✅ Cleanup completed."
-
-# gcloud compute instances start aosp-builder-cutterfish --zone=us-east1-b
-
-NEW_ZONE="us-east1-b"
-# 1. Stop the instance
-gcloud compute instances stop aosp-builder-cutterfish --zone=$NEW_ZONE
-# 2. Enable nested virtualization
-gcloud compute instances update aosp-builder-cutterfish \
-  --enable-nested-virtualization \
-  --zone=$NEW_ZONE \
-  --min-cpu-platform="Intel Haswell"
-# 3. Start the instance again
-gcloud compute instances start aosp-builder-cutterfish --zone=$NEW_ZONE  
-
-# Example zone (common ones): us-central1-a, us-east1-b, asia-southeast1-a, etc.
-# Check your zone: gcloud compute instances describe aosp-builder-cutterfish --format='get(zone)'
-
+echo "After SSH, run these to verify KVM:"
+echo "   ls -l /dev/kvm"
+echo "   grep -c -w 'vmx\|svm' /proc/cpuinfo"
+echo ""
+echo "Then launch Cuttlefish with:"
+echo "   launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader"
+echo ""
 echo "=== Script finished ==="
