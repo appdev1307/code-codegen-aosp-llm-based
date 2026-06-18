@@ -551,6 +551,7 @@ from schemas.yaml_loader import load_hal_spec_from_yaml_text
 from agents.module_planner_agent import plan_modules_from_spec
 from agents.promote_draft_agent import PromoteDraftAgent
 from agents.build_glue_agent import BuildGlueAgent, ImprovedBuildGlueAgent
+from agents.vss_glue_agent import VssGlueAgent
 from agents.vss_labelling_agent import VSSLabellingAgent, flatten_vss
 from tools.aosp_layout import ensure_aosp_layout
 
@@ -1212,6 +1213,19 @@ def main():
         run_metrics.append({
             "stage": "build_glue", "success": False, "error": str(e)})
         print(f"  [C4 SUPPORT] BuildGlue → FAILED: {e}")
+
+    # VssGlueAgent — deterministic Android 14 glue artifacts
+    # Runs AFTER domain agents — reads AIDL files to generate real property configs
+    print("  [C4 SUPPORT] VssGlue (Android 14 binding artifacts)...")
+    try:
+        vss_glue_dir = str(OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl/impl/vss")
+        aidl_dir = str(OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle")
+        VssGlueAgent().run(output_dir=vss_glue_dir, aidl_dir=aidl_dir)
+        print("  [C4 SUPPORT] VssGlue → OK")
+        run_metrics.append({"stage": "vss_glue", "success": True})
+    except Exception as e:
+        print(f"  [C4 SUPPORT] VssGlue → FAILED: {e}")
+        run_metrics.append({"stage": "vss_glue", "success": False, "error": str(e)})
 
     # ── 9. Save results ───────────────────────────────────────────
     t_total = round(time.time() - t_run_start, 1)

@@ -115,26 +115,49 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
 
     1. HEADER FILE (VssVehicleHardware.h) **MUST START EXACTLY** WITH:
        #include <IVehicleHardware.h>
-       #include <android/log.h>
+       #include <VehicleHalTypes.h>
        #include <android/binder_manager.h>
-       #include <android/binder_status.h>
+       #include <android/binder_process.h>
        #include <vector>
        #include <memory>
-       #include <string>
-       using namespace aidl::android::hardware::automotive::vehicle;
+       #include <functional>
 
-    2. The class MUST be: class VssVehicleHardware : public IVehicleHardware
-    3. Main service MUST use: DefaultVehicleHal + AServiceManager_addService
-    4. getValues and setValues MUST be asynchronous with callbacks
-    5. Output EXACTLY 4 clean files with correct structure
-    6. NEVER output markdown fences (no ```cpp), no extra explanation
+    2. NAMESPACE: android::hardware::automotive::vehicle (NOT aidl:: prefix)
 
-    FORBIDDEN (never output these):
-    - hidl_interface, @2.0, HIDL_FETCH_*, hidl/, libhidlbase, libhidltransport, BnVehicle, Return<>, .valueType
-    - #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>  (wrong path, use <IVehicleHardware.h>)
-    - #include <ndk/ScopedAStatus.h>  (wrong, use <android/binder_status.h>)
-    - #include <binder/AServiceManager.h>  (wrong, use <android/binder_manager.h>)
-    - aidlvhal:: prefix (use namespace directly via 'using namespace')
+    3. The class MUST be:
+       class VssVehicleHardware : public IVehicleHardware {
+       public:
+           std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
+           StatusCode getValues(std::shared_ptr<const GetValuesCallback> callback,
+                                const std::vector<GetValueRequest>& requests) const override;
+           StatusCode setValues(std::shared_ptr<const SetValuesCallback> callback,
+                                const std::vector<SetValueRequest>& requests) override;
+           StatusCode updateSampleRate(int32_t cookie, int32_t propId, float sampleRate) override;
+           StatusCode subscribe(const SubscribeOptions& options) override;
+           StatusCode unsubscribe(int32_t cookie, int32_t propId) override;
+           DumpResult dump(const std::vector<std::string>& options) override;
+           StatusCode checkHealth() override;
+           void registerOnPropertyChangeEvent(
+               std::unique_ptr<const PropertyChangeCallback> callback) override;
+           void registerOnPropertySetErrorEvent(
+               std::unique_ptr<const PropertySetErrorCallback> callback) override;
+       };
+
+    4. Main service (VehicleService{Domain}.cpp):
+       auto hw = std::make_unique<VssVehicleHardware>();
+       auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw));
+       AServiceManager_addService(vhal->asBinder().get(), instance.c_str());
+       ABinderProcess_joinThreadPool();
+
+    5. NEVER output markdown fences (no ```cpp), no extra explanation
+
+    FORBIDDEN (Android 13 types — do NOT use in Android 14):
+    - IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
+    - VssVehicleHardwareImpl — does not exist
+    - hidl_interface, @2.0, HIDL_FETCH_*, BnVehicle, Return<>, .valueType
+    - #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>
+    - #include <ndk/ScopedAStatus.h>
+    - aidlvhal:: namespace prefix
 
     Android.bp MUST be pure AIDL style only.
     """

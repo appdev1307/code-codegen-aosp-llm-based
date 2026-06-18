@@ -42,7 +42,14 @@ MAIN SERVICE (VehicleService{Domain}.cpp):
   const std::string instance = std::string(IVehicle::descriptor) + "/default";
   AServiceManager_addService(vhal->asBinder().get(), instance.c_str());
 
-MANDATORY signatures in header (no aidlvhal:: prefix — use namespace directly):
+MANDATORY signatures — Android 14 IVehicleHardware API (NOT Android 13):
+Android 14 uses function types defined in IVehicleHardware.h:
+  using GetValuesCallback = std::function<void(std::vector<GetValueResult>)>;
+  using SetValuesCallback = std::function<void(std::vector<SetValueResult>)>;
+  using PropertyChangeCallback = std::function<void(std::vector<VehiclePropValue>)>;
+  using PropertySetErrorCallback = std::function<void(std::vector<SetValueErrorEvent>)>;
+
+CORRECT Android 14 method signatures:
   std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
   StatusCode getValues(
       std::shared_ptr<const GetValuesCallback> callback,
@@ -50,6 +57,19 @@ MANDATORY signatures in header (no aidlvhal:: prefix — use namespace directly)
   StatusCode setValues(
       std::shared_ptr<const SetValuesCallback> callback,
       const std::vector<SetValueRequest>& requests) override;
+  StatusCode updateSampleRate(int32_t cookie, int32_t propId, float sampleRate) override;
+  StatusCode subscribe(const SubscribeOptions& options) override;
+  StatusCode unsubscribe(int32_t cookie, int32_t propId) override;
+  DumpResult dump(const std::vector<std::string>& options) override;
+  StatusCode checkHealth() override;
+  void registerOnPropertyChangeEvent(
+      std::unique_ptr<const PropertyChangeCallback> callback) override;
+  void registerOnPropertySetErrorEvent(
+      std::unique_ptr<const PropertySetErrorCallback> callback) override;
+
+FORBIDDEN Android 13 types (do NOT use):
+  IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
+  VssVehicleHardwareImpl — does not exist in Android 14
 
 FORBIDDEN:
   #include <hidl/>          — HIDL headers

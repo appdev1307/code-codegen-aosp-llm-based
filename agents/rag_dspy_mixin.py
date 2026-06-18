@@ -394,16 +394,34 @@ class RAGDSPyMixin:
             # wraps output in { ... } instead of raw .te statements.
             # IMPORTANT: only strip standalone } not part of allow rule closing };
             if self.AGENT_TYPE == "selinux":
+                import re as _re
                 output = output.strip()
-                # Strip stray leading {
+
+                # Fix 1: Strip stray leading {
                 while output.startswith("{"):
                     output = output[1:].strip()
-                # Strip stray trailing } ONLY if standalone (not part of }; in allow rules)
+
+                # Fix 2: Strip stray trailing } ONLY if standalone
                 # e.g. "allow x y:z { read write open };" must NOT be stripped
                 lines = output.splitlines()
                 while lines and lines[-1].strip() == "}":
                     lines.pop()
                 output = "\n".join(lines)
+
+                # Fix 3: Append }; if allow rule is truncated (missing closing brace)
+                # e.g. "allow x vndbinder_device:chr_file { read write open" → add " };"
+                if _re.search(r"\{\s*read.*open\s*$", output):
+                    output = output + " };"
+                    self._log("Fixed: appended }; to truncated allow rule")
+
+                # Fix 4: Add missing 'allow' keyword
+                # e.g. "body vndbinder_device:chr_file" → "allow body vndbinder_device:chr_file"
+                output = _re.sub(
+                    r"^(?!allow |type |init_daemon|hal_server|binder_|#)([a-z_]+) (vndbinder_device|binder_device)",
+                    r"allow \1 \2",
+                    output,
+                    flags=_re.MULTILINE,
+                )
 
             # ── Check for HIDL contamination in output ───────────
             hidl_found = self._has_hidl_contamination(output)
