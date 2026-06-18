@@ -244,17 +244,31 @@ class ValidatorFeedback:
             )
             return (False, msg, 0.3)
         except FileNotFoundError:
+            # checkpolicy not available on Colab — use regex fallback
+            # Macros (init_daemon_domain, hal_server_domain, binder_use, binder_call)
+            # are valid and do NOT end with semicolon — do not flag them
+            MACRO_PREFIXES = (
+                "init_daemon_domain", "hal_server_domain",
+                "binder_use", "binder_call", "hal_client_domain",
+                "net_domain", "typeattribute",
+            )
             issues = []
+            has_type = False
             for i, line in enumerate(code.splitlines(), 1):
-                line = line.strip()
-                if not line or line.startswith("#"):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
                     continue
-                if line.startswith(("type ", "allow ", "neverallow ")):
-                    if not line.endswith(";"):
-                        issues.append(f"Line {i}: missing semicolon: {line[:60]}")
+                if stripped.startswith("type "):
+                    has_type = True
+                # Only check semicolon for explicit statements, not macros
+                if stripped.startswith(("allow ", "neverallow ", "type ")):
+                    if not stripped.endswith(";"):
+                        issues.append(f"Line {i}: missing semicolon: {stripped[:60]}")
+            if not has_type:
+                issues.append("Missing type declaration")
             if issues:
                 return (False, "SELinux issues:\n" + "\n".join(issues[:5]), 0.5)
-            return (True, "", 0.8)
+            return (True, "", 1.0)
         except subprocess.TimeoutExpired:
             return (False, "checkpolicy timed out", 0.5)
 
