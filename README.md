@@ -586,14 +586,11 @@ adb devices
 # Expected: 0.0.0.0:6520  device
 
 # check VSS emulator
-grep "V3-vss-service" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt 2>/dev/null || echo "NOT IN VENDOR"
-
 stop_cvd
 launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
-adb -s 0.0.0.0:6520 shell ps -A | grep vss
-adb -s 0.0.0.0:6520 shell start vendor.vehicle-vss
-adb -s 0.0.0.0:6520 shell ps -A | grep vss
+adb -s 0.0.0.0:6520 shell ls /vendor/bin/hw/ | grep vss
+adb -s 0.0.0.0:6520 shell ls /vendor/etc/init/ | grep vehicle
 
 adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
 # Expected: Vehicle HAL backend: AIDL
