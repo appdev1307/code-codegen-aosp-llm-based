@@ -540,6 +540,14 @@ m check-vintf-all
 
 # Full image build — Soong auto-discovers aidl/impl/vss/Android.bp
 m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
+
+
+# Emulator for VSS
+# Rebuild vendor image
+m vendorimage -j$(nproc) 2>&1 | tail -5
+
+# Check installed files sau khi rebuild
+grep "V3-vss-service" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt
 ```
 
 `apply_aosp14_fixes.sh` does 4 things (all idempotent):
@@ -576,6 +584,16 @@ cd ~/aosp-14-auto && source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk
 
 adb devices
 # Expected: 0.0.0.0:6520  device
+
+# check VSS emulator
+grep "V3-vss-service" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt 2>/dev/null || echo "NOT IN VENDOR"
+
+stop_cvd
+launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
+adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
+adb -s 0.0.0.0:6520 shell ps -A | grep vss
+adb -s 0.0.0.0:6520 shell start vendor.vehicle-vss
+adb -s 0.0.0.0:6520 shell ps -A | grep vss
 
 adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
 # Expected: Vehicle HAL backend: AIDL
