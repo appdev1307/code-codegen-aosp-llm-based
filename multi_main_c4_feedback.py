@@ -755,11 +755,12 @@ def _generate_one_module(
 
             gen_kwargs = {
                 "domain": domain,
-                "properties": llm_spec,
                 "aosp_context": rag_context,
             }
             if agent_type == "selinux":
                 gen_kwargs["service_name"] = f"vendor.vss.{domain.lower()}"
+            else:
+                gen_kwargs["properties"] = llm_spec
 
             extra_files = None
             if agent_type == "cpp":
