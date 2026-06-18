@@ -543,10 +543,8 @@ m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 
 
 # Emulator for VSS
-# Rebuild vendor image
+rm -rf out/soong/
 m vendorimage -j$(nproc) 2>&1 | tail -5
-
-# Check installed files sau khi rebuild
 grep "V3-vss-service" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt
 ```
 

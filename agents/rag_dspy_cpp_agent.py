@@ -76,6 +76,7 @@ FORBIDDEN:
   #include <ndk/ScopedAStatus.h>  — wrong path, use <android/binder_status.h>
   #include <binder/AServiceManager.h>  — wrong, use <android/binder_manager.h>
   #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>  — wrong path, use <IVehicleHardware.h>
+  #include <aidl/android/hardware/automotive/vehicle/DefaultVehicleHal.h>  — wrong path, use <DefaultVehicleHal.h>
   HIDL_FETCH_* | Return<> | BnVehicle | BnIVehicle | .valueType | sync getValues
   aidlvhal:: prefix — use namespace directly via using namespace
 
