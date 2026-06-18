@@ -455,29 +455,6 @@ gcloud storage buckets add-iam-policy-binding gs://aosp-thesis-temp \
 # gsutil cp output_c5.zip gs://aosp-thesis-temp/
 ```
 
-### Step 4b — Reset AOSP Tree for Re-testing
-
-If you already applied a previous C3/C4 run and need to test a new one,
-restore the AOSP tree to its original state before applying new generated files.
-
-```bash
-cd ~/aosp-14-auto
-
-# Restore modified tracked files to AOSP originals
-cd hardware/interfaces && git checkout -- . && cd ~/aosp-14-auto
-cd system/sepolicy && git checkout -- . && cd ~/aosp-14-auto
-
-# Remove generated (untracked) files
-clean_hal
-
-# Verify clean state — should show no modified or untracked generated files
-cd hardware/interfaces && git status && cd ~/aosp-14-auto
-cd system/sepolicy && git status && cd ~/aosp-14-auto
-```
-
-Incremental rebuild after cleanup is much faster than the initial full build
-— only changed files recompile (~10-20 min vs several hours).
-
 ### Step 5 — Download and Build on GCP VM
 
 **On Colab — upload outputs to GCS:**
