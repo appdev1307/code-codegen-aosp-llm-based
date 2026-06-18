@@ -133,11 +133,17 @@ class RAGDSPyBackendAgent(RAGDSPyMixin):
             if getattr(p, "id", "") in prop_ids
         ]
 
+        # Cap at 60 props to avoid LLM truncation for large domains (CABIN 168, BODY 84)
+        # Models/simulators only need representative subset — not all 168 props
+        MAX_PROPS_FOR_BACKEND = 60
+        capped_props = module_props[:MAX_PROPS_FOR_BACKEND]
+        if len(module_props) > MAX_PROPS_FOR_BACKEND:
+            self._log(f"Large domain ({len(module_props)} props) — capping backend to {MAX_PROPS_FOR_BACKEND} props")
         prop_lines = "\n".join(
             f"- {getattr(p, 'id', '')} "
             f"({getattr(p, 'type', 'BOOLEAN')}, "
             f"{getattr(p, 'access', 'READ')})"
-            for p in module_props
+            for p in capped_props
         ) or "\n".join(f"- {n}" for n in signal_names[:10])
 
         # ── Pydantic models ─────────────────────────────────────

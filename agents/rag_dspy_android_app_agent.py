@@ -146,17 +146,59 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
         self._write_kotlin(domain, kt_content)
 
         # ── XML Layout ──────────────────────────────────────────
+        # Chunk properties to avoid LLM truncation for large domains
+        # (CABIN 168 props, BODY 84 props generate 17K+ char XML → unclosed tokens)
+        LAYOUT_CHUNK_SIZE = 30
         if self._layout_module is not None:
             layout_context = self._retrieve(
                 f"Android layout XML {domain} property TextView Switch SeekBar"
             )
             try:
-                result = self._layout_module(
-                    domain       = domain,
-                    properties   = prop_lines,
-                    aosp_context = layout_context,
-                )
-                layout_content = getattr(result, "layout_xml", "") or ""
+                if len(module_props) <= LAYOUT_CHUNK_SIZE:
+                    # Small domain — generate in one shot
+                    result = self._layout_module(
+                        domain       = domain,
+                        properties   = prop_lines,
+                        aosp_context = layout_context,
+                    )
+                    layout_content = getattr(result, "layout_xml", "") or ""
+                else:
+                    # Large domain — chunk and merge into single ScrollView
+                    self._log(f"Large layout ({len(module_props)} props) — chunking into {LAYOUT_CHUNK_SIZE}-prop batches")
+                    all_prop_list = prop_lines.splitlines()
+                    chunks = [all_prop_list[i:i+LAYOUT_CHUNK_SIZE]
+                              for i in range(0, len(all_prop_list), LAYOUT_CHUNK_SIZE)]
+                    inner_views = []
+                    for i, chunk in enumerate(chunks):
+                        chunk_spec = "\n".join(chunk)
+                        chunk_result = self._layout_module(
+                            domain       = f"{domain}_chunk{i+1}of{len(chunks)}",
+                            properties   = chunk_spec,
+                            aosp_context = layout_context,
+                        )
+                        chunk_xml = getattr(chunk_result, "layout_xml", "") or ""
+                        # Extract inner views (strip root element wrapper)
+                        import re as _re
+                        # Find content between root element tags
+                        inner = _re.sub(r"^<\?xml[^>]*>\s*", "", chunk_xml.strip())
+                        inner = _re.sub(r"^<[A-Za-z]+[^>]*>\s*", "", inner)
+                        inner = _re.sub(r"\s*</[A-Za-z]+>\s*$", "", inner)
+                        inner_views.append(inner.strip())
+                        self._log(f"  Layout chunk {i+1}: {len(chunk)} props")
+                    # Wrap all chunks in a single ScrollView
+                    layout_content = (
+                        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                        "<ScrollView xmlns:android=\"http://schemas.android.com/apk/res/android\"\n"
+                        "    android:layout_width=\"match_parent\"\n"
+                        "    android:layout_height=\"match_parent\">\n"
+                        "<LinearLayout\n"
+                        "    android:layout_width=\"match_parent\"\n"
+                        "    android:layout_height=\"wrap_content\"\n"
+                        "    android:orientation=\"vertical\">\n"
+                        + "\n".join(inner_views) + "\n"
+                        "</LinearLayout>\n"
+                        "</ScrollView>"
+                    )
                 self._write_layout(domain, layout_content)
             except Exception as e:
                 self._log(f"Layout generation failed for {domain}: {e}")
