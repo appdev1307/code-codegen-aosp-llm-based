@@ -90,26 +90,26 @@ def _generate_vss_hardware_h() -> str:
 
 namespace android::hardware::automotive::vehicle {
 
+namespace aidlvhal = ::aidl::android::hardware::automotive::vehicle;
+
 class VssVehicleHardware : public IVehicleHardware {
 public:
     ~VssVehicleHardware() override = default;
 
     // Returns configs for all 500 VSS properties across 7 domains.
-    std::vector<aidl::android::hardware::automotive::vehicle::VehiclePropConfig>
+    std::vector<aidlvhal::VehiclePropConfig>
             getAllPropertyConfigs() const override;
 
-    aidl::android::hardware::automotive::vehicle::StatusCode setValues(
+    aidlvhal::StatusCode setValues(
             std::shared_ptr<const SetValuesCallback> callback,
-            const std::vector<aidl::android::hardware::automotive::vehicle::SetValueRequest>&
-                    requests) override;
+            const std::vector<aidlvhal::SetValueRequest>& requests) override;
 
-    aidl::android::hardware::automotive::vehicle::StatusCode getValues(
+    aidlvhal::StatusCode getValues(
             std::shared_ptr<const GetValuesCallback> callback,
-            const std::vector<aidl::android::hardware::automotive::vehicle::GetValueRequest>&
-                    requests) const override;
+            const std::vector<aidlvhal::GetValueRequest>& requests) const override;
 
     DumpResult dump(const std::vector<std::string>& options) override;
-    aidl::android::hardware::automotive::vehicle::StatusCode checkHealth() override;
+    aidlvhal::StatusCode checkHealth() override;
     void registerOnPropertyChangeEvent(
             std::unique_ptr<const PropertyChangeCallback> callback) override;
     void registerOnPropertySetErrorEvent(

@@ -149,12 +149,14 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
         # Chunk properties to avoid LLM truncation for large domains
         # (CABIN 168 props, BODY 84 props generate 17K+ char XML → unclosed tokens)
         LAYOUT_CHUNK_SIZE = 30
+        # Use signal_names as fallback if module_props is empty (property objects missing .id)
+        layout_props_count = len(module_props) if module_props else len(signal_names)
         if self._layout_module is not None:
             layout_context = self._retrieve(
                 f"Android layout XML {domain} property TextView Switch SeekBar"
             )
             try:
-                if len(module_props) <= LAYOUT_CHUNK_SIZE:
+                if layout_props_count <= LAYOUT_CHUNK_SIZE:
                     # Small domain — generate in one shot
                     result = self._layout_module(
                         domain       = domain,
@@ -164,7 +166,7 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
                     layout_content = getattr(result, "layout_xml", "") or ""
                 else:
                     # Large domain — chunk and merge into single ScrollView
-                    self._log(f"Large layout ({len(module_props)} props) — chunking into {LAYOUT_CHUNK_SIZE}-prop batches")
+                    self._log(f"Large layout ({layout_props_count} props) — chunking into {LAYOUT_CHUNK_SIZE}-prop batches")
                     all_prop_list = prop_lines.splitlines()
                     chunks = [all_prop_list[i:i+LAYOUT_CHUNK_SIZE]
                               for i in range(0, len(all_prop_list), LAYOUT_CHUNK_SIZE)]
