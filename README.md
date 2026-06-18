@@ -513,10 +513,6 @@ restore_aosp() {
 }
 ```
 
-> **Warning:** Do not clone `aosp_source/` inside the AOSP build tree.
-> Soong picks up duplicate `Android.bp` files and fails with "module already defined".
-> If this happens: `mv ~/aosp-14-auto/aosp_source ~/aosp_source_rag`
-
 ### Step 6 — Apply Generated Files and Full Build
 
 `apply_aosp14_fixes.sh` handles all integration — copy-only, no patching.
