@@ -683,8 +683,22 @@ def validate_layout_xml(xml_str: str) -> ValidatorResult:
             1,
         )
 
+    # Pre-process XML to handle chunked ScrollView output
+    # Chunked layouts may have trailing incomplete tags or extra content after root
+    import re as _re
+    xml_to_parse = _re.sub(r'<\?xml[^>]*\?>\s*', '', xml_str).strip()
+    # Remove trailing incomplete tag
+    xml_to_parse = _re.sub(r'</?[A-Za-z][^>]*$', '', xml_to_parse).strip()
+    # Truncate at last complete root closing tag
+    for root_tag in ['ScrollView', 'LinearLayout', 'FrameLayout', 'RelativeLayout', 'ConstraintLayout']:
+        close_tag = f'</{root_tag}>'
+        if close_tag in xml_to_parse:
+            last_idx = xml_to_parse.rfind(close_tag)
+            xml_to_parse = xml_to_parse[:last_idx + len(close_tag)]
+            break
+
     try:
-        root = ET.fromstring(xml_str)
+        root = ET.fromstring(xml_to_parse)
         score += 0.35
     except ET.ParseError as e:
         return ValidatorResult(ok=False, score=0.1,
