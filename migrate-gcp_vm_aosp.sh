@@ -60,6 +60,8 @@ gcloud compute instances describe $VM_NAME \
 echo ""
 echo "5. Enabling Nested Virtualization..."
 
+gcloud compute instances start $VM_NAME --zone=$NEW_ZONE
+
 # Stop the instance
 echo "   Stopping instance..."
 gcloud compute instances stop $VM_NAME --zone=$NEW_ZONE
