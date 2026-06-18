@@ -296,19 +296,6 @@ after C4, with no dependency on the Android Build step.
 
 ### C5 Run on Colab
 
-```bash
-# Ensure C4 ran successfully and output_c4_feedback/ exists
-ls output_c4_feedback/SPEC_FROM_VSS_*.yaml   # should show the C4 YAML spec
-ls output/MODULE_PLAN.json                    # or output_c4_feedback/MODULE_PLAN.json
-
-# Run C5 — reads C4 outputs automatically
-python multi_main_c5.py
-```
-
-C5 scoring: `overall = vts_score * 0.60 + hmi_score * 0.40`. Reported separately from C1-C4.
-
----
-
 ## AOSP Source Tree Validation
 
 Full build validation of generated HAL code against a real Android 14 AOSP source
@@ -568,6 +555,7 @@ restore_aosp   # full reset before applying new C3/C4 run
 
 # Apply all generated files (AIDL, C++, SELinux, VINTF, init.rc)
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
+m android.hardware.automotive.vehicle-update-api
 
 # Clean VINTF cache
 m clean-vintf
