@@ -408,11 +408,15 @@ class RAGDSPyMixin:
                     lines.pop()
                 output = "\n".join(lines)
 
-                # Fix 3: Append }; if allow rule is truncated (missing closing brace)
-                # e.g. "allow x vndbinder_device:chr_file { read write open" → add " };"
+                # Fix 3: Fix allow rule missing }; at end
+                # Case A: "allow x y:z { read write open" → add " };"
                 if _re.search(r"\{\s*read.*open\s*$", output):
                     output = output + " };"
                     self._log("Fixed: appended }; to truncated allow rule")
+                # Case B: "allow x y:z { read write open }" → add ";"
+                elif _re.search(r"\{\s*read.*open\s*}\s*$", output) and not output.rstrip().endswith("};"):
+                    output = output.rstrip() + ";"
+                    self._log("Fixed: appended ; to allow rule missing semicolon")
 
                 # Fix 4: Add missing 'allow' keyword
                 # e.g. "body vndbinder_device:chr_file" → "allow body vndbinder_device:chr_file"
