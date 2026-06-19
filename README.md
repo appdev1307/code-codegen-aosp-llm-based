@@ -524,34 +524,35 @@ cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-restore_aosp   # full reset before applying new C3/C4 run
+# Full reset (nếu cần)
+restore_aosp
 
-# Apply all generated files (AIDL, C++, SELinux, VINTF, init.rc)
+# Apply fixes
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
+
+# Rebuild VSS module (quan trọng)
+mmm hardware/interfaces/automotive/vehicle/aidl/impl/vss -j$(nproc)
+
+# Update API (nếu thay đổi AIDL)
 m android.hardware.automotive.vehicle-update-api
 
 # Clean VINTF cache
 m clean-vintf
-rm -rf out/target/product/vsoc_x86_64_only/system/etc/vintf/compatibility_matrix*
+rm -rf out/target/product/vsoc_x86_64_only/vendor/etc/vintf/manifest/android.hardware.automotive.vehicle@V3-vss-service.xml
 rm -rf out/target/product/vsoc_x86_64_only/obj/PACKAGING/check_vintf*
 
-# Verify
+# Verify VINTF
 m check-vintf-all
 
-# Full image build — Soong auto-discovers aidl/impl/vss/Android.bp
-m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
+# Build vendor image (nhanh hơn full build)
+m vendorimage -j$(nproc) 2>&1 | tail -20
 
+# Kiểm tra
+echo "=== Check VSS VHAL ==="
+grep -E "V3-vss-service|vehicle-vss" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt || echo "Not found in installed-files"
 
-# Emulator for VSS
-rm -rf out/soong/
-source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-m vendorimage -j$(nproc) 2>&1 | tail -5
-
-# if not work, run the below
-m -j$(nproc) 2>&1 | tee ~/build_full.log
-
-grep "V3-vss-service" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt
+adb root
+adb reboot
 ```
 
 `apply_aosp14_fixes.sh` does 4 things (all idempotent):
