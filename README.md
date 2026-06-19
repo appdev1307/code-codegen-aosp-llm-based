@@ -599,8 +599,14 @@ adb -s 0.0.0.0:6520 shell ls /vendor/etc/init/ | grep vehicle
 adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
 # Expected: Vehicle HAL backend: AIDL
 
-adb -s 0.0.0.0:6520 shell cmd car_service get-property-value PERF_VEHICLE_SPEED
-# Expected: HalPropValue{..., Value: 0.0 METER_PER_SEC}
+# List all properties
+adb -s 0.0.0.0:6520 shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list
+
+# Get a specific property (example)
+adb -s 0.0.0.0:6520 shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --get PERF_VEHICLE_SPEED
+
+# Set a property (if writable)
+adb -s 0.0.0.0:6520 shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --set HVAC_POWER_ON 0 1 true
 
 adb -s 0.0.0.0:6520 shell getenforce
 # Expected: Enforcing
