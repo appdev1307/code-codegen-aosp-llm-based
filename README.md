@@ -544,7 +544,13 @@ m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 
 # Emulator for VSS
 rm -rf out/soong/
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 m vendorimage -j$(nproc) 2>&1 | tail -5
+
+# if not work, run the below
+m -j$(nproc) 2>&1 | tee ~/build_full.log
+
 grep "V3-vss-service" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt
 ```
 
