@@ -185,6 +185,20 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
                         inner = _re.sub(r"^<\?xml[^>]*>\s*", "", chunk_xml.strip())
                         inner = _re.sub(r"^<[A-Za-z]+[^>]*>\s*", "", inner)
                         inner = _re.sub(r"\s*</[A-Za-z]+>\s*$", "", inner)
+                        # Strip trailing incomplete element at chunk boundary
+                        # e.g. "android:layout_height=\"" cut mid-attribute
+                        inner = inner.strip()
+                        last_close = max(
+                            (inner.rfind(f'</{t}>')
+                             for t in ['TextView', 'Switch', 'SeekBar', 'Button',
+                                       'EditText', 'CheckBox', 'RadioButton',
+                                       'LinearLayout', 'ConstraintLayout', 'FrameLayout',
+                                       'RelativeLayout', 'CardView', 'ImageView']),
+                            default=-1
+                        )
+                        if last_close > 0:
+                            end_idx = inner.find('>', last_close) + 1
+                            inner = inner[:end_idx]
                         inner_views.append(inner.strip())
                         self._log(f"  Layout chunk {i+1}: {len(chunk)} props")
                     # Wrap all chunks in a single ScrollView
