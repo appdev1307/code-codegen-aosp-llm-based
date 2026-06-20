@@ -1,122 +1,81 @@
 #!/bin/bash
-# update_vss_selinux.sh
-# Thêm SELinux policy cho VSS VHAL vào device tree của Cuttlefish (KHÔNG sửa core sepolicy).
-# Idempotent: chạy nhiều lần không tạo dòng trùng.
-#
-# Cách dùng:
-#   source build/envsetup.sh && lunch aosp_cf_x86_64_auto-userdebug   # (hoặc target của bạn)
-#   ./update_vss_selinux.sh            # build policy + vendorimage rồi relaunch
-#   ./update_vss_selinux.sh --no-build # chỉ ghi policy, không build
-#   ./update_vss_selinux.sh --permissive   # thêm 'permissive' để gom denial khi debug
+# post_boot_check.sh
+# Chạy trên HOST sau khi Cuttlefish boot xong. Verify VSS VHAL lên đúng.
+# Usage: ./post_boot_check.sh
 
-set -euo pipefail
+set -uo pipefail
 
-# ---- Cấu hình -------------------------------------------------------------
-# Đổi VHAL_BINARY cho khớp module name trong Android.bp của bạn.
-VHAL_BINARY='android\.hardware\.automotive\.vehicle@V3-vss-service'
-DO_BUILD=1
-PERMISSIVE=0
+BIN="/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service"
+EXPECT_LABEL="u:object_r:hal_vehicle_vss_exec:s0"
+IFACE="android.hardware.automotive.vehicle.IVehicle/default"
 
-for arg in "$@"; do
-  case "$arg" in
-    --no-build)   DO_BUILD=0 ;;
-    --permissive) PERMISSIVE=1 ;;
-    *) echo "Unknown arg: $arg"; exit 1 ;;
-  esac
-done
+pass() { printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
+fail() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; }
+info() { printf "  ----  %s\n" "$1"; }
 
-# ---- Xác định AOSP root ---------------------------------------------------
-AOSP_ROOT="${ANDROID_BUILD_TOP:-$(pwd)}"
-if [ ! -d "$AOSP_ROOT/build/soong" ]; then
-  echo "ERROR: Không thấy AOSP root. Hãy 'source build/envsetup.sh && lunch ...' trước." >&2
-  exit 1
-fi
-
-# Sepolicy dir của Cuttlefish (device tree, KHÔNG phải system/sepolicy/vendor).
-SEPOL="$AOSP_ROOT/device/google/cuttlefish/shared/sepolicy/vendor"
-if [ ! -d "$SEPOL" ]; then
-  echo "ERROR: Không thấy $SEPOL" >&2
-  echo "       Kiểm tra lại path device tree, hoặc dùng dir đã khai trong BOARD_VENDOR_SEPOLICY_DIRS." >&2
-  exit 1
-fi
-
-TE_FILE="$SEPOL/hal_vehicle_vss.te"
-FC_FILE="$SEPOL/file_contexts"
-
-echo "AOSP_ROOT = $AOSP_ROOT"
-echo "SEPOL     = $SEPOL"
+# Đợi device sẵn sàng
+echo "==> Chờ adb device..."
+adb wait-for-device
+adb shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 1; done'
 echo ""
 
-# ---- Helper: append nếu chưa có (idempotent) ------------------------------
-append_once() {
-  local line="$1" file="$2"
-  touch "$file"
-  if grep -qF -- "$line" "$file"; then
-    echo "  [skip] đã có trong $(basename "$file")"
-  else
-    echo "$line" >> "$file"
-    echo "  [add ] $(basename "$file")"
-  fi
-}
-
-# ---- 1. hal_vehicle_vss.te ------------------------------------------------
-# Ghi đè cả file (file này do mình quản lý nên ghi đè là an toàn & idempotent).
-echo "[1/3] Ghi $TE_FILE"
-PERMISSIVE_LINE=""
-[ "$PERMISSIVE" -eq 1 ] && PERMISSIVE_LINE="permissive hal_vehicle_vss;"
-
-cat > "$TE_FILE" << EOF
-type hal_vehicle_vss, domain;
-type hal_vehicle_vss_exec, exec_type, vendor_file_type, file_type;
-
-init_daemon_domain(hal_vehicle_vss)
-hal_server_domain(hal_vehicle_vss, hal_vehicle)
-
-allow hal_vehicle_vss self:process { fork sigchld };
-allow hal_vehicle_vss hal_vehicle_default:process signal;
-
-# VSS service đăng ký dưới IVehicle/default -> dùng vehicle_service có sẵn.
-# KHÔNG khai service type mới, KHÔNG sửa service_contexts (tránh trùng nhãn).
-allow hal_vehicle_vss vehicle_service:service_manager add;
-
-allow hal_vehicle_vss vendor_configs_file:dir search;
-allow hal_vehicle_vss vendor_configs_file:file { read getattr open };
-${PERMISSIVE_LINE}
-EOF
-[ "$PERMISSIVE" -eq 1 ] && echo "  [warn] PERMISSIVE bật — chỉ dùng để debug, nhớ tắt trước khi chốt."
-
-# ---- 2. file_contexts (idempotent) ---------------------------------------
-echo "[2/3] Cập nhật file_contexts"
-append_once "/vendor/bin/hw/${VHAL_BINARY} u:object_r:hal_vehicle_vss_exec:s0" "$FC_FILE"
-
-# ---- 3. service_contexts: CỐ TÌNH BỎ QUA ---------------------------------
-echo "[3/3] service_contexts: bỏ qua (dùng vehicle_service sẵn có cho IVehicle/default)"
-
-echo ""
-echo "Nhắc: .rc của service cần 'class early_hal' và đúng nhãn exec để init transition vào domain."
-echo ""
-
-# ---- Build + relaunch -----------------------------------------------------
-if [ "$DO_BUILD" -eq 0 ]; then
-  echo "Done (--no-build). Tự build & relaunch khi sẵn sàng."
-  exit 0
-fi
-
-echo "==> Building selinux_policy + vendorimage..."
-( cd "$AOSP_ROOT" && m selinux_policy vendorimage )
-
-echo "==> Relaunch Cuttlefish (boot lại từ image mới)..."
-if command -v cvd >/dev/null 2>&1; then
-  cvd reset -y || true
-  launch_cvd --daemon
-elif command -v stop_cvd >/dev/null 2>&1; then
-  stop_cvd || true
-  launch_cvd --daemon
+# 1. SELinux label trên binary -------------------------------------------
+echo "[1] SELinux label của binary"
+LABEL=$(adb shell ls -Z "$BIN" 2>/dev/null | awk '{print $1}')
+if [ "$LABEL" = "$EXPECT_LABEL" ]; then
+  pass "label = $LABEL"
 else
-  echo "  [warn] Không thấy cvd/stop_cvd trong PATH. Tự chạy: stop_cvd && launch_cvd --daemon"
+  fail "label = ${LABEL:-<không thấy file>}  (kỳ vọng $EXPECT_LABEL)"
+  info "=> file_contexts regex không khớp tên binary; init_daemon_domain sẽ không transition."
 fi
-
 echo ""
-echo "Xong. Sau khi boot, gom denial:"
-echo "  adb logcat -b all | grep -i avc"
-echo "  # hoặc: adb shell 'dmesg | grep avc' rồi audit2allow"
+
+# 2. Domain của process đang chạy ----------------------------------------
+echo "[2] Process có chạy trong domain hal_vehicle_vss không"
+PS=$(adb shell ps -AZ 2>/dev/null | grep 'vehicle@V3-vss-service' || true)
+if [ -n "$PS" ]; then
+  if echo "$PS" | grep -q 'hal_vehicle_vss'; then
+    pass "process trong domain hal_vehicle_vss"
+  else
+    fail "process chạy nhưng SAI domain:"
+    echo "$PS" | sed 's/^/        /'
+  fi
+else
+  fail "không thấy process -> service chưa start (xem mục 4 & 5)"
+fi
+echo ""
+
+# 3. Service đã đăng ký với servicemanager --------------------------------
+echo "[3] Service registration ($IFACE)"
+LSHAL=$(adb shell lshal 2>/dev/null | grep -i 'vehicle' | grep -i 'IVehicle/default' || true)
+if [ -n "$LSHAL" ]; then
+  pass "lshal thấy IVehicle/default"
+  echo "$LSHAL" | sed 's/^/        /'
+else
+  fail "lshal KHÔNG thấy IVehicle/default -> addService thất bại (thường do AVC deny)"
+fi
+echo ""
+
+# 4. CarService nhận được VHAL -------------------------------------------
+echo "[4] CarService"
+CAR=$(adb shell dumpsys car_service 2>/dev/null | head -n 5 || true)
+if [ -n "$CAR" ]; then
+  pass "car_service phản hồi"
+else
+  info "car_service chưa sẵn sàng (có thể đang khởi động, thử lại sau vài giây)"
+fi
+echo ""
+
+# 5. AVC denials ----------------------------------------------------------
+echo "[5] SELinux denials liên quan"
+AVC=$(adb shell 'dmesg' 2>/dev/null | grep -i 'avc:' | grep -iE 'hal_vehicle_vss|vss-service' || true)
+if [ -z "$AVC" ]; then
+  pass "không có denial cho hal_vehicle_vss"
+else
+  fail "có denial — service có thể bị chặn:"
+  echo "$AVC" | sed 's/^/        /'
+  info "=> audit2allow các dòng trên, fold vào hal_vehicle_vss.te rồi rebuild."
+fi
+echo ""
+
+echo "==> Xong. Nếu mục 1-3 PASS là service đã lên đúng domain và registration."
