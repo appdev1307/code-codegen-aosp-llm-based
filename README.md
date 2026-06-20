@@ -583,6 +583,10 @@ launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --d
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
 
 adb -s 0.0.0.0:6520 root
+adb disable-verity
+adb reboot
+adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
+
 adb -s 0.0.0.0:6520 remount
 adb shell "mount -o remount,rw /vendor"
 
@@ -597,16 +601,8 @@ adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.auto
 # 3. Kiểm tra
 adb shell ls -l /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
 
-# 4. Chcon
+# 4. # Set SELinux label for VSS binary
 adb shell chcon u:object_r:hal_vehicle_vss_exec:s0 /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
-
-# 5. Reboot
-adb reboot
-adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
-
-# Set SELinux label for VSS binary
-adb -s 0.0.0.0:6520 shell chcon u:object_r:hal_vehicle_vss_exec:s0 \
-    /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
 
 # Start VSS VHAL service
 adb -s 0.0.0.0:6520 shell start vendor.vehicle-vss
