@@ -133,6 +133,24 @@ if [ -f "$OUT/sepolicy/private/file_contexts" ]; then
 fi
 
 # Add SELinux label for VSS binary
+# Add SELinux type + domain for VSS service
+VSS_TE="$SEPOL_DEST/vehicle_hal_vss.te"
+if [ ! -f "$VSS_TE" ]; then
+    cat > "$VSS_TE" << 'SEEOF'
+type hal_vehicle_vss, domain;
+type hal_vehicle_vss_exec, exec_type, vendor_file_type, file_type;
+init_daemon_domain(hal_vehicle_vss)
+hal_server_domain(hal_vehicle_vss, hal_vehicle)
+binder_use(hal_vehicle_vss)
+binder_call(hal_vehicle_vss, system_server)
+binder_call(system_server, hal_vehicle_vss)
+allow hal_vehicle_vss vndbinder_device:chr_file { read write open };
+SEEOF
+    ok "SELinux policy for hal_vehicle_vss created"
+else
+    ok "SELinux policy for hal_vehicle_vss already present"
+fi
+
 FC_VSS="$SEPOL_DEST/file_contexts_vss"
 VSS_BINARY_LABEL="/vendor/bin/hw/android\\.hardware\\.automotive\\.vehicle@V3-vss-service u:object_r:hal_vehicle_vss_exec:s0"
 if ! grep -qF "V3-vss-service" "$FC_VSS" 2>/dev/null; then
