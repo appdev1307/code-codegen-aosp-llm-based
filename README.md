@@ -668,34 +668,24 @@ adb -s 0.0.0.0:6520 shell lshal | grep automotive.vehicle
 #### 8c — Run VTS
 
 ```bash
-# Push VTS binary to device
-adb -s 0.0.0.0:6520 push \
-    out/target/product/vsoc_x86_64_only/data/nativetest64/vendor/VtsHalAutomotiveVehicleVss \
-    /data/local/tmp/
-adb -s 0.0.0.0:6520 shell chmod +x /data/local/tmp/VtsHalAutomotiveVehicleVss
+# 8c — Copy VTS vào AOSP tree và build
+cp -r ~/output_c5/vts/ ~/aosp-14-auto/test/vts/vss_vehicle/
+cd ~/aosp-14-auto
+mmm test/vts/vss_vehicle/ 2>&1 | tail -5
 
-# Run tests (4 tests expected to pass)
-adb -s 0.0.0.0:6520 shell /data/local/tmp/VtsHalAutomotiveVehicleVss
-# Expected: ServiceAvailable, VssPropertiesRegistered, AllIdsUnique, AllIdsWellFormed
-
-# Or via atest
-cd ~/aosp-14-auto && source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+# Run VTS
 atest VtsHalAutomotiveVehicleVss -- --serial 0.0.0.0:6520
 ```
 
 #### 8d — Install and verify HMI app
 
 ```bash
-mkdir -p packages/apps/VssDashboard
-cp -r ~/output_c5/hmi_app/src \
-      ~/output_c5/hmi_app/AndroidManifest.xml \
-      ~/output_c5/hmi_app/Android.bp \
-      packages/apps/VssDashboard/
-mmm packages/apps/VssDashboard
-
-adb -s 0.0.0.0:6520 install -r \
-  out/target/product/vsoc_x86_64/system/app/VssDashboardApp/VssDashboardApp.apk
-adb -s 0.0.0.0:6520 shell am start -n com.vss.vehicleapp/.MainActivity
+# 8d — HMI app (không có Android.bp trong hmi_app/)
+# Cần copy vào packages/apps/ với Android.bp
+mkdir -p ~/aosp-14-auto/packages/apps/VssDashboard/src/main/java/com/vss/vehicleapp/fragments/
+mkdir -p ~/aosp-14-auto/packages/apps/VssDashboard/src/main/res/layout/
+cp -r ~/output_c5/hmi_app/src ~/aosp-14-auto/packages/apps/VssDashboard/
+# Cần tạo Android.bp cho HMI app
 ```
 
 ### Step 9 — Clean Up
