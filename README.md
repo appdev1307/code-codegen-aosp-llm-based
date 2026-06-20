@@ -542,13 +542,15 @@ m clean-vintf
 rm -rf out/target/product/vsoc_x86_64_only/vendor/etc/vintf/manifest/android.hardware.automotive.vehicle@V3-vss-service.xml
 
 # Build vendor
-m vendorimage -j$(nproc) 2>&1 | tail -30
+m selinux_policy vendorimage superimage vbmetaimage
+rm -f ~/cuttlefish/instances/cvd-1/vbmeta.img
 
 # Kiểm tra
 echo "=== Check VSS VHAL ==="
 grep -E "V3-vss-service|vehicle-vss" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt || echo "Not found"
 
 # Push + Mount + Reboot
+cvd reset -y && launch_cvd --daemon
 adb root
 adb shell "mount -o remount,rw /vendor"   # ← quan trọng
 adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
