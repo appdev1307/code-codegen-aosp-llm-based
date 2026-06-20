@@ -620,10 +620,6 @@ This step builds the C5 VTS test, deploys on Cuttlefish, and runs validation.
 #### 8a — Build VTS Test (C5 output)
 
 ```bash
-cd ~/aosp-14-auto
-source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
-
 # Copy C5 VTS test into AOSP tree
 rm -rf test/vts/vss_vehicle
 mkdir -p test/vts/vss_vehicle
@@ -632,60 +628,77 @@ cp ~/output_c5/vts/VtsHalAutomotiveVehicleVss.cpp \
    ~/output_c5/vts/Android.bp \
    test/vts/vss_vehicle/
 
-# Ensure NDK version matches (V3 for AOSP 14 Cuttlefish)
+# Ensure NDK version matches (V3 for AOSP 14)
 grep "automotive.vehicle-V" test/vts/vss_vehicle/Android.bp
-# If it shows V4, fix it:
-sed -i 's/automotive.vehicle-V4-ndk/automotive.vehicle-V3-ndk/' \
-  test/vts/vss_vehicle/Android.bp
+sed -i 's/automotive.vehicle-V[0-9]*-ndk/automotive.vehicle-V3-ndk/' \
+    test/vts/vss_vehicle/Android.bp
 
-mmm test/vts/vss_vehicle
+# Build VTS
+mmm test/vts/vss_vehicle 2>&1 | tail -5
+
+# Verify binary built
+find out/target/product/vsoc_x86_64_only -name "VtsHalAutomotiveVehicleVss" 2>/dev/null
 ```
 
 #### 8b — Deploy VssVehicleHardware on Cuttlefish
 
 ```bash
-# Cuttlefish must be running (Step 7)
-adb -s 0.0.0.0:6520 root && adb -s 0.0.0.0:6520 remount
+adb -s 0.0.0.0:6520 root
+adb -s 0.0.0.0:6520 remount
 
-# Push VssVehicleHardware binary (built into full image in Step 6)
-adb -s 0.0.0.0:6520 push \
-    out/target/product/vsoc_x86_64_only/vendor/bin/hw/VssVehicleHardware \
-    /vendor/bin/hw/
+# Stop default emulator VHAL
+adb -s 0.0.0.0:6520 shell stop vendor.vehicle-hal-emulator
 
-# Stop stock VHAL — only one service can own IVehicle/default
-adb -s 0.0.0.0:6520 shell stop vendor.vehicle-default
-# Verify stopped:
-adb -s 0.0.0.0:6520 shell "ps -A | grep -i vehicle"
+# Set SELinux label for VSS binary
+adb -s 0.0.0.0:6520 shell chcon u:object_r:hal_vehicle_vss_exec:s0 \
+    /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
 
-# Start VssVehicleHardware
-adb -s 0.0.0.0:6520 shell /vendor/bin/hw/VssVehicleHardware &
+# Start VSS VHAL service
+adb -s 0.0.0.0:6520 shell start vendor.vehicle-vss
 
-# Confirm it registered
-adb -s 0.0.0.0:6520 shell lshal | grep automotive.vehicle
-# Expected: android.hardware.automotive.vehicle.IVehicle/default
+# Verify running
+adb -s 0.0.0.0:6520 shell ps -A | grep vss
+
+# Verify registered with ServiceManager
+adb -s 0.0.0.0:6520 shell service list | grep automotive.vehicle
+
+# Check VHAL backend
+adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
 ```
 
 #### 8c — Run VTS
 
 ```bash
-# 8c — Copy VTS vào AOSP tree và build
-cp -r ~/output_c5/vts/ ~/aosp-14-auto/test/vts/vss_vehicle/
-cd ~/aosp-14-auto
-mmm test/vts/vss_vehicle/ 2>&1 | tail -5
-
-# Run VTS
+# Run all 4 VTS tests
 atest VtsHalAutomotiveVehicleVss -- --serial 0.0.0.0:6520
+
+# Expected results:
+# [1/4] ServiceAvailable         : PASSED
+# [2/4] VssPropertiesRegistered  : PASSED  (500 props in getAllPropertyConfigs)
+# [3/4] AllIdsUnique             : PASSED
+# [4/4] AllIdsWellFormed         : PASSED
 ```
 
 #### 8d — Install and verify HMI app
 
 ```bash
-# 8d — HMI app (không có Android.bp trong hmi_app/)
-# Cần copy vào packages/apps/ với Android.bp
-mkdir -p ~/aosp-14-auto/packages/apps/VssDashboard/src/main/java/com/vss/vehicleapp/fragments/
-mkdir -p ~/aosp-14-auto/packages/apps/VssDashboard/src/main/res/layout/
-cp -r ~/output_c5/hmi_app/src ~/aosp-14-auto/packages/apps/VssDashboard/
-# Cần tạo Android.bp cho HMI app
+# Copy HMI app into AOSP packages
+rm -rf packages/apps/VssDashboard
+mkdir -p packages/apps/VssDashboard
+cp -r ~/output_c5/hmi_app/* packages/apps/VssDashboard/
+
+# Build HMI app
+mmm packages/apps/VssDashboard 2>&1 | tail -5
+
+# Install on Cuttlefish
+adb -s 0.0.0.0:6520 install -r \
+    out/target/product/vsoc_x86_64_only/system/app/VssDashboardApp/VssDashboardApp.apk
+
+# Launch app
+adb -s 0.0.0.0:6520 shell am start -n com.vss.vehicleapp/.MainActivity
+
+# Verify app running
+adb -s 0.0.0.0:6520 shell ps -A | grep vehicleapp
 ```
 
 ### Step 9 — Clean Up
