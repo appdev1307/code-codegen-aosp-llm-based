@@ -133,17 +133,6 @@ if [ -f "$OUT/sepolicy/private/file_contexts" ]; then
 fi
 
 # Add SELinux label for VSS binary
-# Add SELinux label for VSS binary
-FC_VSS="$SEPOL_DEST/file_contexts_vss"
-VSS_BINARY_LABEL="/vendor/bin/hw/android\\.hardware\\.automotive\\.vehicle@V3-vss-service u:object_r:hal_vehicle_vss_exec:s0"
-
-if ! grep -qF "V3-vss-service" "$FC_VSS" 2>/dev/null; then
-    echo "$VSS_BINARY_LABEL" >> "$FC_VSS"
-    ok "SELinux label for V3-vss-service added (hal_vehicle_vss)"
-else
-    ok "SELinux label for V3-vss-service already present"
-fi
-
 # Add SELinux type + domain for VSS service
 VSS_TE="$SEPOL_DEST/vehicle_hal_vss.te"
 if [ ! -f "$VSS_TE" ]; then
