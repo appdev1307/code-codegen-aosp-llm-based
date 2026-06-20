@@ -529,6 +529,7 @@ restore_aosp
 
 # Apply fixes
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
+./post_boot_check.sh
 
 # Rebuild VSS module
 ./update_vss_selinux.sh
