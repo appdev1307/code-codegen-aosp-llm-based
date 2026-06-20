@@ -597,15 +597,26 @@ adb -s 0.0.0.0:6520 shell stop vendor.vehicle-hal-emulator
 # 2. Push lại
 adb shell "setenforce 0"
 adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
+cat > /tmp/vss.rc << 'EOF'
+service vendor.vehicle-vss /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
+    class early_hal
+    user vehicle_network
+    group system inet
+EOF
 
-# 3. Kiểm tra
+adb push /tmp/vss.rc /vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service.rc
+
+# Kiểm tra
+adb shell ls /vendor/etc/init/ | grep vehicle
+adb shell cat /vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service.rc
 adb shell ls -l /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
 
-# 4. # Set SELinux label for VSS binary
+# Set SELinux label for VSS binary
 adb shell chcon u:object_r:hal_vehicle_vss_exec:s0 /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
 
 # Start VSS VHAL service
 adb -s 0.0.0.0:6520 shell start vendor.vehicle-vss
+adb shell dmesg | tail -50
 
 # Verify running
 adb -s 0.0.0.0:6520 shell ps -A | grep vss
