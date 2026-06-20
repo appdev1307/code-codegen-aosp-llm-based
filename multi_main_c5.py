@@ -442,6 +442,99 @@ cc_test {{
 
 
 # ═══════════════════════════════════════════════════════════════════
+def _generate_hmi_build_files(domain_map: dict) -> None:
+    """Generate AndroidManifest.xml and Android.bp for HMI app."""
+    app_dir = OUTPUT_DIR / "hmi_app"
+    app_dir.mkdir(parents=True, exist_ok=True)
+
+    # AndroidManifest.xml
+    manifest = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.vss.vehicleapp"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk
+        android:minSdkVersion="29"
+        android:targetSdkVersion="33" />
+
+    <uses-permission android:name="android.car.permission.CAR_VENDOR_EXTENSION" />
+    <uses-permission android:name="android.car.permission.VEHICLE_DYNAMICS_STATE" />
+
+    <application
+        android:label="VSS Dashboard"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.AppCompat.Light">
+        <activity android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+"""
+    (app_dir / "AndroidManifest.xml").write_text(manifest)
+
+    # Android.bp
+    android_bp = """android_app {
+    name: "VssDashboardApp",
+    srcs: ["src/main/java/**/*.kt"],
+    resource_dirs: ["src/main/res"],
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+    privileged: true,
+    certificate: "platform",
+    static_libs: [
+        "androidx.appcompat_appcompat",
+        "androidx.recyclerview_recyclerview",
+        "car-ui-lib",
+    ],
+}
+"""
+    (app_dir / "Android.bp").write_text(android_bp)
+
+    # MainActivity.kt stub
+    main_dir = app_dir / "src/main/java/com/vss/vehicleapp"
+    main_dir.mkdir(parents=True, exist_ok=True)
+    domains = list(domain_map.keys())
+    fragment_list = "\n".join(
+        f'        fragments.add({d.capitalize()}Fragment())'
+        for d in domains
+    )
+    main_activity = f"""package com.vss.vehicleapp
+
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import androidx.fragment.app.Fragment
+
+class MainActivity : AppCompatActivity() {{
+    override fun onCreate(savedInstanceState: Bundle?) {{
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        if (savedInstanceState == null) {{
+            supportFragmentManager.beginTransaction()
+                .replace(R.id.fragment_container, AdasFragment())
+                .commit()
+        }}
+    }}
+}}
+"""
+    (main_dir / "MainActivity.kt").write_text(main_activity)
+
+    # activity_main.xml
+    res_layout = app_dir / "src/main/res/layout"
+    res_layout.mkdir(parents=True, exist_ok=True)
+    activity_layout = """<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/fragment_container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />
+"""
+    (res_layout / "activity_main.xml").write_text(activity_layout)
+
+
 # Agent 3: HMI App Generator (reused from multi_main_c5_hmi.py)
 # ═══════════════════════════════════════════════════════════════════
 def generate_hmi_app(domain_map: dict) -> float:
@@ -651,6 +744,10 @@ def main():
     hmi_score = generate_hmi_app(domain_map)
     results["hmi_app"] = {"score": hmi_score}
     print(f"  ✓ HMI app: score={hmi_score:.3f} → output_c5/hmi_app/\n")
+
+    # ── Generate AndroidManifest.xml + Android.bp for HMI app ────
+    _generate_hmi_build_files(domain_map)
+    print("  ✓ HMI build files: AndroidManifest.xml + Android.bp written\n")
 
     # ── Step 5: Overall score ────────────────────────────────────
     overall = (vts_score * 0.60 + hmi_score * 0.40)  # fake_score removed; VTS is ground-truth
