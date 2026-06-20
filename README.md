@@ -531,6 +531,7 @@ restore_aosp
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
 
 # Rebuild VSS module
+./update_vss_selinux.sh
 mmm hardware/interfaces/automotive/vehicle/aidl/impl/vss -j$(nproc)
 
 # Update API
