@@ -642,33 +642,30 @@ This step builds the C5 VTS test, deploys on Cuttlefish, and runs validation.
 
 #### 8a — Build VTS Test (C5 output)
 
-Step 7 — Launch Cuttlefish and Verify Base Image
+```bash
+# Copy C5 VTS test into AOSP tree
+rm -rf test/vts/vss_vehicle
+mkdir -p test/vts/vss_vehicle
+cp ~/output_c5/vts/VtsHalAutomotiveVehicleVss.cpp \
+   ~/output_c5/vts/VtsHalAutomotiveVehicleVss.xml \
+   ~/output_c5/vts/Android.bp \
+   test/vts/vss_vehicle/
+
+# Ensure NDK version matches (V3 for AOSP 14)
+grep "automotive.vehicle-V" test/vts/vss_vehicle/Android.bp
+sed -i 's/automotive.vehicle-V[0-9]*-ndk/automotive.vehicle-V3-ndk/' \
+    test/vts/vss_vehicle/Android.bp
+
+# Build VTS
+mmm test/vts/vss_vehicle 2>&1 | tail -5
+
+# Verify binary built
+find out/target/product/vsoc_x86_64_only -name "VtsHalAutomotiveVehicleVss" 2>/dev/null
+```
 
 #### 8b — Deploy VssVehicleHardware on Cuttlefish
 
-```bash
-adb -s 0.0.0.0:6520 root
-adb -s 0.0.0.0:6520 remount
-
-# Stop default emulator VHAL
-adb -s 0.0.0.0:6520 shell stop vendor.vehicle-hal-emulator
-
-# Set SELinux label for VSS binary
-adb -s 0.0.0.0:6520 shell chcon u:object_r:hal_vehicle_vss_exec:s0 \
-    /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
-
-# Start VSS VHAL service
-adb -s 0.0.0.0:6520 shell start vendor.vehicle-vss
-
-# Verify running
-adb -s 0.0.0.0:6520 shell ps -A | grep vss
-
-# Verify registered with ServiceManager
-adb -s 0.0.0.0:6520 shell service list | grep automotive.vehicle
-
-# Check VHAL backend
-adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
-```
+Step 7 — Launch Cuttlefish and Verify Base Image
 
 #### 8c — Run VTS
 
