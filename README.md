@@ -579,6 +579,12 @@ m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+
+cvd reset -y && launch_cvd --daemon
+# đợi VIRTUAL_DEVICE_BOOT_COMPLETED
+adb shell ls -l /vendor/bin/hw/ | grep -i vss
+./post_boot_check.sh
+
 stop_cvd
 launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
