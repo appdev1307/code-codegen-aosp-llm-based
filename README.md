@@ -603,8 +603,23 @@ service vendor.vehicle-vss /vendor/bin/hw/android.hardware.automotive.vehicle@V3
     user vehicle_network
     group system inet
 EOF
-
 adb push /tmp/vss.rc /vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service.rc
+
+
+cat > /tmp/hal_vehicle_vss.te << 'EOF'
+type hal_vehicle_vss, domain;
+type hal_vehicle_vss_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(hal_vehicle_vss)
+hal_server_domain(hal_vehicle_vss, hal_vehicle)
+
+allow hal_vehicle_vss self:process { fork sigchld };
+allow hal_vehicle_vss hal_vehicle_default:process signal;
+allow hal_vehicle_vss vendor_configs_file:dir search;
+allow hal_vehicle_vss vendor_configs_file:file { read getattr open };
+EOF
+
+adb push /tmp/hal_vehicle_vss.te /vendor/etc/selinux/vendor_hal_vehicle_vss.te
 
 # Kiểm tra
 adb shell ls /vendor/etc/init/ | grep vehicle
@@ -612,9 +627,21 @@ adb shell cat /vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-servic
 adb shell ls -l /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
 
 # Set SELinux label for VSS binary
-adb shell "chcon u:object_r:hal_vehicle_vss_exec:s0 /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service"
+adb root
+adb shell "mount -o remount,rw /vendor"
+
+# Thêm vào file_contexts
+cat > /tmp/file_contexts << 'EOF'
+/vendor/bin/hw/android\.hardware\.automotive\.vehicle@V3-vss-service u:object_r:hal_vehicle_vss_exec:s0
+EOF
+adb push /tmp/file_contexts /vendor/etc/selinux/vendor_file_contexts
+adb shell "restorecon -v /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service"
+adb reboot
+adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
 
 # Start VSS VHAL service
+adb -s 0.0.0.0:6520 root
+adb shell "pkill -f vss-service"
 adb -s 0.0.0.0:6520 shell start vendor.vehicle-vss
 adb shell dmesg | tail -50
 
