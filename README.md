@@ -530,11 +530,11 @@ restore_aosp
 # Apply fixes
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
 
-# Rebuild VSS module (quan trọng)
-mmm hardware/interfaces/automotive/vehicle/aidl/impl/vss -j$(nproc)
-
 # Update API (nếu thay đổi AIDL)
 m android.hardware.automotive.vehicle-update-api
+
+# Rebuild VSS module (quan trọng)
+mmm hardware/interfaces/automotive/vehicle/aidl/impl/vss -j$(nproc)
 
 # Clean VINTF cache
 m clean-vintf
