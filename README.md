@@ -524,34 +524,33 @@ cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-# Full reset (nếu cần)
+# Full reset (nếu cần, comment nếu không muốn reset mỗi lần)
 restore_aosp
 
 # Apply fixes
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
 
-# Update API (nếu thay đổi AIDL)
-m android.hardware.automotive.vehicle-update-api
-
-# Rebuild VSS module (quan trọng)
+# Rebuild VSS module
 mmm hardware/interfaces/automotive/vehicle/aidl/impl/vss -j$(nproc)
 
-# Clean VINTF cache
+# Update API
+m android.hardware.automotive.vehicle-update-api
+
+# Clean VINTF
 m clean-vintf
 rm -rf out/target/product/vsoc_x86_64_only/vendor/etc/vintf/manifest/android.hardware.automotive.vehicle@V3-vss-service.xml
-rm -rf out/target/product/vsoc_x86_64_only/obj/PACKAGING/check_vintf*
 
-# Verify VINTF
-m check-vintf-all
-
-# Build vendor image (nhanh hơn full build)
-m vendorimage -j$(nproc) 2>&1 | tail -20
+# Build vendor
+m vendorimage -j$(nproc) 2>&1 | tail -30
 
 # Kiểm tra
 echo "=== Check VSS VHAL ==="
-grep -E "V3-vss-service|vehicle-vss" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt || echo "Not found in installed-files"
+grep -E "V3-vss-service|vehicle-vss" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt || echo "Not found"
 
+# Push + Mount + Reboot
 adb root
+adb shell "mount -o remount,rw /vendor"   # ← quan trọng
+adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
 adb reboot
 ```
 
