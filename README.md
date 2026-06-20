@@ -633,7 +633,8 @@ cat > /tmp/file_contexts << 'EOF'
 EOF
 adb push /tmp/file_contexts /vendor/etc/selinux/vendor_file_contexts
 adb shell "restorecon -v /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service"
-adb reboot
+stop_cvd
+launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
 
 # Start VSS VHAL service
