@@ -148,7 +148,7 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
         # ── XML Layout ──────────────────────────────────────────
         # Chunk properties to avoid LLM truncation for large domains
         # (CABIN 168 props, BODY 84 props generate 17K+ char XML → unclosed tokens)
-        LAYOUT_CHUNK_SIZE = 30
+        LAYOUT_CHUNK_SIZE = 15
         # Use signal_names as fallback if module_props is empty (property objects missing .id)
         layout_props_count = len(module_props) if module_props else len(signal_names)
         if self._layout_module is not None:

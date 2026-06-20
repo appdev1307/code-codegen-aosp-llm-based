@@ -627,10 +627,6 @@ adb shell cat /vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-servic
 adb shell ls -l /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
 
 # Set SELinux label for VSS binary
-adb root
-adb shell "mount -o remount,rw /vendor"
-
-# Thêm vào file_contexts
 cat > /tmp/file_contexts << 'EOF'
 /vendor/bin/hw/android\.hardware\.automotive\.vehicle@V3-vss-service u:object_r:hal_vehicle_vss_exec:s0
 EOF
@@ -653,6 +649,13 @@ adb -s 0.0.0.0:6520 shell service list | grep automotive.vehicle
 
 # Check VHAL backend
 adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
+
+
+adb kill-server
+pkill -f emulator
+pkill -f cuttlefish
+pkill -f launch_cvd
+
 ```
 
 ```bash
