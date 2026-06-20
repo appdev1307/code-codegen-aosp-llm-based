@@ -123,13 +123,18 @@ public:
 def _generate_vss_hardware_cpp(props: list[dict]) -> str:
     """Generate VssVehicleHardware.cpp aggregating all domain property configs."""
     config_lines = []
+    ACCESS_MAP = {"READ": "READ", "WRITE": "WRITE", "READ_WRITE": "READ_WRITE"}
     for p in props:
         prop_id = p["prop_id"]
-        access  = p["access"]
+        access  = ACCESS_MAP.get(p.get("access", "READ_WRITE"), "READ_WRITE")
         config_lines.append(
-            f"    configs.push_back({{.prop = {prop_id}, "
-            f".access = aidlvhal::VehiclePropertyAccess::{access}, "
-            f".changeMode = aidlvhal::VehiclePropertyChangeMode::ON_CHANGE}});"
+            f"    {{\n"
+            f"        aidlvhal::VehiclePropConfig cfg;\n"
+            f"        cfg.prop = {prop_id};\n"
+            f"        cfg.access = aidlvhal::VehiclePropertyAccess::{access};\n"
+            f"        cfg.changeMode = aidlvhal::VehiclePropertyChangeMode::ON_CHANGE;\n"
+            f"        configs.push_back(cfg);\n"
+            f"    }}"
         )
 
     configs_body = "\n".join(config_lines) if config_lines else \
@@ -194,26 +199,36 @@ def _generate_service_main() -> str:
 #include <DefaultVehicleHal.h>
 #include <android/binder_manager.h>
 #include <android/binder_process.h>
+#include <android/log.h>
 #include <memory>
+
+#define LOG_TAG "VssVhal"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 using namespace android::hardware::automotive::vehicle;
 
 int main() {{
-    ABinderProcess_setThreadPoolMaxThreadCount(4);
+    LOGI("VSS VHAL starting...");
+    ABinderProcess_setThreadPoolMaxThreadCount(8);
     ABinderProcess_startThreadPool();
 
     auto hw = std::make_unique<VssVehicleHardware>();
+    auto configs = hw->getAllPropertyConfigs();
+    LOGI("VSS VHAL: %zu properties registered", configs.size());
+
     auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw));
     const std::string instance = "{INSTANCE}";
     auto status = AServiceManager_addService(vhal->asBinder().get(), instance.c_str());
     if (status != STATUS_OK) {{
+        LOGE("VSS VHAL: Failed to register, status=%d", status);
         return 1;
     }}
+    LOGI("VSS VHAL: Registered as %s", instance.c_str());
     ABinderProcess_joinThreadPool();
     return 0;
 }}
 """
-
 
 def _generate_android_bp(impl_dir: Optional[str] = None) -> str:
     """
@@ -272,6 +287,23 @@ service {SERVICE_NAME} /vendor/bin/hw/{BINARY_NAME}
 """
 
 
+
+def _generate_vss_te() -> str:
+    """Generate SELinux policy for VSS VHAL service."""
+    return """type hal_vehicle_vss, domain;
+type hal_vehicle_vss_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(hal_vehicle_vss)
+hal_server_domain(hal_vehicle_vss, hal_vehicle)
+binder_use(hal_vehicle_vss)
+binder_call(hal_vehicle_vss, system_server)
+binder_call(system_server, hal_vehicle_vss)
+allow hal_vehicle_vss vndbinder_device:chr_file { read write open };
+allow hal_vehicle_vss self:process { fork sigchld };
+allow hal_vehicle_vss vendor_configs_file:dir search;
+allow hal_vehicle_vss vendor_configs_file:file { read getattr open };
+"""
+
 def _generate_manifest() -> str:
     return """\
 <manifest version="1.0" type="device">
@@ -320,6 +352,7 @@ class VssGlueAgent:
             "Android.bp":             _generate_android_bp(output_dir),
             f"{BINARY_NAME}.rc":      _generate_init_rc(),
             "manifest_vss.xml":       _generate_manifest(),
+            "vehicle_hal_vss.te":     _generate_vss_te(),
         }
 
         for filename, content in artifacts.items():
