@@ -584,9 +584,25 @@ adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
 
 adb -s 0.0.0.0:6520 root
 adb -s 0.0.0.0:6520 remount
+adb shell "mount -o remount,rw /vendor"
+
 
 # Stop default emulator VHAL
 adb -s 0.0.0.0:6520 shell stop vendor.vehicle-hal-emulator
+
+# 2. Push lại
+adb shell "setenforce 0"
+adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
+
+# 3. Kiểm tra
+adb shell ls -l /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
+
+# 4. Chcon
+adb shell chcon u:object_r:hal_vehicle_vss_exec:s0 /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
+
+# 5. Reboot
+adb reboot
+adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
 
 # Set SELinux label for VSS binary
 adb -s 0.0.0.0:6520 shell chcon u:object_r:hal_vehicle_vss_exec:s0 \
