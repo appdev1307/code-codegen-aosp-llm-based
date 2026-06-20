@@ -1,5 +1,5 @@
 #!/bin/bash
-# post_boot_check.sh
+# update_vss_selinux.sh
 # Chạy trên HOST sau khi Cuttlefish boot xong. Verify VSS VHAL lên đúng.
 # Usage: ./post_boot_check.sh
 
