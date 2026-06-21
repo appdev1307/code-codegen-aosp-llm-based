@@ -241,15 +241,25 @@ class BuildFileSignature(dspy.Signature):
     The build file declares a cc_binary for the C++ implementation
     so the module can be compiled by Soong.
 
-    Requirements:
-    - cc_binary name MUST be vendor.vss.<domain>-service
-      (NOT android.hardware.automotive.vehicle-service, that already exists in AOSP)
+    CRITICAL REQUIREMENTS — MUST FOLLOW EXACTLY:
+    - cc_binary name MUST be: vendor.vss.<domain>-service
     - MUST include: vendor: true
     - MUST include: relative_install_path: "hw"
-    - List shared_libs: libbinder_ndk, libbase, liblog, libutils
-    - List static_libs: android.hardware.automotive.vehicle-V3-ndk
-    - DO NOT use HIDL library names (android.hardware.automotive.vehicle@2.0)
+    - shared_libs must contain: libbinder_ndk, libbase, liblog, libutils
+    - static_libs must contain: android.hardware.automotive.vehicle-V3-ndk
+    - Use proper Soong syntax with correct indentation and colons
+    - DO NOT use any HIDL-related names (@2.0, hidl, etc.)
     - Follow retrieved Android.bp examples for block structure
+
+    Example structure:
+    cc_binary {
+        name: "vendor.vss.adas-service",
+        srcs: ["*.cpp"],
+        vendor: true,
+        relative_install_path: "hw",
+        shared_libs: ["libbinder_ndk", "libbase", ...],
+        static_libs: ["android.hardware.automotive.vehicle-V3-ndk"],
+    }
     """
     module_name:  str = dspy.InputField(
         desc="HAL module name, e.g. vendor.vss.adas"
@@ -470,14 +480,17 @@ class BackendModelSignature(dspy.Signature):
     Generate complete Pydantic data model definitions for VHAL HAL
     properties to be used in the FastAPI backend server.
 
+    CRITICAL: Output must be valid Python syntax. Use proper indentation,
+    colons after field names, and correct Pydantic v2 style.
+
     Requirements:
     - Define a base PropertyValue model with property_id, value, timestamp
     - Define domain-specific models for each property type group
-    - Use correct Python types: bool for BOOLEAN, float for FLOAT,
-      int for INT/INT32/INT64, str for STRING
-    - Add Field validators where appropriate (e.g. value ranges)
-    - Include model Config with schema_extra examples
-    - Export an ALL_MODELS dict mapping property_id → model class
+    - Use correct Python types: bool, float, int, str, Optional
+    - Add Field(...) with validation where appropriate
+    - Include model_config = ConfigDict(...) for Pydantic v2
+    - Export ALL_MODELS dict
+    - NO syntax errors — every class must end properly with :
     """
     properties:   str = dspy.InputField(
         desc="HAL property names and types, one per line"
