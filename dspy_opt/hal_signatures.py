@@ -395,6 +395,13 @@ class AndroidAppSignature(dspy.Signature):
 
 class AndroidLayoutSignature(dspy.Signature):
     """
+    CRITICAL ESCAPING RULE — ALWAYS FOLLOW:
+    In EVERY android:text="..." attribute, escape these characters:
+      &  →  &amp;
+      <  →  &lt;
+      >  →  &gt;
+    Never output raw VSS property names that contain & or <.
+
     Generate an Android XML layout file for displaying HAL property values
     in an Android Automotive OS app. The layout should be clear and usable
     on a vehicle infotainment screen.
