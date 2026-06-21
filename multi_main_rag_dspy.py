@@ -63,6 +63,49 @@ from agents.rag_dspy_backend_agent     import RAGDSPyBackendAgent
 from dspy_opt.metrics    import score_file
 from dspy_opt.validators import validate, print_availability_report
 
+# ── Android Layout fix───────────────────────────────────────
+import re
+from pathlib import Path
+import xml.etree.ElementTree as ET
+
+def fix_android_layouts(output_dir: str = "output_rag_dspy"):
+    """Auto-fix all fragment_*.xml files after Android app generation."""
+    layout_dir = Path(output_dir) / "hmi_app" / "src" / "main" / "res" / "layout"
+    if not layout_dir.exists():
+        print("⚠ No layout directory found to fix.")
+        return 0
+
+    fixed = 0
+    for xml_file in layout_dir.glob("fragment_*.xml"):
+        try:
+            content = xml_file.read_text(encoding="utf-8")
+
+            # Strong escaping
+            content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+            # Add namespace if missing
+            if 'xmlns:android=' not in content and 'android:' in content:
+                content = re.sub(
+                    r'(<[A-Za-z][^>\s]*)',
+                    r'\1 xmlns:android="http://schemas.android.com/apk/res/android"',
+                    content, count=1
+                )
+
+            # Clean broken chunks
+            content = re.sub(r'<\?xml[^>]*\?>', '', content).strip()
+            content = re.sub(r'</?[A-Za-z][^>]*$', '', content).strip()
+
+            # Try parse and save
+            ET.fromstring(content)
+            xml_file.write_text(content, encoding="utf-8")
+            print(f"✅ Fixed layout: {xml_file.name}")
+            fixed += 1
+        except Exception as e:
+            print(f"❌ Failed to fix {xml_file.name}: {e}")
+
+    print(f"🔧 Fixed {fixed} Android layout files.")
+    return fixed
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,6 +347,11 @@ def _run_support_components(
             print(f"  [SUPPORT] {stage} -> OK")
         except Exception as e:
             print(f"  [SUPPORT] {stage} -> FAILED: {e}")
+
+    # === AUTO FIX ANDROID LAYOUTS (after all support agents) ===
+    print("[FIX] Running post-generation XML fixer for layouts...")
+    fix_android_layouts("output_rag_dspy")
+    print("[FIX] Layout fixing completed.")        
 
 
 # ─────────────────────────────────────────────────────────────────────────────
