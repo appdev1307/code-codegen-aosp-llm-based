@@ -477,30 +477,38 @@ class BackendAPISignature(dspy.Signature):
 
 class BackendModelSignature(dspy.Signature):
     """
-    Generate complete Pydantic data model definitions for VHAL HAL
-    properties to be used in the FastAPI backend server.
+    Generate complete, syntactically valid Pydantic v2 models for VHAL properties.
 
-    CRITICAL: Output must be valid Python syntax. Use proper indentation,
-    colons after field names, and correct Pydantic v2 style.
+    CRITICAL RULES — MUST FOLLOW:
+    - Use proper Pydantic v2 syntax: from pydantic import BaseModel, Field, ConfigDict
+    - Every field must have a colon ":" after the name (e.g. value: int = Field(...))
+    - Use model_config = ConfigDict(...) instead of class Config
+    - No trailing commas that break syntax
+    - End every class properly
+    - Export ALL_MODELS = { "property_name": ModelClass, ... }
 
-    Requirements:
-    - Define a base PropertyValue model with property_id, value, timestamp
-    - Define domain-specific models for each property type group
-    - Use correct Python types: bool, float, int, str, Optional
-    - Add Field(...) with validation where appropriate
-    - Include model_config = ConfigDict(...) for Pydantic v2
-    - Export ALL_MODELS dict
-    - NO syntax errors — every class must end properly with :
+    Example of correct output:
+    from datetime import datetime
+    from typing import Union, Optional
+    from pydantic import BaseModel, Field, ConfigDict
+
+    class PropertyValue(BaseModel):
+        property_id: str = Field(..., description="...")
+        value: Union[bool, float, int, str] = Field(...)
+        timestamp: datetime = Field(...)
+
+        model_config = ConfigDict(use_enum_values=True)
+
+    class SomeProperty(PropertyValue):
+        value: bool = Field(...)
+
+    ALL_MODELS = {
+        "VEHICLE_CHILDREN_...": SomeProperty,
+    }
     """
-    properties:   str = dspy.InputField(
-        desc="HAL property names and types, one per line"
-    )
-    aosp_context: str = dspy.InputField(
-        desc="Retrieved Pydantic model and VHAL data type examples"
-    )
-    models_code:  str = dspy.OutputField(
-        desc="Complete models.py file with all Pydantic class definitions"
-    )
+    properties:   str = dspy.InputField(desc="HAL property names and types")
+    aosp_context: str = dspy.InputField(desc="Pydantic examples")
+    models_code:  str = dspy.OutputField(desc="Complete valid models.py")
 
 
 class SimulatorSignature(dspy.Signature):
