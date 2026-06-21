@@ -515,59 +515,85 @@ restore_aosp() {
 
 ### Step 6 — Apply Generated Files and Full Build
 
-`apply_aosp14_fixes.sh` handles all integration — copy-only, no patching.
-C3/C4 agents generate correct AIDL output directly; Soong auto-discovers
-`aidl/impl/vss/Android.bp` without manual registration.
+`apply_aosp14_fixes.sh` handles integration as **copy-only** — it moves the pipeline's
+generated artifacts into the AOSP tree and does not author any of them. The C3/C4 agents
+(and VssGlueAgent) must have already produced `aidl/impl/vss/Android.bp`; Soong then
+auto-discovers it without manual registration. If that `Android.bp` is missing from the
+pipeline output, the script copies nothing for it and the VSS module will not build.
 
 ```bash
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-# Full reset (nếu cần, comment nếu không muốn reset mỗi lần)
+# Full reset (optional — comment out if you don't want to reset each run)
 restore_aosp
 
-# Apply fixes
+# Apply ALL tree changes: copy AIDL/C++/glue, write device-tree SELinux,
+# point LOCAL_VHAL_PRODUCT_PACKAGE at VSS, apply one-time AOSP 14 fixes.
+# (This replaces the old update_vss_selinux.sh — that helper is no longer needed.)
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
-./post_boot_check.sh
 
-# Rebuild VSS module
-./update_vss_selinux.sh
-mmm hardware/interfaces/automotive/vehicle/aidl/impl/vss -j$(nproc)
-
-# Update API
+# Update API (new .aidl files require an API bump)
 m android.hardware.automotive.vehicle-update-api
 
-# Clean VINTF
-m clean-vintf
-rm -rf out/target/product/vsoc_x86_64_only/vendor/etc/vintf/manifest/android.hardware.automotive.vehicle@V3-vss-service.xml
+# Optional: build just the VSS module first to catch C++/bp errors early
+mmm hardware/interfaces/automotive/vehicle/aidl/impl/vss -j$(nproc)
 
-# Build vendor
-m selinux_policy vendorimage superimage vbmetaimage
-rm -f ~/cuttlefish/instances/cvd-1/vbmeta.img
+# Build the image triple so the change reaches the guest.
+# Force a real rebuild — deleting beats relying on Soong's change detection here.
+rm -f $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
 
-# Kiểm tra
-echo "=== Check VSS VHAL ==="
-grep -E "V3-vss-service|vehicle-vss" out/target/product/vsoc_x86_64_only/installed-files-vendor.txt || echo "Not found"
+# Keep these as separate sequential m calls so super waits for vendor.
+m selinux_policy
+m vendorimage
+m superimage
+m vbmetaimage
 
-# Push + Mount + Reboot
-cvd reset -y && launch_cvd --daemon
-adb root
-adb shell "mount -o remount,rw /vendor"   # ← quan trọng
-adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
-adb reboot
+# Confirm super is newer than vendor and actually rewritten
+ls -la --time-style=full-iso $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
+
+# Offline-verify the binary is really inside the image (saves a boot)
+simg2img $ANDROID_PRODUCT_OUT/super.img /tmp/super.raw
+rm -rf /tmp/sc && mkdir -p /tmp/sc
+lpunpack --partition=vendor_a /tmp/super.raw /tmp/sc/   # note: vendor_a, A/B suffix
+grep -a -c 'vehicle@V3-vss-service'  /tmp/sc/vendor_a.img   # must be > 0
+grep -a -c 'vehicle@V3-emulator-service' /tmp/sc/vendor_a.img   # should be 0 after the swap
 ```
 
-`apply_aosp14_fixes.sh` does 4 things (all idempotent):
+> **`apply_aosp14_fixes.sh` patches the tree but does NOT build or launch.** It is
+> copy/patch-only and idempotent, so it's safe to re-run. The build triple and
+> `launch_cvd` above are deliberately separate manual steps — you control when the
+> ~minutes-long build and the VM teardown happen.
+
+`apply_aosp14_fixes.sh` does 6 things (all idempotent, copy/patch-only — no build):
 1. Copy AIDL files → `aidl/android/hardware/automotive/vehicle/`
-2. Copy C++ files → `aidl/impl/vss/` + generate `VssVehicleHardware Android.bp`
-   (Soong auto-discovers this — no registration in `aidl/Android.bp` needed)
-3. Copy SELinux `.te`, VINTF manifest, `init.rc` as-is from C4 output
-4. One-time AOSP fixes:
+2. Copy C++ + glue artifacts → `aidl/impl/vss/` **as-is** (`*.cpp *.h *.bp *.xml *.rc`).
+   The script does **not** generate `Android.bp` — VssGlueAgent (in the pipeline) emits it,
+   and the script only copies it. If the pipeline did not produce `Android.bp`, none is
+   created and the module will not build.
+3. Write SELinux `hal_vehicle_vss.te` + `file_contexts` label into the **Cuttlefish device
+   tree** (`device/google/cuttlefish/shared/sepolicy/vendor/`), and **remove any stale
+   core-tree copy** in `system/sepolicy/vendor/` that would cause `Duplicate declaration`.
+4. Point `LOCAL_VHAL_PRODUCT_PACKAGE` at the VSS service in
+   `device/google/cuttlefish/shared/auto/device_vendor.mk` (this is how Cuttlefish selects
+   its VHAL — not `PRODUCT_PACKAGES`).
+5. One-time AOSP fixes:
    - Remove conflicting `vintf_fragments` from `vhal/Android.bp` (avoids `IVehicle/default@3` conflict with Cuttlefish emulator service)
    - Remove stale `vhal-default-service.xml` from `out/` if present
-   - Unfreeze AIDL interface → `m android.hardware.automotive.vehicle-update-api` (kept unfrozen — sufficient for research use)
+   - Unfreeze AIDL interface → then `m android.hardware.automotive.vehicle-update-api` (kept unfrozen — sufficient for research use)
    - Add `android.hardware.automotive.vehicle@4` to `fcm_exclude.cpp` (required for types-only AIDL package)
+6. Disable broken test modules (`sv_2d/3d_session_tests`, `continuous_native_tests`) in `device.mk`.
+
+> **Single source of SELinux policy.** This script now owns the VSS policy entirely and
+> writes it **only** into the Cuttlefish device tree. The old `update_vss_selinux.sh` helper
+> is obsolete and should be deleted — running both would create two `.te` files declaring
+> `hal_vehicle_vss` and the policy build would fail with `Duplicate declaration of type
+> hal_vehicle_vss`. The script also proactively removes any stale
+> `system/sepolicy/vendor/hal_vehicle_vss.te` (or `vehicle_hal_vss.te`) left by older runs.
+>
+> Pass `--permissive` (or `VSS_PERMISSIVE=1`) to add `permissive hal_vehicle_vss;` while
+> gathering denials — remember to drop it before reporting final results.
 
 **Re-applying after a previous run:**
 ```bash
@@ -576,47 +602,22 @@ restore_aosp   # removes all generated files, restores AOSP originals
 m -j$(nproc) 2>&1 | tee ~/build_full_c4.log
 ```
 
-### Step 7 — Launch Cuttlefish and Verify Base Image
+### SELinux policy — where it lives and what it needs
 
-```bash
-cd ~/aosp-14-auto
-source build/envsetup.sh
-lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
+`apply_aosp14_fixes.sh` (Step 6) writes the VSS HAL policy into the **Cuttlefish device
+tree**, not into core `system/sepolicy/vendor/`. Core policy applies to every target
+and trips CTS neverallows; a leftover copy there also produces a
+`Duplicate declaration of type hal_vehicle_vss` build error (the script removes any such
+stale copy automatically). The policy lives at:
 
-cvd reset -y && launch_cvd --daemon
-# đợi VIRTUAL_DEVICE_BOOT_COMPLETED
-adb shell ls -l /vendor/bin/hw/ | grep -i vss
-./post_boot_check.sh
+```
+device/google/cuttlefish/shared/sepolicy/vendor/hal_vehicle_vss.te
+device/google/cuttlefish/shared/sepolicy/vendor/file_contexts
+```
 
-stop_cvd
-launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
-adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
+**`hal_vehicle_vss.te`:**
 
-adb -s 0.0.0.0:6520 root
-adb disable-verity
-adb reboot
-adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
-
-adb -s 0.0.0.0:6520 remount
-adb shell "mount -o remount,rw /vendor"
-
-
-# Stop default emulator VHAL
-adb -s 0.0.0.0:6520 shell stop vendor.vehicle-hal-emulator
-
-# 2. Push lại
-adb shell "setenforce 0"
-adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
-cat > /tmp/vss.rc << 'EOF'
-service vendor.vehicle-vss /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
-    class early_hal
-    user vehicle_network
-    group system inet
-EOF
-adb push /tmp/vss.rc /vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service.rc
-
-
-cat > /tmp/hal_vehicle_vss.te << 'EOF'
+```
 type hal_vehicle_vss, domain;
 type hal_vehicle_vss_exec, exec_type, vendor_file_type, file_type;
 
@@ -625,47 +626,89 @@ hal_server_domain(hal_vehicle_vss, hal_vehicle)
 
 allow hal_vehicle_vss self:process { fork sigchld };
 allow hal_vehicle_vss hal_vehicle_default:process signal;
+
+# IVehicle/default is labelled hal_vehicle_service (NOT vehicle_service) on AOSP 14.
+# Confirmed in system/sepolicy/private/service_contexts + public/service.te.
+allow hal_vehicle_vss hal_vehicle_service:service_manager add;
+
 allow hal_vehicle_vss vendor_configs_file:dir search;
 allow hal_vehicle_vss vendor_configs_file:file { read getattr open };
-EOF
+```
 
-adb push /tmp/hal_vehicle_vss.te /vendor/etc/selinux/vendor_hal_vehicle_vss.te
+**`file_contexts` (append once — idempotent):**
 
-# Kiểm tra
-adb shell ls /vendor/etc/init/ | grep vehicle
-adb shell cat /vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service.rc
-adb shell ls -l /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
-
-# Set SELinux label for VSS binary
-cat > /tmp/file_contexts << 'EOF'
+```
 /vendor/bin/hw/android\.hardware\.automotive\.vehicle@V3-vss-service u:object_r:hal_vehicle_vss_exec:s0
-EOF
-adb push /tmp/file_contexts /vendor/etc/selinux/vendor_file_contexts
-adb shell "restorecon -v /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service"
-stop_cvd
-launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
-adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
+```
 
-# Start VSS VHAL service
-adb -s 0.0.0.0:6520 root
-adb shell "pkill -f vss-service"
-adb -s 0.0.0.0:6520 shell start vendor.vehicle-vss
-adb shell dmesg | tail -50
+**Things that bite (all confirmed during integration):**
 
-# Verify running
-adb -s 0.0.0.0:6520 shell ps -A | grep vss
+- **Service type is `hal_vehicle_service`, not `vehicle_service`.** The wrong name fails the
+  policy build with `unknown type vehicle_service`. `IVehicle/default` is labelled
+  `hal_vehicle_service` in `system/sepolicy/private/service_contexts`, and the type is
+  declared `protected_service, hal_service_type, service_manager_type` in
+  `public/service.te`.
+- **Do not touch `service_contexts`.** VSS registers under the existing `IVehicle/default`,
+  already labelled `hal_vehicle_service`. Adding a new `service_contexts` line causes a
+  duplicate / `type not defined` error. Reuse the existing label via the
+  `service_manager add` allow rule above.
+- **Only one `.te` per type across the whole tree.** If an earlier run left
+  `system/sepolicy/vendor/hal_vehicle_vss.te` (or a `file_contexts` line) behind, the build
+  fails with `Duplicate declaration of type hal_vehicle_vss`. Remove the stale core copy:
+  ```bash
+  rm -f system/sepolicy/vendor/hal_vehicle_vss.te
+  sed -i '/hal_vehicle_vss/d' system/sepolicy/vendor/file_contexts
+  ```
+- **Pushing a `.te` to a running device does nothing.** `init` loads the compiled
+  `vendor_sepolicy.cil` at boot — it never parses `.te` files dropped into
+  `/vendor/etc/selinux/`. Policy changes only take effect through a rebuild
+  (`m selinux_policy vendorimage`), not via `adb push`.
+- **`carwatchdog` gap (optional hardening).** Pointing `LOCAL_VHAL_PRODUCT_PACKAGE` at the
+  VSS service bypasses the `ifeq` block in `device_vendor.mk`, so
+  `BOARD_SEPOLICY_DIRS += .../auto/sepolicy/vhal` is not added and
+  `carwatchdog_client_domain(hal_vehicle_default)` does not apply to `hal_vehicle_vss`. The
+  service runs stably without it, but for long-running robustness add to the `.te`:
+  ```
+  carwatchdog_client_domain(hal_vehicle_vss)
+  binder_use(hal_vehicle_vss)
+  ```
 
-# Verify registered with ServiceManager
-adb -s 0.0.0.0:6520 shell service list | grep automotive.vehicle
+**Verifying the label took effect (after boot):**
 
-# Check VHAL backend
-adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
+```bash
+adb root
+adb shell ps -AZ | grep vss-service
+# expect context: u:r:hal_vehicle_vss:s0  → init_daemon_domain transition worked
+adb shell dmesg | grep -i 'avc.*denied' | grep -i hal_vehicle_vss
+# no denials for hal_vehicle_vss expected
+```
 
+If the process shows a different domain (e.g. `vendor_file`-derived), the `file_contexts`
+regex did not match the binary name — check the `@V3-vss-service` literal and the escaped
+dots.
+
+### Step 7 — Launch Cuttlefish and Verify Base Image
+
+```bash
+cd ~/aosp-14-auto
+source build/envsetup.sh
+lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
 adb kill-server
 pkill -f emulator
 pkill -f cuttlefish
 pkill -f launch_cvd
+
+cvd reset -y && launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
+# đợi VIRTUAL_DEVICE_BOOT_COMPLETED
+
+adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
+adb shell getprop sys.boot_completed                 # 1
+adb shell ls /vendor/bin/hw/ | grep -i vehicle       # @V3-vss-service, no emulator
+adb root
+adb shell ps -AZ | grep vss-service                  # u:r:hal_vehicle_vss:s0  (correct domain)
+adb shell service list | grep automotive.vehicle     # IVehicle/default present
+./post_boot_check.sh
 
 ```
 
