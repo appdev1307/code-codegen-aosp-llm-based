@@ -286,27 +286,51 @@ class VINTFSignature(dspy.Signature):
     - <transport>hwbinder</transport>
     - <fqname>@2.0::IVehicle/default</fqname>
     - Any HIDL version format (e.g. 2.0, 1.0)
+    - markdown fences (no ```xml or ```rc)
+    - any extra explanation or commentary
 
-    Requirements:
-    - manifest.xml: <hal format="aidl"> block with name, version (integer), <interface>
-    - <transport> must be omitted for AIDL HALs (not hwbinder)
-    - init.rc: service block with user/group (system/system), class hal
-    - Follow retrieved AOSP 14 AIDL VINTF examples for exact syntax
+    OUTPUT FORMAT — follow this structure EXACTLY (two sections, literal separator):
+
+    <manifest version="1.0" type="device" xmlns:android="http://schemas.android.com/apk/res/android">
+        <hal format="aidl">
+            <name>android.hardware.automotive.vehicle</name>
+            <version>2</version>
+            <interface>
+                <name>IVehicle</name>
+                <instance>default</instance>
+            </interface>
+        </hal>
+    </manifest>
+    # --- init.rc ---
+    service vendor.vehicle-hal-default /vendor/bin/hw/android.hardware.automotive.vehicle-V2-default-service
+        class hal
+        user system
+        group system
+
+    Rules:
+    - The XML block comes FIRST, then the literal line "# --- init.rc ---", then the init.rc block.
+    - <hal format="aidl"> — no format="hidl", no <transport> element.
+    - <version> must be a plain integer (e.g. 2), never "2.0".
+    - <name> inside <hal> must be android.hardware.automotive.vehicle.
+    - init.rc service must have: class hal, user system, group system.
+    - Follow retrieved AOSP 14 AIDL VINTF examples for exact syntax.
     """
     domain:       str = dspy.InputField(
         desc="HAL domain name"
     )
     hal_version:  str = dspy.InputField(
-        desc="HAL interface version integer, e.g. 3 (AIDL, not 2.0 HIDL)"
+        desc="HAL interface version integer, e.g. 2 (AIDL, not 2.0 HIDL)"
     )
     aosp_context: str = dspy.InputField(
         desc="Retrieved real AOSP 14 AIDL VINTF manifest.xml and init.rc examples"
     )
     manifest:     str = dspy.OutputField(
-        desc="Complete VINTF manifest XML followed by init.rc content, "
-             "separated by a '# --- init.rc ---' comment line"
+        desc=(
+            "VINTF manifest XML block, then the literal separator line "
+            "'# --- init.rc ---', then the init.rc service block. "
+            "No markdown fences. No extra text before or after."
+        )
     )
-
 
 
 # ═══════════════════════════════════════════════════════════════════
