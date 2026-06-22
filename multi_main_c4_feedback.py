@@ -1052,11 +1052,16 @@ def _run_support_with_feedback(
     for stage, fn, atypes, retry_agents in group_a:
         print(f"  [C4 SUPPORT] {stage}...")
         _run_and_validate(stage, fn, atypes, retry_agents)
-
-    # === AUTO FIX ANDROID LAYOUTS (after all support agents) ===
-    print("[FIX] Running post-generation XML fixer for layouts...")
-    fix_android_layouts("output_adaptive")
-    print("[FIX] Layout fixing completed.")      
+        if stage == "android_app":
+            print("[FIX] Fixing Android layouts before score update...")
+            fix_android_layouts(str(OUTPUT_DIR))
+            # Override android_layout score in run_metrics with post-fix score
+            fixed_scores = _score_files(["android_layout"])
+            for m in run_metrics:
+                if m.get("stage") == "android_app" and "file_scores" in m:
+                    m["file_scores"].update(fixed_scores)
+                    m["metric_score"] = _avg(m["file_scores"])
+                    print(f"[FIX] android_layout score updated: {fixed_scores}")
 
 
 # ─────────────────────────────────────────────────────────────────
