@@ -684,13 +684,13 @@ def validate_layout_xml(xml_str: str) -> ValidatorResult:
     def escape_text(m):
         text = m.group(1)
         text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        return f'"{text}"'
+        return f'android:text="{text}"'
 
     content = re.sub(r'android:text\s*=\s*"([^"]*)"', escape_text, content)
 
     # 3. Clean chunked/incomplete output
     content = re.sub(r'<\?xml[^>]*\?>', '', content).strip()
-    content = re.sub(r'</?[A-Za-z][^>]*$', '', content).strip()
+    content = re.sub(r'</?[A-Za-z][^>]*$', '', content, flags=re.DOTALL).strip()
 
     # Truncate to last complete root tag
     for root_tag in ['ScrollView', 'LinearLayout', 'FrameLayout', 'RelativeLayout']:
