@@ -69,10 +69,10 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 def fix_android_layouts(output_dir: str = "output_rag_dspy"):
-    """Auto-fix all fragment_*.xml files after Android app generation."""
+    """Stronger auto-fix for Android layout XML files."""
     layout_dir = Path(output_dir) / "hmi_app" / "src" / "main" / "res" / "layout"
     if not layout_dir.exists():
-        print("⚠ No layout directory found to fix.")
+        print("⚠ No layout directory found.")
         return 0
 
     fixed = 0
@@ -80,30 +80,32 @@ def fix_android_layouts(output_dir: str = "output_rag_dspy"):
         try:
             content = xml_file.read_text(encoding="utf-8")
 
-            # Strong escaping
+            # Aggressive escaping
             content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-            # Add namespace if missing
+            # Add missing namespace
             if 'xmlns:android=' not in content and 'android:' in content:
-                content = re.sub(
-                    r'(<[A-Za-z][^>\s]*)',
-                    r'\1 xmlns:android="http://schemas.android.com/apk/res/android"',
-                    content, count=1
-                )
+                content = re.sub(r'(<[A-Za-z][^>\s]*)', 
+                               r'\1 xmlns:android="http://schemas.android.com/apk/res/android"', 
+                               content, count=1)
 
-            # Clean broken chunks
+            # Remove broken XML declaration and incomplete tags
             content = re.sub(r'<\?xml[^>]*\?>', '', content).strip()
             content = re.sub(r'</?[A-Za-z][^>]*$', '', content).strip()
 
-            # Try parse and save
+            # Try to close root if broken
+            if content.count('<') > content.count('>'):
+                content += '</ScrollView>'  # most common root
+
+            # Parse and save
             ET.fromstring(content)
             xml_file.write_text(content, encoding="utf-8")
-            print(f"✅ Fixed layout: {xml_file.name}")
+            print(f"✅ Fixed: {xml_file.name}")
             fixed += 1
         except Exception as e:
-            print(f"❌ Failed to fix {xml_file.name}: {e}")
+            print(f"❌ Failed {xml_file.name}: {e}")
 
-    print(f"🔧 Fixed {fixed} Android layout files.")
+    print(f"🔧 Fixed {fixed} layout files.")
     return fixed
 
 # ─────────────────────────────────────────────────────────────────────────────
