@@ -573,9 +573,9 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 # Apply ALL tree changes: copy AIDL/C++/glue, write device-tree SELinux,
 # point LOCAL_VHAL_PRODUCT_PACKAGE at VSS, apply one-time AOSP 14 fixes.
 # (This replaces the old update_vss_selinux.sh — that helper is no longer needed.)
-restore_aosp.
+restore_aosp
+clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
-clean_verify.sh
 
 # Update API (new .aidl files require an API bump)
 m android.hardware.automotive.vehicle-update-api
