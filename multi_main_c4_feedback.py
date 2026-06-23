@@ -304,9 +304,18 @@ class ValidatorFeedback:
                 return (True, "", 1.0)
             stderr = result.stderr.decode(errors="replace")
             real_errors = [l for l in stderr.splitlines()
-                           if "error:" in l and "file not found" not in l]
-            if not real_errors:
+                           if "error:" in l
+                           and "file not found" not in l      # missing headers — expected without AOSP sysroot
+                           and "unknown type name" not in l   # from missing headers
+                           and "no member named" not in l     # from missing headers
+                           ]
+            fatal_errors = [l for l in stderr.splitlines()
+                            if "fatal error:" in l
+                            and "file not found" not in l]    # fatal but NOT header-missing
+            if not real_errors and not fatal_errors:
                 return (True, "", 0.9)
+            if fatal_errors:
+                real_errors = fatal_errors + real_errors
             msg = (
                 f"C++ compilation errors ({len(real_errors)} errors):\n"
                 + "\n".join(real_errors[:5]) + "\n"
