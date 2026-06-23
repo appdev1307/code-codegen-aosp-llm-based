@@ -1,35 +1,21 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# apply_aosp14_fixes.sh
+# apply_aosp14_fixes.sh  (fixed)
 # Android 14 AOSP integration for C3/C4 generated VHAL code.
-#
-# Copy + patch-tree ONLY. Does NOT build and does NOT relaunch Cuttlefish.
-# After this script, build/launch manually (see README Step 6 "build the triple"):
-#   rm -f $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
-#   m selinux_policy && m vendorimage && m superimage && m vbmetaimage
-#   pkill -9 -f crosvm; pkill -9 -f run_cvd; cvd reset -y
-#   rm -f ~/cuttlefish/instances/cvd-1/*.img
-#   launch_cvd --daemon
-#
-# This script now also does everything the old update_vss_selinux.sh did
-# (device-tree SELinux + LOCAL_VHAL_PRODUCT_PACKAGE swap), so that helper
-# is obsolete and can be deleted. There is exactly ONE source of SELinux
-# policy now: the Cuttlefish device tree. No core system/sepolicy writes.
 # ═══════════════════════════════════════════════════════════════
 
 set -euo pipefail
 
-OUT="${1:?Usage: $0 <output_dir> [aosp_root]  e.g. ~/output_c4}"
-AOSP_ROOT="${2:-${ANDROID_BUILD_TOP:-$(pwd)}}"
+OUT="${1:?Usage: $0 <output_dir>  e.g. ~/output_c4}"
+AOSP_ROOT="${2:-$(pwd)}"
 
-RED='\033[0;31m'; GREEN='\033[0;32m'
-YELLOW='\033[1;33m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
 warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
 fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  Android 14 AOSP Integration (copy + patch-tree, no build)"
+echo "  Android 14 AOSP Integration"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Output : $OUT"
 echo "  AOSP   : $AOSP_ROOT"
@@ -38,39 +24,24 @@ echo ""
 [ -d "$OUT" ]              || fail "Output dir not found: $OUT"
 [ -d "$AOSP_ROOT/build" ]  || fail "AOSP root invalid: $AOSP_ROOT"
 
-# ── VSS service binary name (must match Android.bp cc_binary name) ──
-VHAL_BINARY='android.hardware.automotive.vehicle@V3-vss-service'
-VHAL_BINARY_RE='android\.hardware\.automotive\.vehicle@V3-vss-service'
-
-# ── Destination paths ─────────────────────────────────────────
 AIDL_DIR="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
 VSS_DIR="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
+SEPOL_DEST="$AOSP_ROOT/system/sepolicy/vendor"
 FCM_EXCLUDE="$AOSP_ROOT/hardware/interfaces/compatibility_matrices/exclude/fcm_exclude.cpp"
 VHAL_BP="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/impl/vhal/Android.bp"
 VHAL_DEFAULT_XML_OUT="$AOSP_ROOT/out/target/product/vsoc_x86_64_only/vendor/etc/vintf/manifest/vhal-default-service.xml"
+SRC_AIDL_DIR="$OUT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
 
-# SELinux now lives in the Cuttlefish DEVICE TREE (single source of truth).
-CF_SEPOL_DIR="$AOSP_ROOT/device/google/cuttlefish/shared/sepolicy/vendor"
-DEVICE_VENDOR_MK="$AOSP_ROOT/device/google/cuttlefish/shared/auto/device_vendor.mk"
-CORE_SEPOL_DIR="$AOSP_ROOT/system/sepolicy/vendor"   # only used to REMOVE stale files
-
-mkdir -p "$AIDL_DIR" "$VSS_DIR" "$CF_SEPOL_DIR"
-
-# Append a line to a file only if not already present (idempotent).
-append_once() {
-    local line="$1" file="$2"
-    touch "$file"
-    grep -qF -- "$line" "$file" || echo "$line" >> "$file"
-}
+mkdir -p "$AIDL_DIR" "$VSS_DIR" "$SEPOL_DEST"
 
 # ═══════════════════════════════════════════════════════════════
-# [0/5] Platform build fixes (idempotent)
+# [0/5] Platform build fixes
 # ═══════════════════════════════════════════════════════════════
 echo "[0/5] Applying platform build fixes..."
 
 CONT_TESTS="$AOSP_ROOT/platform_testing/build/tasks/continuous_native_tests.mk"
 if [ ! -f "$CONT_TESTS" ] || ! grep -q "Disabled" "$CONT_TESTS" 2>/dev/null; then
-    echo "# Disabled to avoid sv_2d_session_tests build failure in custom AAOS builds" > "$CONT_TESTS"
+    echo "# Disabled to avoid sv_2d_session_tests build failure" > "$CONT_TESTS"
     ok "Disabled continuous_native_tests.mk"
 else
     ok "continuous_native_tests.mk already patched"
@@ -78,12 +49,7 @@ fi
 
 DEVICE_MK="$AOSP_ROOT/device/google/cuttlefish/shared/device.mk"
 if [ -f "$DEVICE_MK" ] && ! grep -q "sv_2d_session_tests" "$DEVICE_MK"; then
-    cat >> "$DEVICE_MK" << 'EOF'
-
-# Disable broken test modules (custom AAOS build)
-PRODUCT_PACKAGES += -sv_2d_session_tests -sv_3d_session_tests
-PRODUCT_PACKAGES += -continuous_native_tests
-EOF
+    printf '\nPRODUCT_PACKAGES += -sv_2d_session_tests -sv_3d_session_tests\nPRODUCT_PACKAGES += -continuous_native_tests\n' >> "$DEVICE_MK"
     ok "Disabled broken test modules in device.mk"
 else
     ok "device.mk already patched"
@@ -95,173 +61,204 @@ fi
 echo ""
 echo "[1/5] Copying AIDL files..."
 COUNT=0
-for f in "$OUT"/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/*.aidl; do
+for f in "$SRC_AIDL_DIR"/*.aidl; do
     [ -f "$f" ] || continue
-    cp "$f" "$AIDL_DIR/" && ok "AIDL: $(basename "$f")"
+    cp "$f" "$AIDL_DIR/" && ok "AIDL: $(basename $f)"
     COUNT=$((COUNT + 1))
 done
 [ $COUNT -eq 0 ] && warn "No AIDL files found"
 
 # ═══════════════════════════════════════════════════════════════
-# [2/5] Copy C++ + VssGlueAgent artifacts into aidl/impl/vss/
-# The pipeline (VssGlueAgent) MUST have produced Android.bp here.
-# This script only copies it — it does not author Android.bp.
+# [2/5] Copy C++ + VssGlueAgent artifacts
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[2/5] Copying C++ and glue artifacts into $VSS_DIR..."
+echo "[2/5] Copying C++ and glue artifacts..."
 COUNT=0
 VSS_GLUE_SRC="$OUT/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
 if [ -d "$VSS_GLUE_SRC" ]; then
     for f in "$VSS_GLUE_SRC"/*.cpp "$VSS_GLUE_SRC"/*.h \
-              "$VSS_GLUE_SRC"/*.bp "$VSS_GLUE_SRC"/*.xml "$VSS_GLUE_SRC"/*.rc; do
+              "$VSS_GLUE_SRC"/*.bp "$VSS_GLUE_SRC"/*.xml \
+              "$VSS_GLUE_SRC"/*.rc "$VSS_GLUE_SRC"/*.te; do
         [ -f "$f" ] || continue
-        cp "$f" "$VSS_DIR/" && ok "Glue: $(basename "$f")"
+        cp "$f" "$VSS_DIR/" && ok "Glue: $(basename $f)"
         COUNT=$((COUNT + 1))
     done
-else
-    warn "VssGlueAgent output not found: $VSS_GLUE_SRC"
-    warn "Re-run pipeline with VssGlueAgent enabled"
 fi
-
 for f in "$OUT"/hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.cpp \
           "$OUT"/hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.h; do
     [ -f "$f" ] || continue
-    cp "$f" "$VSS_DIR/" && ok "Domain C++: $(basename "$f")"
+    cp "$f" "$VSS_DIR/" && ok "Domain C++: $(basename $f)"
     COUNT=$((COUNT + 1))
 done
-
 [ $COUNT -eq 0 ] && warn "No C++ files found"
 
-if [ ! -f "$VSS_DIR/Android.bp" ]; then
-    warn "No Android.bp in $VSS_DIR — pipeline did not emit one; VSS module will NOT build"
-fi
-
 # ═══════════════════════════════════════════════════════════════
-# [3/5] SELinux — Cuttlefish DEVICE TREE only (single source of truth)
-#   - remove any stale core-tree copy (cause of 'Duplicate declaration')
-#   - write hal_vehicle_vss.te (overwrite — this script owns it)
-#   - append file_contexts label (idempotent)
+# [3/5] Copy SELinux
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[3/5] Writing SELinux policy into Cuttlefish device tree..."
-
-# Remove stale core-tree policy from older runs / older script versions.
-for stale in "$CORE_SEPOL_DIR/hal_vehicle_vss.te" "$CORE_SEPOL_DIR/vehicle_hal_vss.te"; do
-    if [ -f "$stale" ]; then
-        rm -f "$stale" && warn "Removed stale core-tree policy: $stale"
-    fi
+echo "[3/5] Copying SELinux / file_contexts..."
+COUNT=0
+for f in "$OUT"/sepolicy/vehicle_hal_*.te; do
+    [ -f "$f" ] || continue
+    cp "$f" "$SEPOL_DEST/" && ok "SELinux: $(basename $f)"
+    COUNT=$((COUNT + 1))
 done
-for fc in "$CORE_SEPOL_DIR/file_contexts" "$CORE_SEPOL_DIR/file_contexts_vss"; do
-    if [ -f "$fc" ] && grep -q 'hal_vehicle_vss' "$fc" 2>/dev/null; then
-        sed -i '/hal_vehicle_vss/d' "$fc" && warn "Cleaned stale label from $fc"
-    fi
-done
+[ $COUNT -eq 0 ] && warn "No .te files found"
 
-# Optional permissive mode for denial-gathering: pass --permissive or set VSS_PERMISSIVE=1.
-PERMISSIVE_LINE=""
-case "${*:-}" in *--permissive*) VSS_PERMISSIVE=1 ;; esac
-if [ "${VSS_PERMISSIVE:-0}" = "1" ]; then
-    PERMISSIVE_LINE="permissive hal_vehicle_vss;"
-    warn "PERMISSIVE mode enabled for hal_vehicle_vss — DEBUG ONLY, disable before final results"
+if [ -f "$OUT/sepolicy/private/file_contexts" ]; then
+    cp "$OUT/sepolicy/private/file_contexts" "$SEPOL_DEST/file_contexts_vss"
+    ok "file_contexts"
 fi
 
-cat > "$CF_SEPOL_DIR/hal_vehicle_vss.te" << EOF
+VSS_TE="$SEPOL_DEST/vehicle_hal_vss.te"
+if [ ! -f "$VSS_TE" ]; then
+    cat > "$VSS_TE" << 'SEEOF'
 type hal_vehicle_vss, domain;
 type hal_vehicle_vss_exec, exec_type, vendor_file_type, file_type;
-
 init_daemon_domain(hal_vehicle_vss)
 hal_server_domain(hal_vehicle_vss, hal_vehicle)
-
-allow hal_vehicle_vss self:process { fork sigchld };
-allow hal_vehicle_vss hal_vehicle_default:process signal;
-
-# IVehicle/default is labelled hal_vehicle_service (NOT vehicle_service) on AOSP 14.
-allow hal_vehicle_vss hal_vehicle_service:service_manager add;
-
-# carwatchdog client (the auto/sepolicy/vhal ifeq block is bypassed by the VHAL swap)
-carwatchdog_client_domain(hal_vehicle_vss)
 binder_use(hal_vehicle_vss)
-
+binder_call(hal_vehicle_vss, system_server)
+binder_call(system_server, hal_vehicle_vss)
+allow hal_vehicle_vss vndbinder_device:chr_file { read write open };
 allow hal_vehicle_vss vendor_configs_file:dir search;
 allow hal_vehicle_vss vendor_configs_file:file { read getattr open };
-${PERMISSIVE_LINE}
-EOF
-ok "Wrote $CF_SEPOL_DIR/hal_vehicle_vss.te"
-
-append_once "/vendor/bin/hw/${VHAL_BINARY_RE} u:object_r:hal_vehicle_vss_exec:s0" \
-            "$CF_SEPOL_DIR/file_contexts"
-ok "Labelled $VHAL_BINARY in device-tree file_contexts"
-
-# ═══════════════════════════════════════════════════════════════
-# [4/5] Select VSS as the Cuttlefish VHAL (LOCAL_VHAL_PRODUCT_PACKAGE)
-#   Cuttlefish picks its VHAL via this make variable, NOT PRODUCT_PACKAGES.
-# ═══════════════════════════════════════════════════════════════
-echo ""
-echo "[4/5] Pointing LOCAL_VHAL_PRODUCT_PACKAGE at VSS..."
-if [ -f "$DEVICE_VENDOR_MK" ]; then
-    if grep -q "LOCAL_VHAL_PRODUCT_PACKAGE := ${VHAL_BINARY}" "$DEVICE_VENDOR_MK"; then
-        ok "device_vendor.mk already targets VSS"
-    elif grep -q 'LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-emulator-service' "$DEVICE_VENDOR_MK"; then
-        cp "$DEVICE_VENDOR_MK" "${DEVICE_VENDOR_MK}.bak"
-        sed -i "s|LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-emulator-service|LOCAL_VHAL_PRODUCT_PACKAGE := ${VHAL_BINARY}|" \
-            "$DEVICE_VENDOR_MK"
-        ok "Swapped emulator → VSS in device_vendor.mk (backup: .bak)"
-    else
-        warn "Expected emulator-service line not found in device_vendor.mk"
-        warn "Set manually: LOCAL_VHAL_PRODUCT_PACKAGE := ${VHAL_BINARY}"
-    fi
+SEEOF
+    ok "SELinux policy for hal_vehicle_vss created"
 else
-    warn "device_vendor.mk not found: $DEVICE_VENDOR_MK"
+    ok "SELinux policy for hal_vehicle_vss already present"
+fi
+
+FC_VSS="$SEPOL_DEST/file_contexts_vss"
+if ! grep -qF "V3-vss-service" "$FC_VSS" 2>/dev/null; then
+    echo "/vendor/bin/hw/android\\.hardware\\.automotive\\.vehicle@V3-vss-service u:object_r:hal_vehicle_vss_exec:s0" >> "$FC_VSS"
+    ok "SELinux label for V3-vss-service added"
+else
+    ok "SELinux label for V3-vss-service already present"
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# [5/5] AOSP 14 one-time fixes (idempotent)
+# [4/5] AOSP 14 one-time fixes
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[5/5] Applying AOSP 14 one-time fixes..."
+echo "[4/5] Applying AOSP 14 one-time fixes..."
 
 if [ -f "$VHAL_BP" ] && grep -q "vintf_fragments.*vhal-default-service" "$VHAL_BP"; then
     sed -i '/vintf_fragments.*vhal-default-service.xml/d' "$VHAL_BP"
-    ok "Removed conflicting vintf_fragments from vhal/Android.bp"
+    ok "Removed conflicting vintf_fragments"
 else
     ok "vhal/Android.bp already clean"
 fi
 
-if [ -f "$VHAL_DEFAULT_XML_OUT" ]; then
-    rm -f "$VHAL_DEFAULT_XML_OUT"
-    ok "Removed stale vhal-default-service.xml from out/"
-else
-    ok "No stale vhal-default-service.xml in out/"
-fi
+[ -f "$VHAL_DEFAULT_XML_OUT" ] && rm -f "$VHAL_DEFAULT_XML_OUT" && ok "Removed stale vhal-default-service.xml"
 
 AIDL_BP_FILE="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl/Android.bp"
-if [ -f "$AIDL_BP_FILE" ]; then
-    sed -i 's/frozen: true,/frozen: false,/' "$AIDL_BP_FILE"
-    ok "AIDL interface unfrozen"
+[ -f "$AIDL_BP_FILE" ] && sed -i 's/frozen: true,/frozen: false,/' "$AIDL_BP_FILE" && ok "AIDL interface unfrozen"
+
+if [ -f "$FCM_EXCLUDE" ] && ! grep -q "automotive.vehicle@4" "$FCM_EXCLUDE"; then
+    sed -i '/static std::vector<std::string> excluded_exact{/a\            "android.hardware.automotive.vehicle@4",' "$FCM_EXCLUDE"
+    ok "FCM exempt: added vehicle@4"
 else
-    warn "AIDL Android.bp not found — skipping"
+    ok "FCM exempt already present"
 fi
 
-if [ -f "$FCM_EXCLUDE" ]; then
-    if grep -q "automotive.vehicle@4" "$FCM_EXCLUDE"; then
-        ok "FCM exempt: vehicle@4 already present"
-    else
-        sed -i '/static std::vector<std::string> excluded_exact{/a\            "android.hardware.automotive.vehicle@4",' "$FCM_EXCLUDE"
-        ok "FCM exempt: added android.hardware.automotive.vehicle@4"
-    fi
+[ -f "$DEVICE_MK" ] && sed -i '/vehicle-hal-emulator/d' "$DEVICE_MK" 2>/dev/null && ok "Disabled vehicle-hal-emulator"
+
+# ═══════════════════════════════════════════════════════════════
+# [5/5] Runtime fixes: VssPropertiesRegistered + super.img
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "[5/5] Applying runtime fixes..."
+
+# Fix 1: VssPropertiesRegistered VTS
+# LLM-generated AIDL uses sequential small IDs (0x1000+) per enum.
+# VssVehicleHardware.cpp already has getAllPropertyConfigs() hardcoded.
+# Generate VssProperties.json so FakeVehicleHardware can also load them.
+VSS_CONFIG_DEST="$AOSP_ROOT/vendor/etc/automotive/vhalconfig"
+mkdir -p "$VSS_CONFIG_DEST"
+
+python3 - "$SRC_AIDL_DIR" "$VSS_CONFIG_DEST/VssProperties.json" << 'PYEOF'
+import sys, re, json, os
+
+aidl_dir = sys.argv[1]
+out_json  = sys.argv[2]
+props, seen = [], set()
+
+# LLM generates sequential enum IDs starting from 0x1000 per domain
+# Build full 32-bit VHAL property IDs:
+# bits[31:24]=area, bits[23:16]=type, bits[15:0]=index
+# Use GLOBAL(0x00) + INT32(0x400000) base offset for standard props
+AREA_GLOBAL  = 0x00000000
+TYPE_MIXED   = 0x00e00000  # fallback type
+
+comment_map = {
+    "BOOLEAN": 0x00200000,
+    "INT":     0x00400000,
+    "FLOAT":   0x00600000,
+    "STRING":  0x00100000,
+}
+
+if os.path.isdir(aidl_dir):
+    for fname in sorted(os.listdir(aidl_dir)):
+        if not fname.endswith(".aidl") or "VehicleProperty" not in fname:
+            continue
+        txt = open(os.path.join(aidl_dir, fname), errors="ignore").read()
+        for line in txt.splitlines():
+            # Match: NAME = 0xNNNN, // TYPE, ACCESS, AREA
+            m = re.match(r'\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)', line)
+            if not m:
+                continue
+            name, val = m.group(1), m.group(2)
+            try:
+                raw_id = int(val, 16)
+                # Determine type from comment
+                type_bits = TYPE_MIXED
+                for kw, bits in comment_map.items():
+                    if kw in line:
+                        type_bits = bits
+                        break
+                # Build full prop ID
+                prop_id = AREA_GLOBAL | type_bits | (raw_id & 0xFFFF)
+                if prop_id not in seen:
+                    seen.add(prop_id)
+                    # access: READ=1, WRITE=2, READ_WRITE=3
+                    access = 3 if "READ_WRITE" in line else 1
+                    props.append({
+                        "prop": prop_id,
+                        "access": access,
+                        "changeMode": 1,
+                        "comment": name
+                    })
+            except ValueError:
+                pass
+
+json.dump(props, open(out_json, "w"), indent=2)
+print(f"  Generated {len(props)} property configs → {out_json}")
+PYEOF
+
+ok "VssProperties.json generated (fixes VssPropertiesRegistered VTS)"
+
+# Fix 2: super.img not picked up by launch_cvd --noresume
+# Must clear Cuttlefish runtime cache before each launch with new images
+CVD_RUNTIME="${HOME}/cuttlefish_runtime"
+CVD_CACHE="${HOME}/.cache/cuttlefish"
+
+if [ -d "$CVD_RUNTIME" ]; then
+    rm -rf "$CVD_RUNTIME"
+    ok "Cleared ~/cuttlefish_runtime (new super.img will be picked up)"
 else
-    warn "fcm_exclude.cpp not found"
+    ok "No cuttlefish_runtime cache to clear"
+fi
+
+if [ -d "$CVD_CACHE" ]; then
+    rm -rf "$CVD_CACHE"
+    ok "Cleared ~/.cache/cuttlefish"
 fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo "  Tree patched. Now BUILD + LAUNCH manually:"
-echo ""
-echo "    m android.hardware.automotive.vehicle-update-api"
-echo "    rm -f \$ANDROID_PRODUCT_OUT/super.img \$ANDROID_PRODUCT_OUT/vendor.img"
-echo "    m selinux_policy && m vendorimage && m superimage && m vbmetaimage"
-echo "    pkill -9 -f crosvm; pkill -9 -f run_cvd; cvd reset -y"
-echo "    rm -f ~/cuttlefish/instances/cvd-1/*.img"
-echo "    launch_cvd --daemon"
-echo "    ./post_boot_check.sh"
+echo "  Done. Next steps:"
+echo "  1. Build:  m -j\$(nproc) 2>&1 | tee ~/build_c4.log"
+echo "  2. Launch: launch_cvd --noresume --cpus=4 --memory_mb=4096"
+echo "  3. VTS:    atest VtsHalAutomotiveVehicle"
 echo "═══════════════════════════════════════════════════════════"
