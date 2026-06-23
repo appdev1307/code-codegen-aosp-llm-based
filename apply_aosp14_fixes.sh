@@ -73,24 +73,45 @@ done
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[2/5] Copying C++ and glue artifacts..."
+
 COUNT=0
+
+# Try multiple possible locations
+for src_dir in \
+    "$OUT/hardware/interfaces/automotive/vehicle/impl" \
+    "$OUT/hardware/interfaces/automotive/vehicle/aidl/impl" \
+    "$OUT/hardware/interfaces/automotive/vehicle/aidl/impl/vss"; do
+    
+    if [ -d "$src_dir" ]; then
+        echo "  Searching in: $src_dir"
+        for f in "$src_dir"/VehicleHalService*.cpp "$src_dir"/VehicleHalService*.h; do
+            [ -f "$f" ] || continue
+            cp "$f" "$VSS_DIR/" && ok "Domain C++: $(basename $f)"
+            COUNT=$((COUNT + 1))
+        done
+    fi
+done
+
+# Also copy glue if present
 VSS_GLUE_SRC="$OUT/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
 if [ -d "$VSS_GLUE_SRC" ]; then
-    for f in "$VSS_GLUE_SRC"/*.cpp "$VSS_GLUE_SRC"/*.h \
-              "$VSS_GLUE_SRC"/*.bp "$VSS_GLUE_SRC"/*.xml \
-              "$VSS_GLUE_SRC"/*.rc "$VSS_GLUE_SRC"/*.te; do
+    for f in "$VSS_GLUE_SRC"/*.cpp "$VSS_GLUE_SRC"/*.h; do
         [ -f "$f" ] || continue
         cp "$f" "$VSS_DIR/" && ok "Glue: $(basename $f)"
         COUNT=$((COUNT + 1))
     done
 fi
-for f in "$OUT"/hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.cpp \
-          "$OUT"/hardware/interfaces/automotive/vehicle/impl/VehicleHalService*.h; do
-    [ -f "$f" ] || continue
-    cp "$f" "$VSS_DIR/" && ok "Domain C++: $(basename $f)"
-    COUNT=$((COUNT + 1))
-done
-[ $COUNT -eq 0 ] && warn "No C++ files found"
+
+[ $COUNT -eq 0 ] && warn "No VehicleHalService files found"
+
+# === Verify headers ===
+echo ""
+if ls "$VSS_DIR"/VehicleHalService*.h >/dev/null 2>&1; then
+    ok "All VehicleHalService*.h headers copied successfully"
+    ls "$VSS_DIR"/VehicleHalService*.h | wc -l | xargs echo "   → Found" 
+else
+    warn "No VehicleHalService*.h headers were copied"
+fi
 
 # ═══════════════════════════════════════════════════════════════
 # [3/5] Copy SELinux
@@ -255,102 +276,92 @@ if [ -d "$CVD_CACHE" ]; then
     ok "Cleared ~/.cache/cuttlefish"
 fi
 
-echo ""
-echo "═══════════════════════════════════════════════════════════"
-echo "  Done. Next steps:"
-echo "  1. Build:  m -j\$(nproc) 2>&1 | tee ~/build_c4.log"
-echo "  2. Launch: launch_cvd --noresume --cpus=4 --memory_mb=4096"
-echo "  3. VTS:    atest VtsHalAutomotiveVehicle"
-echo "═══════════════════════════════════════════════════════════"
-
 # ═══════════════════════════════════════════════════════════════
-# [6/6] Fix VssVehicleHardware.cpp prop IDs
-# VssGlueAgent uses raw sequential IDs (0x1000+) which are invalid
-# VHAL property IDs. Rebuild getAllPropertyConfigs() with full
-# 32-bit IDs: AREA_GLOBAL | TYPE_BITS | (raw_id & 0xFFFF)
+# [6/6] NEW: Integrate VehicleHalService*.cpp routing
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[6/6] Fixing VssVehicleHardware.cpp property IDs..."
+echo "[6/6] Updating VssVehicleHardware.cpp with domain service routing..."
 
 VSS_CPP="$VSS_DIR/VssVehicleHardware.cpp"
 if [ ! -f "$VSS_CPP" ]; then
-    warn "VssVehicleHardware.cpp not found — skipping prop ID fix"
+    warn "VssVehicleHardware.cpp not found — skipping routing fix"
 else
-    python3 - "$SRC_AIDL_DIR" "$VSS_CPP" << 'PYEOF'
-import sys, re, os
+    cp "$VSS_CPP" "$VSS_CPP.bak.$(date +%s)" 2>/dev/null || true
 
-aidl_dir = sys.argv[1]
-cpp_path  = sys.argv[2]
+    cat > "$VSS_CPP" << 'EOF'
+#include <aidl/android/hardware/automotive/vehicle/IVehicle.h>
+#include <android-base/logging.h>
+#include <vector>
+#include <memory>
+#include <unordered_map>
 
-# Parse AIDL with full prop ID generation
-AREA_GLOBAL = 0x00000000
-TYPE_MIXED  = 0x00e00000
-comment_map = {
-    "BOOLEAN": 0x00200000,
-    "INT":     0x00400000,
-    "FLOAT":   0x00600000,
-    "STRING":  0x00100000,
+#include "VehicleHalServiceAdas.h"
+#include "VehicleHalServiceBody.h"
+#include "VehicleHalServiceCabin.h"
+#include "VehicleHalServiceChassis.h"
+#include "VehicleHalServiceHvac.h"
+#include "VehicleHalServiceInfotainment.h"
+#include "VehicleHalServicePowertrain.h"
+
+using namespace aidl::android::hardware::automotive::vehicle;
+
+class VssVehicleHardware : public BnVehicleHardware {
+public:
+    VssVehicleHardware() {
+        mServices = {
+            {"Adas", std::make_unique<VehicleHalServiceAdas>()},
+            {"Body", std::make_unique<VehicleHalServiceBody>()},
+            {"Cabin", std::make_unique<VehicleHalServiceCabin>()},
+            {"Chassis", std::make_unique<VehicleHalServiceChassis>()},
+            {"Hvac", std::make_unique<VehicleHalServiceHvac>()},
+            {"Infotainment", std::make_unique<VehicleHalServiceInfotainment>()},
+            {"Powertrain", std::make_unique<VehicleHalServicePowertrain>()},
+        };
+        LOG(INFO) << "[VSS] Initialized with " << mServices.size() << " domain services";
+    }
+
+    ::ndk::ScopedAStatus getAllPropertyConfigs(std::vector<VehiclePropConfig>* configs) override {
+        configs->clear();
+        for (auto& [name, svc] : mServices) {
+            std::vector<VehiclePropConfig> cfgs;
+            svc->getAllPropertyConfigs(&cfgs);
+            configs->insert(configs->end(), cfgs.begin(), cfgs.end());
+        }
+        LOG(INFO) << "[VSS] getAllPropertyConfigs returned " << configs->size() << " properties";
+        return ::ndk::ScopedAStatus::ok();
+    }
+
+    ::ndk::ScopedAStatus get(const GetValueRequest& req, GetValueResult* res) override {
+        for (auto& [name, svc] : mServices) {
+            if (svc->handlesProperty(req.prop.prop)) return svc->get(req, res);
+        }
+        return ::ndk::ScopedAStatus::fromServiceSpecificError(-1, "Property not supported");
+    }
+
+    ::ndk::ScopedAStatus set(const SetValueRequest& req, SetValueResult* res) override {
+        for (auto& [name, svc] : mServices) {
+            if (svc->handlesProperty(req.prop.prop)) return svc->set(req, res);
+        }
+        return ::ndk::ScopedAStatus::fromServiceSpecificError(-1, "Property not supported");
+    }
+
+private:
+    std::unordered_map<std::string, std::unique_ptr<IVehicleHardware>> mServices;
+};
+
+extern "C" IVehicleHardware* HIDL_FETCH_IVehicleHardware(const char* /*name*/) {
+    return new VssVehicleHardware();
 }
-
-props, seen = [], set()
-if os.path.isdir(aidl_dir):
-    for fname in sorted(os.listdir(aidl_dir)):
-        if not fname.endswith(".aidl") or "VehicleProperty" not in fname: continue
-        txt = open(os.path.join(aidl_dir, fname), errors="ignore").read()
-        for line in txt.splitlines():
-            m = re.match(r'\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)', line)
-            if not m: continue
-            name, val = m.group(1), m.group(2)
-            try:
-                raw_id = int(val, 16)
-                type_bits = TYPE_MIXED
-                for kw, bits in comment_map.items():
-                    if kw in line: type_bits = bits; break
-                prop_id = AREA_GLOBAL | type_bits | (raw_id & 0xFFFF)
-                if prop_id not in seen:
-                    seen.add(prop_id)
-                    access = "READ_WRITE" if "READ_WRITE" in line else "READ"
-                    props.append({"name": name, "prop_id": prop_id, "access": access})
-            except ValueError: pass
-
-# Rebuild getAllPropertyConfigs() body
-config_lines = []
-for p in props:
-    config_lines.append(
-        f"    {{\n"
-        f"        aidlvhal::VehiclePropConfig cfg;\n"
-        f"        cfg.prop = {p['prop_id']};\n"
-        f"        cfg.access = aidlvhal::VehiclePropertyAccess::{p['access']};\n"
-        f"        cfg.changeMode = aidlvhal::VehiclePropertyChangeMode::ON_CHANGE;\n"
-        f"        configs.push_back(cfg);\n"
-        f"    }}"
-    )
-
-configs_body = "\n".join(config_lines) if config_lines else \
-    "    // No properties parsed — check AIDL files"
-
-# Read existing cpp and replace getAllPropertyConfigs body
-cpp = open(cpp_path).read()
-new_func = (
-    f"std::vector<aidlvhal::VehiclePropConfig> VssVehicleHardware::getAllPropertyConfigs() const {{\n"
-    f"    std::vector<aidlvhal::VehiclePropConfig> configs;\n"
-    f"    configs.reserve({len(props)});\n"
-    f"{configs_body}\n"
-    f"    return configs;\n"
-    f"}}"
-)
-cpp = re.sub(
-    r'std::vector<aidlvhal::VehiclePropConfig> VssVehicleHardware::getAllPropertyConfigs\(\) const \{.*?\}',
-    new_func, cpp, flags=re.DOTALL
-)
-# Update comment
-cpp = re.sub(
-    r'// Aggregates getAllPropertyConfigs\(\) from \d+ VSS properties',
-    f'// Aggregates getAllPropertyConfigs() from {len(props)} VSS properties (full 32-bit prop IDs)',
-    cpp
-)
-open(cpp_path, "w").write(cpp)
-print(f"  Fixed {len(props)} prop IDs in VssVehicleHardware.cpp (full 32-bit VHAL IDs)")
-PYEOF
-    ok "VssVehicleHardware.cpp prop IDs fixed (full 32-bit VHAL property IDs)"
+EOF
+    ok "VssVehicleHardware.cpp updated with multi-service routing"
 fi
+
+echo "   → VssVehicleHardware now routes to all VehicleHalService*.cpp"
+
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo " Done. Next steps:"
+echo " 1. Build:  m -j\$(nproc) 2>&1 | tee ~/build_c4.log"
+echo " 2. Launch: launch_cvd --noresume"
+echo " 3. VTS:    atest VtsHalAutomotiveVehicleVss"
+echo "═══════════════════════════════════════════════════════════"
