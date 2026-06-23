@@ -76,7 +76,6 @@ echo "[2/5] Copying C++ and glue artifacts..."
 
 COUNT=0
 
-# Try multiple possible locations
 for src_dir in \
     "$OUT/hardware/interfaces/automotive/vehicle/impl" \
     "$OUT/hardware/interfaces/automotive/vehicle/aidl/impl" \
@@ -92,7 +91,6 @@ for src_dir in \
     fi
 done
 
-# Also copy glue if present
 VSS_GLUE_SRC="$OUT/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
 if [ -d "$VSS_GLUE_SRC" ]; then
     for f in "$VSS_GLUE_SRC"/*.cpp "$VSS_GLUE_SRC"/*.h; do
@@ -104,7 +102,6 @@ fi
 
 [ $COUNT -eq 0 ] && warn "No VehicleHalService files found"
 
-# === Verify headers ===
 echo ""
 if ls "$VSS_DIR"/VehicleHalService*.h >/dev/null 2>&1; then
     ok "All VehicleHalService*.h headers copied successfully"
@@ -191,10 +188,6 @@ fi
 echo ""
 echo "[5/5] Applying runtime fixes..."
 
-# Fix 1: VssPropertiesRegistered VTS
-# LLM-generated AIDL uses sequential small IDs (0x1000+) per enum.
-# VssVehicleHardware.cpp already has getAllPropertyConfigs() hardcoded.
-# Generate VssProperties.json so FakeVehicleHardware can also load them.
 VSS_CONFIG_DEST="$AOSP_ROOT/vendor/etc/automotive/vhalconfig"
 mkdir -p "$VSS_CONFIG_DEST"
 
@@ -251,7 +244,6 @@ PYEOF
 
 ok "VssProperties.json generated (fixes VssPropertiesRegistered VTS)"
 
-# Fix 2: super.img not picked up by launch_cvd --noresume
 CVD_RUNTIME="${HOME}/cuttlefish_runtime"
 CVD_CACHE="${HOME}/.cache/cuttlefish"
 
@@ -358,10 +350,13 @@ echo "   → VssVehicleHardware now routes to all VehicleHalService*.cpp"
 #   endif
 #   PRODUCT_PACKAGES += $(LOCAL_VHAL_PRODUCT_PACKAGE)
 #
-# The correct approach is to set LOCAL_VHAL_PRODUCT_PACKAGE in the file
-# that *includes* device_vendor.mk — so the ifeq guard sees a non-empty
-# value and skips the emulator default. Never append directly to
-# device_vendor.mk (breaks ifeq/endif balance → "extraneous endif" error).
+# Correct approach: set LOCAL_VHAL_PRODUCT_PACKAGE in the aosp_cf.mk that
+# matches the active lunch target (e.g. vsoc_x86_64_only/auto/aosp_cf.mk
+# for aosp_cf_x86_64_auto), BEFORE the include of device_vendor.mk.
+# The ifeq guard then sees a non-empty value and skips the emulator default.
+#
+# NEVER append directly to device_vendor.mk — that breaks ifeq/endif
+# balance and causes "extraneous endif" build errors.
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[7/7] Configuring Cuttlefish to use VSS VHAL service..."
@@ -380,45 +375,88 @@ if [ "$IFEQ_COUNT" -ne "$ENDIF_COUNT" ]; then
 fi
 ok "device_vendor.mk structure intact (ifeq=$IFEQ_COUNT endif=$ENDIF_COUNT)"
 
-# Find the file that includes device_vendor.mk — that is the correct injection point
-INCLUDER=$(grep -rl "device_vendor.mk" "$AOSP_ROOT/device/google/cuttlefish/" 2>/dev/null \
-    | grep -v "device_vendor.mk$" \
-    | grep -v "\.bak" \
-    | head -1)
+# ── Step 1: Derive correct aosp_cf.mk from active lunch target ──
+# lunch aosp_cf_x86_64_auto  → TARGET_PRODUCT=aosp_cf_x86_64_auto
+#                             → vsoc_x86_64_only/auto/aosp_cf.mk
+# Mapping:
+#   arch x86_64 / arm64  → vsoc_<arch>_only/<flavor>/aosp_cf.mk
+#   arch x86 / arm       → vsoc_<arch>/<flavor>/aosp_cf.mk
+
+INCLUDER=""
+
+if [ -n "${TARGET_PRODUCT:-}" ]; then
+    REMAINDER="${TARGET_PRODUCT#aosp_cf_}"   # e.g. "x86_64_auto"
+    FLAVOR="${REMAINDER##*_}"                 # e.g. "auto"
+    ARCH_TOKEN="${REMAINDER%_*}"              # e.g. "x86_64"
+
+    case "$ARCH_TOKEN" in
+        x86_64|arm64) ARCH_DIR="vsoc_${ARCH_TOKEN}_only" ;;
+        *)             ARCH_DIR="vsoc_${ARCH_TOKEN}"      ;;
+    esac
+
+    CANDIDATE="$AOSP_ROOT/device/google/cuttlefish/${ARCH_DIR}/${FLAVOR}/aosp_cf.mk"
+    if [ -f "$CANDIDATE" ] && grep -q "device_vendor.mk" "$CANDIDATE"; then
+        INCLUDER="$CANDIDATE"
+        ok "Derived from TARGET_PRODUCT=$TARGET_PRODUCT → ${ARCH_DIR}/${FLAVOR}/aosp_cf.mk"
+    else
+        warn "Derived path not found or missing device_vendor.mk include: $CANDIDATE"
+    fi
+fi
+
+# ── Step 2: Fallback — prefer any auto/aosp_cf.mk ──
+if [ -z "$INCLUDER" ]; then
+    INCLUDER=$(grep -rl "device_vendor.mk" "$AOSP_ROOT/device/google/cuttlefish/" 2>/dev/null \
+        | grep -v "device_vendor.mk$" \
+        | grep -v "\.bak" \
+        | grep "auto/aosp_cf.mk" \
+        | head -1)
+    [ -n "$INCLUDER" ] && warn "TARGET_PRODUCT not set — falling back to: $INCLUDER"
+fi
+
+# ── Step 3: Last resort ──
+if [ -z "$INCLUDER" ]; then
+    INCLUDER=$(grep -rl "device_vendor.mk" "$AOSP_ROOT/device/google/cuttlefish/" 2>/dev/null \
+        | grep -v "device_vendor.mk$" \
+        | grep -v "\.bak" \
+        | head -1)
+    [ -n "$INCLUDER" ] && warn "No auto mk found — last resort: $INCLUDER"
+fi
 
 if [ -z "$INCLUDER" ]; then
-    warn "Could not find a file that includes device_vendor.mk"
-    warn "ACTION REQUIRED: set the following variable manually in your"
-    warn "BoardConfig.mk or top-level device.mk BEFORE device_vendor.mk is included:"
+    warn "Could not find any file including device_vendor.mk"
+    warn "ACTION REQUIRED: add the following line BEFORE the device_vendor.mk include"
+    warn "in vsoc_x86_64_only/auto/aosp_cf.mk (or your target aosp_cf.mk):"
     warn "  LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-vss-service"
 else
-    ok "Injection point: $INCLUDER"
+    ok "Injection target: $INCLUDER"
 
-    # Idempotent: remove any previous VSS injection from this file
-    sed -i '/# VSS VHAL override/d'                         "$INCLUDER"
-    sed -i '/LOCAL_VHAL_PRODUCT_PACKAGE.*vss-service/d'     "$INCLUDER"
+    # Idempotent: remove previous VSS injections from ALL aosp_cf.mk files
+    # (prevents stale injection in wrong arch file from a previous run)
+    while IFS= read -r stale_file; do
+        sed -i '/# VSS VHAL override/d'                     "$stale_file" 2>/dev/null || true
+        sed -i '/LOCAL_VHAL_PRODUCT_PACKAGE.*vss-service/d' "$stale_file" 2>/dev/null || true
+    done < <(grep -rl "device_vendor.mk" "$AOSP_ROOT/device/google/cuttlefish/" 2>/dev/null \
+        | grep -v "device_vendor.mk$" | grep -v "\.bak")
 
-    # Also remove any stale direct injection in device_vendor.mk from old script runs
-    sed -i '/# Use VSS-generated Vehicle HAL service/d'     "$DEVICE_VENDOR_MK"
-    sed -i '/LOCAL_VHAL_PRODUCT_PACKAGE.*vss-service/d'     "$DEVICE_VENDOR_MK"
-    sed -i '/PRODUCT_PACKAGES.*V3-vss-service/d'            "$DEVICE_VENDOR_MK"
+    # Remove any stale direct injection in device_vendor.mk from old script runs
+    sed -i '/# Use VSS-generated Vehicle HAL service/d' "$DEVICE_VENDOR_MK"
+    sed -i '/LOCAL_VHAL_PRODUCT_PACKAGE.*vss-service/d' "$DEVICE_VENDOR_MK"
+    sed -i '/PRODUCT_PACKAGES.*V3-vss-service/d'        "$DEVICE_VENDOR_MK"
 
-    # Find the line number of the include statement
+    # Inject BEFORE the device_vendor.mk include line
     INCLUDE_LINE=$(grep -n "device_vendor.mk" "$INCLUDER" | head -1 | cut -d: -f1)
-
-    # Inject LOCAL_VHAL_PRODUCT_PACKAGE on the line BEFORE the include
-    # so the ifeq guard in device_vendor.mk sees it as non-empty
-    sed -i "${INCLUDE_LINE}i # VSS VHAL override: set before device_vendor.mk so ifeq guard skips emulator default\nLOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-vss-service\n" \
+    sed -i "${INCLUDE_LINE}i # VSS VHAL override: must appear before device_vendor.mk include\n# so the ifeq guard skips the emulator-service default.\nLOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-vss-service\n" \
         "$INCLUDER"
 
-    ok "LOCAL_VHAL_PRODUCT_PACKAGE injected before include in: $(basename "$INCLUDER") (line $INCLUDE_LINE)"
+    ok "Injected LOCAL_VHAL_PRODUCT_PACKAGE before line $INCLUDE_LINE in $(basename "$INCLUDER")"
 fi
 
 # Final verification
 if grep -q "V3-vss-service" "${INCLUDER:-/dev/null}" 2>/dev/null; then
-    ok "Verified: V3-vss-service will be used by Cuttlefish"
+    ok "Verified: V3-vss-service present in $(basename "$INCLUDER")"
+    ok "Cuttlefish will use VSS VHAL service (emulator-service default skipped)"
 else
-    warn "Verify manually: LOCAL_VHAL_PRODUCT_PACKAGE must be set before device_vendor.mk is included"
+    warn "Verification failed — set LOCAL_VHAL_PRODUCT_PACKAGE manually (see above)"
 fi
 
 echo ""
