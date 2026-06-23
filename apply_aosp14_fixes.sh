@@ -81,7 +81,7 @@ for src_dir in \
     "$OUT/hardware/interfaces/automotive/vehicle/impl" \
     "$OUT/hardware/interfaces/automotive/vehicle/aidl/impl" \
     "$OUT/hardware/interfaces/automotive/vehicle/aidl/impl/vss"; do
-    
+
     if [ -d "$src_dir" ]; then
         echo "  Searching in: $src_dir"
         for f in "$src_dir"/VehicleHalService*.cpp "$src_dir"/VehicleHalService*.h; do
@@ -108,7 +108,7 @@ fi
 echo ""
 if ls "$VSS_DIR"/VehicleHalService*.h >/dev/null 2>&1; then
     ok "All VehicleHalService*.h headers copied successfully"
-    ls "$VSS_DIR"/VehicleHalService*.h | wc -l | xargs echo "   → Found" 
+    ls "$VSS_DIR"/VehicleHalService*.h | wc -l | xargs echo "   → Found"
 else
     warn "No VehicleHalService*.h headers were copied"
 fi
@@ -205,12 +205,8 @@ aidl_dir = sys.argv[1]
 out_json  = sys.argv[2]
 props, seen = [], set()
 
-# LLM generates sequential enum IDs starting from 0x1000 per domain
-# Build full 32-bit VHAL property IDs:
-# bits[31:24]=area, bits[23:16]=type, bits[15:0]=index
-# Use GLOBAL(0x00) + INT32(0x400000) base offset for standard props
 AREA_GLOBAL  = 0x00000000
-TYPE_MIXED   = 0x00e00000  # fallback type
+TYPE_MIXED   = 0x00e00000
 
 comment_map = {
     "BOOLEAN": 0x00200000,
@@ -225,24 +221,20 @@ if os.path.isdir(aidl_dir):
             continue
         txt = open(os.path.join(aidl_dir, fname), errors="ignore").read()
         for line in txt.splitlines():
-            # Match: NAME = 0xNNNN, // TYPE, ACCESS, AREA
             m = re.match(r'\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)', line)
             if not m:
                 continue
             name, val = m.group(1), m.group(2)
             try:
                 raw_id = int(val, 16)
-                # Determine type from comment
                 type_bits = TYPE_MIXED
                 for kw, bits in comment_map.items():
                     if kw in line:
                         type_bits = bits
                         break
-                # Build full prop ID
                 prop_id = AREA_GLOBAL | type_bits | (raw_id & 0xFFFF)
                 if prop_id not in seen:
                     seen.add(prop_id)
-                    # access: READ=1, WRITE=2, READ_WRITE=3
                     access = 3 if "READ_WRITE" in line else 1
                     props.append({
                         "prop": prop_id,
@@ -260,7 +252,6 @@ PYEOF
 ok "VssProperties.json generated (fixes VssPropertiesRegistered VTS)"
 
 # Fix 2: super.img not picked up by launch_cvd --noresume
-# Must clear Cuttlefish runtime cache before each launch with new images
 CVD_RUNTIME="${HOME}/cuttlefish_runtime"
 CVD_CACHE="${HOME}/.cache/cuttlefish"
 
@@ -277,7 +268,7 @@ if [ -d "$CVD_CACHE" ]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# [6/6] NEW: Integrate VehicleHalService*.cpp routing
+# [6/6] Integrate VehicleHalService*.cpp routing
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[6/6] Updating VssVehicleHardware.cpp with domain service routing..."
@@ -359,25 +350,75 @@ fi
 echo "   → VssVehicleHardware now routes to all VehicleHalService*.cpp"
 
 # ═══════════════════════════════════════════════════════════════
-# [7/7] Cuttlefish VHAL Service Selection (Correct way)
+# [7/7] Cuttlefish VHAL Service Selection
+# ═══════════════════════════════════════════════════════════════
+# Strategy: device_vendor.mk already contains:
+#   ifeq ($(LOCAL_VHAL_PRODUCT_PACKAGE),)
+#       LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-emulator-service
+#   endif
+#   PRODUCT_PACKAGES += $(LOCAL_VHAL_PRODUCT_PACKAGE)
+#
+# The correct approach is to set LOCAL_VHAL_PRODUCT_PACKAGE in the file
+# that *includes* device_vendor.mk — so the ifeq guard sees a non-empty
+# value and skips the emulator default. Never append directly to
+# device_vendor.mk (breaks ifeq/endif balance → "extraneous endif" error).
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[7/7] Configuring Cuttlefish to use VSS VHAL service..."
 
 DEVICE_VENDOR_MK="$AOSP_ROOT/device/google/cuttlefish/shared/auto/device_vendor.mk"
 
-if [ -f "$DEVICE_VENDOR_MK" ]; then
-    # Remove old entry if exists
-    sed -i '/LOCAL_VHAL_PRODUCT_PACKAGE/d' "$DEVICE_VENDOR_MK"
-    sed -i '/# Use VSS-generated Vehicle HAL service/d' "$DEVICE_VENDOR_MK"
-    
-    # Add correct line
-    echo "" >> "$DEVICE_VENDOR_MK"
-    echo "# Use VSS-generated Vehicle HAL service" >> "$DEVICE_VENDOR_MK"
-    echo "LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-vss-service" >> "$DEVICE_VENDOR_MK"
-    ok "Set LOCAL_VHAL_PRODUCT_PACKAGE to V3-vss-service (Cuttlefish will use this)"
+if [ ! -f "$DEVICE_VENDOR_MK" ]; then
+    fail "device_vendor.mk not found: $DEVICE_VENDOR_MK"
+fi
+
+# Safety check: verify ifeq/endif balance before touching anything
+IFEQ_COUNT=$(awk '/^\s*if(eq|def|neq|ndef)/{i++} END{print i+0}' "$DEVICE_VENDOR_MK")
+ENDIF_COUNT=$(awk '/^\s*endif/{i++} END{print i+0}' "$DEVICE_VENDOR_MK")
+if [ "$IFEQ_COUNT" -ne "$ENDIF_COUNT" ]; then
+    fail "device_vendor.mk has unbalanced ifeq/endif ($IFEQ_COUNT vs $ENDIF_COUNT) — restore from backup before continuing"
+fi
+ok "device_vendor.mk structure intact (ifeq=$IFEQ_COUNT endif=$ENDIF_COUNT)"
+
+# Find the file that includes device_vendor.mk — that is the correct injection point
+INCLUDER=$(grep -rl "device_vendor.mk" "$AOSP_ROOT/device/google/cuttlefish/" 2>/dev/null \
+    | grep -v "device_vendor.mk$" \
+    | grep -v "\.bak" \
+    | head -1)
+
+if [ -z "$INCLUDER" ]; then
+    warn "Could not find a file that includes device_vendor.mk"
+    warn "ACTION REQUIRED: set the following variable manually in your"
+    warn "BoardConfig.mk or top-level device.mk BEFORE device_vendor.mk is included:"
+    warn "  LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-vss-service"
 else
-    warn "device_vendor.mk not found"
+    ok "Injection point: $INCLUDER"
+
+    # Idempotent: remove any previous VSS injection from this file
+    sed -i '/# VSS VHAL override/d'                         "$INCLUDER"
+    sed -i '/LOCAL_VHAL_PRODUCT_PACKAGE.*vss-service/d'     "$INCLUDER"
+
+    # Also remove any stale direct injection in device_vendor.mk from old script runs
+    sed -i '/# Use VSS-generated Vehicle HAL service/d'     "$DEVICE_VENDOR_MK"
+    sed -i '/LOCAL_VHAL_PRODUCT_PACKAGE.*vss-service/d'     "$DEVICE_VENDOR_MK"
+    sed -i '/PRODUCT_PACKAGES.*V3-vss-service/d'            "$DEVICE_VENDOR_MK"
+
+    # Find the line number of the include statement
+    INCLUDE_LINE=$(grep -n "device_vendor.mk" "$INCLUDER" | head -1 | cut -d: -f1)
+
+    # Inject LOCAL_VHAL_PRODUCT_PACKAGE on the line BEFORE the include
+    # so the ifeq guard in device_vendor.mk sees it as non-empty
+    sed -i "${INCLUDE_LINE}i # VSS VHAL override: set before device_vendor.mk so ifeq guard skips emulator default\nLOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-vss-service\n" \
+        "$INCLUDER"
+
+    ok "LOCAL_VHAL_PRODUCT_PACKAGE injected before include in: $(basename "$INCLUDER") (line $INCLUDE_LINE)"
+fi
+
+# Final verification
+if grep -q "V3-vss-service" "${INCLUDER:-/dev/null}" 2>/dev/null; then
+    ok "Verified: V3-vss-service will be used by Cuttlefish"
+else
+    warn "Verify manually: LOCAL_VHAL_PRODUCT_PACKAGE must be set before device_vendor.mk is included"
 fi
 
 echo ""
