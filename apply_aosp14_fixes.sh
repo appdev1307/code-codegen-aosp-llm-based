@@ -113,63 +113,6 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# [2b] Patch LLM-generated C++ files
-# ═══════════════════════════════════════════════════════════════
-# LLM-generated files commonly have:
-#   1. Wrong/non-existent includes: VehicleHalTypes.h, IVehicleHardware.h,
-#      android/binder_auto_utils.h — none of these exist in AOSP 14.
-#      Correct header is DefaultVehicleHal.h (provides StatusCode,
-#      VehiclePropConfig, GetValueRequest, SetValueRequest, etc.)
-#   2. Unused parameter warnings treated as errors (-Werror,-Wunused-parameter)
-# Fix: remove wrong includes, prepend DefaultVehicleHal.h, add pragma guards.
-# ═══════════════════════════════════════════════════════════════
-echo ""
-echo "[2b] Patching LLM-generated C++ files..."
-
-PATCHED=0
-for cpp_file in "$VSS_DIR"/VehicleHalService*.cpp "$VSS_DIR"/VssVehicleHardware.cpp; do
-    [ -f "$cpp_file" ] || continue
-
-    cp "$cpp_file" "$cpp_file.bak.$(date +%s)"
-
-    # Step 1: Remove wrong/non-existent headers injected by previous patch runs
-    sed -i '/#include <VehicleHalTypes\.h>/d'          "$cpp_file"
-    sed -i '/#include <IVehicleHardware\.h>/d'          "$cpp_file"
-    sed -i '/#include <android\/binder_auto_utils\.h>/d' "$cpp_file"
-
-    # Step 2: Remove any existing clang diagnostic pragmas (idempotent re-patch)
-    sed -i '/#pragma clang diagnostic/d' "$cpp_file"
-
-    # Step 3: Prepend correct header + pragma push before first #include
-    FIRST_INCLUDE=$(grep -n "^#include" "$cpp_file" | head -1 | cut -d: -f1)
-    if [ -n "$FIRST_INCLUDE" ]; then
-        python3 -c "
-lines = open('$cpp_file').readlines()
-hdr = [
-    '#include <IVehicleHardware.h>\n',
-    '#include <VehicleHalTypes.h>\n',
-    '#include <android-base/logging.h>\n',
-    '#pragma clang diagnostic push\n',
-    '#pragma clang diagnostic ignored \"-Wunused-parameter\"\n',
-]
-idx = int('$FIRST_INCLUDE') - 1
-lines = lines[:idx] + hdr + lines[idx:]
-open('$cpp_file', 'w').writelines(lines)
-"
-    else
-        printf '#include <IVehicleHardware.h>\n#include <VehicleHalTypes.h>\n#include <android-base/logging.h>\n#pragma clang diagnostic push\n#pragma clang diagnostic ignored "-Wunused-parameter"\n' \
-            | cat - "$cpp_file" > "$cpp_file.tmp" && mv "$cpp_file.tmp" "$cpp_file"
-    fi
-
-    # Step 4: Append pragma pop at end of file
-    printf '\n#pragma clang diagnostic pop\n' >> "$cpp_file"
-
-    ok "Patched: $(basename "$cpp_file")"
-    PATCHED=$((PATCHED + 1))
-done
-
-[ $PATCHED -eq 0 ] && ok "No C++ files to patch"
-# ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[3/5] Copying SELinux / file_contexts..."
 COUNT=0
@@ -317,24 +260,177 @@ if [ -d "$CVD_CACHE" ]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# [6/6] Integrate VehicleHalService*.cpp routing
+# [6/6] Rewrite VSS C++ files with correct architecture
+# ═══════════════════════════════════════════════════════════════
+# LLM generates each VehicleHalService*.h as a full redefinition of
+# VssVehicleHardware — causing redefinition errors. Correct architecture:
+#   VehicleHalService<Domain>.h/.cpp → domain-specific helper class
+#   VssVehicleHardware.h/.cpp        → aggregator implementing IVehicleHardware
+#   VssVehicleService.cpp            → main() entry point
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "[6/6] Updating VssVehicleHardware.cpp with domain service routing..."
+echo "[6/6] Rewriting VSS C++ files with correct architecture..."
 
-VSS_CPP="$VSS_DIR/VssVehicleHardware.cpp"
-if [ ! -f "$VSS_CPP" ]; then
-    warn "VssVehicleHardware.cpp not found — skipping routing fix"
-else
-    cp "$VSS_CPP" "$VSS_CPP.bak.$(date +%s)" 2>/dev/null || true
-
-    cat > "$VSS_CPP" << 'EOF'
-#include <aidl/android/hardware/automotive/vehicle/IVehicle.h>
-#include <android-base/logging.h>
+COMMON_INCLUDES='#pragma once
+#include <IVehicleHardware.h>
+#include <aidl/android/hardware/automotive/vehicle/StatusCode.h>
+#include <aidl/android/hardware/automotive/vehicle/VehiclePropConfig.h>
+#include <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
+#include <aidl/android/hardware/automotive/vehicle/GetValueRequest.h>
+#include <aidl/android/hardware/automotive/vehicle/GetValueResult.h>
+#include <aidl/android/hardware/automotive/vehicle/SetValueRequest.h>
+#include <aidl/android/hardware/automotive/vehicle/SetValueResult.h>
+#include <aidl/android/hardware/automotive/vehicle/SubscribeOptions.h>
+#include <aidl/android/hardware/automotive/vehicle/VehiclePropertyAccess.h>
+#include <aidl/android/hardware/automotive/vehicle/VehiclePropertyChangeMode.h>
 #include <vector>
 #include <memory>
-#include <unordered_map>
 
+namespace android::hardware::automotive::vehicle {
+
+using ::aidl::android::hardware::automotive::vehicle::StatusCode;
+using ::aidl::android::hardware::automotive::vehicle::VehiclePropConfig;
+using ::aidl::android::hardware::automotive::vehicle::VehiclePropValue;
+using ::aidl::android::hardware::automotive::vehicle::GetValueRequest;
+using ::aidl::android::hardware::automotive::vehicle::GetValueResult;
+using ::aidl::android::hardware::automotive::vehicle::SetValueRequest;
+using ::aidl::android::hardware::automotive::vehicle::SetValueResult;
+using ::aidl::android::hardware::automotive::vehicle::SubscribeOptions;
+using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyAccess;
+using ::aidl::android::hardware::automotive::vehicle::VehiclePropertyChangeMode;'
+
+# Rewrite each domain header and cpp
+for domain in Adas Body Cabin Chassis Hvac Infotainment Powertrain; do
+    HDR="$VSS_DIR/VehicleHalService${domain}.h"
+    CPP="$VSS_DIR/VehicleHalService${domain}.cpp"
+    CLASS="VehicleHalService${domain}"
+
+    [ -f "$HDR" ] && cp "$HDR" "$HDR.bak.$(date +%s)"
+    [ -f "$CPP" ] && cp "$CPP" "$CPP.bak.$(date +%s)"
+
+    # Rewrite header — domain-specific class, NOT VssVehicleHardware
+    cat > "$HDR" << HEOF
+${COMMON_INCLUDES}
+
+class ${CLASS} {
+public:
+    std::vector<VehiclePropConfig> getAllPropertyConfigs() const;
+    void getValues(const std::vector<GetValueRequest>& requests,
+                   std::vector<GetValueResult>& results) const;
+    void setValues(const std::vector<SetValueRequest>& requests,
+                   std::vector<SetValueResult>& results);
+    bool handlesProperty(int32_t propId) const;
+};
+
+}  // namespace android::hardware::automotive::vehicle
+HEOF
+
+    # Rewrite cpp — stub implementation, domain logic can be added here
+    cat > "$CPP" << CEOF
+#include "VehicleHalService${domain}.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
+
+namespace android::hardware::automotive::vehicle {
+
+std::vector<VehiclePropConfig> ${CLASS}::getAllPropertyConfigs() const {
+    return {};
+}
+
+void ${CLASS}::getValues(const std::vector<GetValueRequest>& requests,
+                          std::vector<GetValueResult>& results) const {
+    for (const auto& req : requests) {
+        GetValueResult result = {};
+        result.requestId = req.requestId;
+        result.status = StatusCode::OK;
+        results.push_back(result);
+    }
+}
+
+void ${CLASS}::setValues(const std::vector<SetValueRequest>& requests,
+                          std::vector<SetValueResult>& results) {
+    for (const auto& req : requests) {
+        SetValueResult result = {};
+        result.requestId = req.requestId;
+        result.status = StatusCode::OK;
+        results.push_back(result);
+    }
+}
+
+bool ${CLASS}::handlesProperty(int32_t propId) const {
+    for (const auto& cfg : getAllPropertyConfigs()) {
+        if (cfg.prop == propId) return true;
+    }
+    return false;
+}
+
+}  // namespace android::hardware::automotive::vehicle
+#pragma clang diagnostic pop
+CEOF
+
+    ok "Rewritten: $CLASS"
+done
+
+# Rewrite VssVehicleHardware.h
+cat > "$VSS_DIR/VssVehicleHardware.h" << 'EOF'
+#pragma once
+#include <IVehicleHardware.h>
+#include <aidl/android/hardware/automotive/vehicle/StatusCode.h>
+#include <aidl/android/hardware/automotive/vehicle/VehiclePropConfig.h>
+#include <aidl/android/hardware/automotive/vehicle/GetValueRequest.h>
+#include <aidl/android/hardware/automotive/vehicle/GetValueResult.h>
+#include <aidl/android/hardware/automotive/vehicle/SetValueRequest.h>
+#include <aidl/android/hardware/automotive/vehicle/SetValueResult.h>
+#include <aidl/android/hardware/automotive/vehicle/SubscribeOptions.h>
+
+namespace android::hardware::automotive::vehicle {
+
+using ::aidl::android::hardware::automotive::vehicle::StatusCode;
+using ::aidl::android::hardware::automotive::vehicle::VehiclePropConfig;
+using ::aidl::android::hardware::automotive::vehicle::GetValueRequest;
+using ::aidl::android::hardware::automotive::vehicle::GetValueResult;
+using ::aidl::android::hardware::automotive::vehicle::SetValueRequest;
+using ::aidl::android::hardware::automotive::vehicle::SetValueResult;
+using ::aidl::android::hardware::automotive::vehicle::SubscribeOptions;
+
+class VssVehicleHardware : public IVehicleHardware {
+public:
+    std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
+
+    StatusCode getValues(std::shared_ptr<const GetValuesCallback> callback,
+                         const std::vector<GetValueRequest>& requests) const override;
+
+    StatusCode setValues(std::shared_ptr<const SetValuesCallback> callback,
+                         const std::vector<SetValueRequest>& requests) override;
+
+    StatusCode updateSampleRate(int32_t propId, int32_t areaId,
+                                float sampleRate) override;
+
+    // Exact signature from IVehicleHardware: by-value SubscribeOptions
+    StatusCode subscribe(
+            ::aidl::android::hardware::automotive::vehicle::SubscribeOptions options) override;
+
+    // Exact signature from IVehicleHardware: (propId, areaId)
+    StatusCode unsubscribe(int32_t propId, int32_t areaId) override;
+
+    DumpResult dump(const std::vector<std::string>& options) override;
+
+    StatusCode checkHealth() override;
+
+    void registerOnPropertyChangeEvent(
+            std::unique_ptr<const PropertyChangeCallback> callback) override;
+
+    void registerOnPropertySetErrorEvent(
+            std::unique_ptr<const PropertySetErrorCallback> callback) override;
+};
+
+}  // namespace android::hardware::automotive::vehicle
+EOF
+ok "VssVehicleHardware.h rewritten"
+
+# Rewrite VssVehicleHardware.cpp — aggregator
+cat > "$VSS_DIR/VssVehicleHardware.cpp" << 'EOF'
+#include "VssVehicleHardware.h"
 #include "VehicleHalServiceAdas.h"
 #include "VehicleHalServiceBody.h"
 #include "VehicleHalServiceCabin.h"
@@ -342,61 +438,108 @@ else
 #include "VehicleHalServiceHvac.h"
 #include "VehicleHalServiceInfotainment.h"
 #include "VehicleHalServicePowertrain.h"
+#include <android-base/logging.h>
 
-using namespace aidl::android::hardware::automotive::vehicle;
+namespace android::hardware::automotive::vehicle {
 
-class VssVehicleHardware : public BnVehicleHardware {
-public:
-    VssVehicleHardware() {
-        mServices = {
-            {"Adas", std::make_unique<VehicleHalServiceAdas>()},
-            {"Body", std::make_unique<VehicleHalServiceBody>()},
-            {"Cabin", std::make_unique<VehicleHalServiceCabin>()},
-            {"Chassis", std::make_unique<VehicleHalServiceChassis>()},
-            {"Hvac", std::make_unique<VehicleHalServiceHvac>()},
-            {"Infotainment", std::make_unique<VehicleHalServiceInfotainment>()},
-            {"Powertrain", std::make_unique<VehicleHalServicePowertrain>()},
-        };
-        LOG(INFO) << "[VSS] Initialized with " << mServices.size() << " domain services";
-    }
+using ::aidl::android::hardware::automotive::vehicle::StatusCode;
+using ::aidl::android::hardware::automotive::vehicle::VehiclePropConfig;
+using ::aidl::android::hardware::automotive::vehicle::GetValueRequest;
+using ::aidl::android::hardware::automotive::vehicle::GetValueResult;
+using ::aidl::android::hardware::automotive::vehicle::SetValueRequest;
+using ::aidl::android::hardware::automotive::vehicle::SetValueResult;
+using ::aidl::android::hardware::automotive::vehicle::SubscribeOptions;
 
-    ::ndk::ScopedAStatus getAllPropertyConfigs(std::vector<VehiclePropConfig>* configs) override {
-        configs->clear();
-        for (auto& [name, svc] : mServices) {
-            std::vector<VehiclePropConfig> cfgs;
-            svc->getAllPropertyConfigs(&cfgs);
-            configs->insert(configs->end(), cfgs.begin(), cfgs.end());
-        }
-        LOG(INFO) << "[VSS] getAllPropertyConfigs returned " << configs->size() << " properties";
-        return ::ndk::ScopedAStatus::ok();
-    }
+static VehicleHalServiceAdas         sAdas;
+static VehicleHalServiceBody         sBody;
+static VehicleHalServiceCabin        sCabin;
+static VehicleHalServiceChassis      sChassis;
+static VehicleHalServiceHvac         sHvac;
+static VehicleHalServiceInfotainment sInfotainment;
+static VehicleHalServicePowertrain   sPowertrain;
 
-    ::ndk::ScopedAStatus get(const GetValueRequest& req, GetValueResult* res) override {
-        for (auto& [name, svc] : mServices) {
-            if (svc->handlesProperty(req.prop.prop)) return svc->get(req, res);
-        }
-        return ::ndk::ScopedAStatus::fromServiceSpecificError(-1, "Property not supported");
-    }
-
-    ::ndk::ScopedAStatus set(const SetValueRequest& req, SetValueResult* res) override {
-        for (auto& [name, svc] : mServices) {
-            if (svc->handlesProperty(req.prop.prop)) return svc->set(req, res);
-        }
-        return ::ndk::ScopedAStatus::fromServiceSpecificError(-1, "Property not supported");
-    }
-
-private:
-    std::unordered_map<std::string, std::unique_ptr<IVehicleHardware>> mServices;
-};
-
-extern "C" IVehicleHardware* HIDL_FETCH_IVehicleHardware(const char* /*name*/) {
-    return new VssVehicleHardware();
+std::vector<VehiclePropConfig> VssVehicleHardware::getAllPropertyConfigs() const {
+    std::vector<VehiclePropConfig> all;
+    auto append = [&](std::vector<VehiclePropConfig> v) {
+        all.insert(all.end(), v.begin(), v.end());
+    };
+    append(sAdas.getAllPropertyConfigs());
+    append(sBody.getAllPropertyConfigs());
+    append(sCabin.getAllPropertyConfigs());
+    append(sChassis.getAllPropertyConfigs());
+    append(sHvac.getAllPropertyConfigs());
+    append(sInfotainment.getAllPropertyConfigs());
+    append(sPowertrain.getAllPropertyConfigs());
+    LOG(INFO) << "[VSS] getAllPropertyConfigs: " << all.size() << " properties";
+    return all;
 }
-EOF
-    ok "VssVehicleHardware.cpp updated with multi-service routing"
-fi
 
-echo "   → VssVehicleHardware now routes to all VehicleHalService*.cpp"
+StatusCode VssVehicleHardware::getValues(
+        std::shared_ptr<const GetValuesCallback> callback,
+        const std::vector<GetValueRequest>& requests) const {
+    std::vector<GetValueResult> results;
+    sAdas.getValues(requests, results);
+    sBody.getValues(requests, results);
+    sCabin.getValues(requests, results);
+    sChassis.getValues(requests, results);
+    sHvac.getValues(requests, results);
+    sInfotainment.getValues(requests, results);
+    sPowertrain.getValues(requests, results);
+    (*callback)(results);
+    return StatusCode::OK;
+}
+
+StatusCode VssVehicleHardware::setValues(
+        std::shared_ptr<const SetValuesCallback> callback,
+        const std::vector<SetValueRequest>& requests) {
+    std::vector<SetValueResult> results;
+    sAdas.setValues(requests, results);
+    sBody.setValues(requests, results);
+    sCabin.setValues(requests, results);
+    sChassis.setValues(requests, results);
+    sHvac.setValues(requests, results);
+    sInfotainment.setValues(requests, results);
+    sPowertrain.setValues(requests, results);
+    (*callback)(results);
+    return StatusCode::OK;
+}
+
+StatusCode VssVehicleHardware::updateSampleRate(
+        [[maybe_unused]] int32_t propId,
+        [[maybe_unused]] int32_t areaId,
+        [[maybe_unused]] float sampleRate) {
+    return StatusCode::OK;
+}
+
+StatusCode VssVehicleHardware::subscribe(
+        [[maybe_unused]] ::aidl::android::hardware::automotive::vehicle::SubscribeOptions options) {
+    return StatusCode::OK;
+}
+
+StatusCode VssVehicleHardware::unsubscribe(
+        [[maybe_unused]] int32_t propId,
+        [[maybe_unused]] int32_t areaId) {
+    return StatusCode::OK;
+}
+
+DumpResult VssVehicleHardware::dump(
+        [[maybe_unused]] const std::vector<std::string>& options) {
+    return {};
+}
+
+StatusCode VssVehicleHardware::checkHealth() {
+    return StatusCode::OK;
+}
+
+void VssVehicleHardware::registerOnPropertyChangeEvent(
+        [[maybe_unused]] std::unique_ptr<const PropertyChangeCallback> callback) {}
+
+void VssVehicleHardware::registerOnPropertySetErrorEvent(
+        [[maybe_unused]] std::unique_ptr<const PropertySetErrorCallback> callback) {}
+
+}  // namespace android::hardware::automotive::vehicle
+EOF
+ok "VssVehicleHardware.cpp rewritten (aggregator)"
 
 # ═══════════════════════════════════════════════════════════════
 # [6b] Generate Android.bp, init .rc, and vintf manifest for VSS service
@@ -427,6 +570,7 @@ cc_binary {
     init_rc: ["android.hardware.automotive.vehicle@V3-vss-service.rc"],
     vintf_fragments: ["manifest_vss.xml"],
     srcs: [
+        "VssVehicleService.cpp",
         "VssVehicleHardware.cpp",
         "VehicleHalServiceAdas.cpp",
         "VehicleHalServiceBody.cpp",
@@ -448,6 +592,7 @@ cc_binary {
         "libbinder_ndk",
         "libbase",
         "liblog",
+        "libutils",
     ],
 }
 BPEOF
@@ -489,7 +634,54 @@ else
     ok "manifest_vss.xml already present — skipping (use --force to overwrite)"
 fi
 
-echo "   → Build files: Android.bp  |  *.rc  |  manifest_vss.xml"
+echo "   → Build files: Android.bp  |  *.rc  |  manifest_vss.xml  |  VssVehicleService.cpp"
+
+# ── VssVehicleService.cpp (main entry point) ─────────────────
+VSS_SVC="$VSS_DIR/VssVehicleService.cpp"
+if [ ! -f "$VSS_SVC" ] || [ "$FORCE" = "1" ]; then
+    [ "$FORCE" = "1" ] && [ -f "$VSS_SVC" ] && cp "$VSS_SVC" "$VSS_SVC.bak.$(date +%s)"
+    cat > "$VSS_SVC" << 'SVCEOF'
+#define LOG_TAG "VssVehicleService"
+#include <DefaultVehicleHal.h>
+#include "VssVehicleHardware.h"
+#include <android/binder_manager.h>
+#include <android/binder_process.h>
+#include <utils/Log.h>
+
+using ::android::hardware::automotive::vehicle::DefaultVehicleHal;
+using ::android::hardware::automotive::vehicle::VssVehicleHardware;
+
+int main(int /* argc */, char* /* argv */[]) {
+    ALOGI("Starting VSS Vehicle HAL thread pool...");
+    if (!ABinderProcess_setThreadPoolMaxThreadCount(4)) {
+        ALOGE("failed to set thread pool max thread count");
+        return 1;
+    }
+    ABinderProcess_startThreadPool();
+
+    std::unique_ptr<VssVehicleHardware> hardware = std::make_unique<VssVehicleHardware>();
+    std::shared_ptr<DefaultVehicleHal> vhal =
+            ::ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hardware));
+
+    ALOGI("Registering VSS VHAL as service...");
+    binder_exception_t err = AServiceManager_addService(
+            vhal->asBinder().get(),
+            "android.hardware.automotive.vehicle.IVehicle/default");
+    if (err != EX_NONE) {
+        ALOGE("failed to register VSS vehicle service, exception: %d", err);
+        return 1;
+    }
+
+    ALOGI("VSS Vehicle Service Ready");
+    ABinderProcess_joinThreadPool();
+    ALOGI("VSS Vehicle Service Exiting");
+    return 0;
+}
+SVCEOF
+    ok "VssVehicleService.cpp $([ "$FORCE" = "1" ] && echo "force-regenerated" || echo "created")"
+else
+    ok "VssVehicleService.cpp already present — skipping (use --force to overwrite)"
+fi
 
 # ═══════════════════════════════════════════════════════════════
 # [7/7] Cuttlefish VHAL Service Selection
