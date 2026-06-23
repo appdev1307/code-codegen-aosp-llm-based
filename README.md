@@ -489,55 +489,71 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
 **Helper functions:**
 ```bash
-#!/bin/bash
-# restore_aosp.sh + clean_verify.sh — Full cleanup utilities
-
-# Fully restore AOSP tree to pristine state (undo everything apply_aosp14_fixes.sh did)
+# Fully undo everything apply_aosp14_fixes.sh touches, so the next C3/C4 run
+# (or a clean build) starts from a pristine tree.
+#
+# apply_aosp14_fixes.sh now modifies files across SEVERAL git sub-repos:
+#   hardware/interfaces            — AIDL enums, impl/vss/, vhal/Android.bp,
+#                                    aidl/Android.bp (frozen flag), fcm_exclude.cpp
+#   device/google/cuttlefish       — device-tree sepolicy (hal_vehicle_vss.te,
+#                                    file_contexts), device_vendor.mk (VHAL swap),
+#                                    device.mk (disabled test modules)
+#   platform_testing               — continuous_native_tests.mk
+# AOSP uses repo, so each sub-repo is its own git tree → git checkout per repo.
 restore_aosp() {
-    local AOSP_ROOT="${1:-~/aosp-14-auto}"
-    cd "$AOSP_ROOT" || { echo "❌ Cannot cd to AOSP root"; return 1; }
+    cd ~/aosp-14-auto
 
-    echo "=== Restoring clean AOSP state ==="
-
-    # Remove generated files
+    # 1. Remove generated files that are NOT tracked by git (git checkout won't touch these)
     rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty{Adas,Body,Cabin,Chassis,Hvac,Infotainment,Powertrain}.aidl
     rm -rf hardware/interfaces/automotive/vehicle/aidl/impl/vss/
-    rm -f device/google/cuttlefish/shared/sepolicy/vendor/hal_vehicle_vss.te
-    rm -f system/sepolicy/vendor/{hal_vehicle_vss.te,vehicle_hal_*.te,file_contexts_vss}
 
-    # Revert tracked changes in each repo
-    for repo in hardware/interfaces system/sepolicy device/google/cuttlefish platform_testing; do
+    # 2. Remove generated device-tree SELinux (added by apply_aosp14_fixes.sh [3/5])
+    rm -f device/google/cuttlefish/shared/sepolicy/vendor/hal_vehicle_vss.te
+
+    # 3. Remove any stale CORE-tree SELinux from older script versions
+    rm -f system/sepolicy/vendor/hal_vehicle_vss.te \
+          system/sepolicy/vendor/vehicle_hal_*.te \
+          system/sepolicy/vendor/file_contexts_vss
+
+    # 4. Revert tracked-file edits in each affected sub-repo
+    #    (device_vendor.mk VHAL swap, device.mk, file_contexts label,
+    #     vhal/Android.bp, aidl/Android.bp frozen flag, fcm_exclude.cpp,
+    #     continuous_native_tests.mk)
+    for repo in hardware/interfaces \
+                system/sepolicy \
+                device/google/cuttlefish \
+                platform_testing; do
         if [ -d "$repo/.git" ] || git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
-            git -C "$repo" checkout -- . 2>/dev/null && echo "✓ Reverted $repo"
+            git -C "$repo" checkout -- . && echo "  ✓ reverted $repo"
         fi
     done
 
-    # Clean backup
+    # 5. Drop the .bak device_vendor.mk left by the VHAL swap (now redundant)
     rm -f device/google/cuttlefish/shared/auto/device_vendor.mk.bak
 
-    echo "✅ AOSP tree fully restored to pristine state"
+    echo "✓ AOSP tree restored (emulator VHAL is the default again)"
 }
-
-# Clean build artifacts, Cuttlefish runtime, and previous VSS service
+```
+```bash
+# Discard previous run's build outputs + Cuttlefish runtime + running VM.
+# Run this together with restore_aosp before applying a new C4/C5 output.
 clean_verify() {
-    echo "=== Cleaning build outputs and Cuttlefish runtime ==="
-
-    # Kill running instances
+    # 1. Tear down any running Cuttlefish + leftover processes
     pkill -9 -f crosvm 2>/dev/null || true
     pkill -9 -f run_cvd 2>/dev/null || true
     cvd reset -y 2>/dev/null || true
 
-    # Remove runtime images
-    rm -rf ~/cuttlefish_runtime ~/cuttlefish/instances/cvd-1 2>/dev/null || true
-    rm -rf ~/.cache/cuttlefish 2>/dev/null || true
+    # 2. Wipe the runtime composite/images so launch_cvd re-assembles from $OUT
+    rm -f ~/cuttlefish/instances/cvd-1/*.img 2>/dev/null || true
 
-    # Remove previous VSS service binaries
-    rm -f "$ANDROID_PRODUCT_OUT"/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service* 2>/dev/null || true
-    rm -f "$ANDROID_PRODUCT_OUT"/vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service* 2>/dev/null || true
-    rm -f "$ANDROID_PRODUCT_OUT"/vendor/etc/vintf/manifest/*vss* 2>/dev/null || true
+    # 3. Drop the VSS artifacts + images from the staging output so a failed
+    #    rebuild cannot leave last run's binary behind to be verified by mistake
+    rm -f $ANDROID_PRODUCT_OUT/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
+    rm -f $ANDROID_PRODUCT_OUT/vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service.rc
+    rm -f $ANDROID_PRODUCT_OUT/vendor/etc/vintf/manifest/manifest_vss.xml
+    rm -f $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img $ANDROID_PRODUCT_OUT/vbmeta.img
 
-    echo "✅ Cleaned build outputs + Cuttlefish runtime"
-    echo "Ready for new C4 run + apply_aosp14_fixes.sh"
+    echo "✓ build outputs + Cuttlefish runtime cleaned"
 }
 ```
 
@@ -557,9 +573,9 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 # Apply ALL tree changes: copy AIDL/C++/glue, write device-tree SELinux,
 # point LOCAL_VHAL_PRODUCT_PACKAGE at VSS, apply one-time AOSP 14 fixes.
 # (This replaces the old update_vss_selinux.sh — that helper is no longer needed.)
-./restore_aosp.sh
-./apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
-./clean_verify.sh
+restore_aosp.
+~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
+clean_verify.sh
 
 # Update API (new .aidl files require an API bump)
 m android.hardware.automotive.vehicle-update-api
