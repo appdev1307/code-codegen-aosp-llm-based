@@ -359,7 +359,7 @@ fi
 echo "   → VssVehicleHardware now routes to all VehicleHalService*.cpp"
 
 # ═══════════════════════════════════════════════════════════════
-# [7/7] Cuttlefish VHAL Service Selection (Fixed)
+# [7/7] Cuttlefish VHAL Service Selection (Correct way)
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[7/7] Configuring Cuttlefish to use VSS VHAL service..."
@@ -367,17 +367,17 @@ echo "[7/7] Configuring Cuttlefish to use VSS VHAL service..."
 DEVICE_VENDOR_MK="$AOSP_ROOT/device/google/cuttlefish/shared/auto/device_vendor.mk"
 
 if [ -f "$DEVICE_VENDOR_MK" ]; then
-    # Remove old entry safely
+    # Remove old entry if exists
     sed -i '/LOCAL_VHAL_PRODUCT_PACKAGE/d' "$DEVICE_VENDOR_MK"
     sed -i '/# Use VSS-generated Vehicle HAL service/d' "$DEVICE_VENDOR_MK"
     
-    # Add at the end
+    # Add correct line
     echo "" >> "$DEVICE_VENDOR_MK"
     echo "# Use VSS-generated Vehicle HAL service" >> "$DEVICE_VENDOR_MK"
     echo "LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V3-vss-service" >> "$DEVICE_VENDOR_MK"
-    ok "Set LOCAL_VHAL_PRODUCT_PACKAGE to V3-vss-service"
+    ok "Set LOCAL_VHAL_PRODUCT_PACKAGE to V3-vss-service (Cuttlefish will use this)"
 else
-    warn "device_vendor.mk not found — manual configuration needed"
+    warn "device_vendor.mk not found"
 fi
 
 echo ""
