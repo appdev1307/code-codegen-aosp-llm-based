@@ -742,10 +742,7 @@ pkill -9 -f crosvm 2>/dev/null || true
 pkill -9 -f run_cvd 2>/dev/null || true
 
 # Launch với verbose logging
-launch_cvd --noresume \
-    --system_image_dir=$ANDROID_PRODUCT_OUT \
-    --verbosity=DEBUG \
-    2>&1 | grep -iE "panic|fatal|abort|error|fail|vss|vehicle" | head -30
+launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu-display=mode=off
     
 # đợi VIRTUAL_DEVICE_BOOT_COMPLETED
 
