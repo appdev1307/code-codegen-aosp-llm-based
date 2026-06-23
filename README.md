@@ -584,6 +584,8 @@ m android.hardware.automotive.vehicle-update-api
 # Optional: build just the VSS module first to catch C++/bp errors early
 mmm hardware/interfaces/automotive/vehicle/aidl/impl/vss -j$(nproc)
 
+m -j$(nproc)
+
 # Build the image triple so the change reaches the guest.
 # Force a real rebuild — deleting beats relying on Soong's change detection here.
 rm -f $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
