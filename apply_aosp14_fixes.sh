@@ -113,7 +113,64 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# [3/5] Copy SELinux
+# [2b] Patch LLM-generated C++ files
+# ═══════════════════════════════════════════════════════════════
+# LLM-generated files commonly have:
+#   1. Missing #include for StatusCode, DumpResult, PropertyChangeCallback
+#   2. Unused parameter warnings treated as errors (-Werror,-Wunused-parameter)
+# Fix: prepend canonical header block + suppress unused-param warnings
+# via #pragma clang diagnostic push/pop around the whole file.
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "[2b] Patching LLM-generated C++ files..."
+
+PATCHED=0
+for cpp_file in "$VSS_DIR"/VehicleHalService*.cpp "$VSS_DIR"/VssVehicleHardware.cpp; do
+    [ -f "$cpp_file" ] || continue
+
+    # Skip if already patched
+    if grep -q "clang diagnostic" "$cpp_file" 2>/dev/null; then
+        ok "Already patched: $(basename "$cpp_file")"
+        continue
+    fi
+
+    cp "$cpp_file" "$cpp_file.bak.$(date +%s)"
+
+    # Build header block to prepend
+    HEADER_BLOCK='#include <VehicleHalTypes.h>
+#include <IVehicleHardware.h>
+#include <android-base/logging.h>
+#include <android/binder_auto_utils.h>
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
+'
+
+    # Find line number of first existing #include
+    FIRST_INCLUDE=$(grep -n "^#include" "$cpp_file" | head -1 | cut -d: -f1)
+    if [ -n "$FIRST_INCLUDE" ]; then
+        # Insert header block before first #include
+        python3 -c "
+import sys
+lines = open('$cpp_file').readlines()
+hdr = '''$HEADER_BLOCK'''.splitlines(keepends=True)
+idx = $FIRST_INCLUDE - 1
+lines = lines[:idx] + hdr + lines[idx:]
+open('$cpp_file', 'w').writelines(lines)
+"
+    else
+        # No existing includes — prepend at top
+        { printf '%s\n' "$HEADER_BLOCK"; cat "$cpp_file"; } > "$cpp_file.tmp"
+        mv "$cpp_file.tmp" "$cpp_file"
+    fi
+
+    # Append pragma pop at end of file
+    printf '\n#pragma clang diagnostic pop\n' >> "$cpp_file"
+
+    ok "Patched: $(basename "$cpp_file")"
+    PATCHED=$((PATCHED + 1))
+done
+
+[ $PATCHED -eq 0 ] && ok "All C++ files already patched"
 # ═══════════════════════════════════════════════════════════════
 echo ""
 echo "[3/5] Copying SELinux / file_contexts..."
