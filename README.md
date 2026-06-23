@@ -737,12 +737,16 @@ cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-adb kill-server
-pkill -f emulator
-pkill -f cuttlefish
-pkill -f launch_cvd
+# Kill CVD
+pkill -9 -f crosvm 2>/dev/null || true
+pkill -9 -f run_cvd 2>/dev/null || true
 
-cvd reset -y && launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
+# Launch với verbose logging
+launch_cvd --noresume \
+    --system_image_dir=$ANDROID_PRODUCT_OUT \
+    --verbosity=DEBUG \
+    2>&1 | grep -iE "panic|fatal|abort|error|fail|vss|vehicle" | head -30
+    
 # đợi VIRTUAL_DEVICE_BOOT_COMPLETED
 
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
@@ -751,6 +755,7 @@ adb shell ls /vendor/bin/hw/ | grep -i vehicle       # @V3-vss-service, no emula
 adb root
 adb shell ps -AZ | grep vss-service                  # u:r:hal_vehicle_vss:s0  (correct domain)
 adb shell service list | grep automotive.vehicle     # IVehicle/default present
+curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/post_boot_check.sh
 ./post_boot_check.sh
 
 ```
