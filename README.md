@@ -575,7 +575,7 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 # (This replaces the old update_vss_selinux.sh — that helper is no longer needed.)
 restore_aosp
 clean_verify
-~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto
+~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto --force
 
 # Update API (new .aidl files require an API bump)
 m android.hardware.automotive.vehicle-update-api

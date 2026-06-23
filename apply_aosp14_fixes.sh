@@ -8,6 +8,8 @@ set -euo pipefail
 
 OUT="${1:?Usage: $0 <output_dir>  e.g. ~/output_c4}"
 AOSP_ROOT="${2:-$(pwd)}"
+FORCE=0
+for arg in "$@"; do [ "$arg" = "--force" ] && FORCE=1; done
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
@@ -340,6 +342,98 @@ EOF
 fi
 
 echo "   → VssVehicleHardware now routes to all VehicleHalService*.cpp"
+
+# ═══════════════════════════════════════════════════════════════
+# [6b] Generate Android.bp, init .rc, and vintf manifest for VSS service
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "[6b] Generating build system files for V3-vss-service..."
+
+VSS_BP="$VSS_DIR/Android.bp"
+VSS_RC="$VSS_DIR/android.hardware.automotive.vehicle@V3-vss-service.rc"
+VSS_MANIFEST="$VSS_DIR/manifest_vss.xml"
+
+# ── Android.bp ──────────────────────────────────────────────
+# Mirrors V3-default-service deps (VehicleHalDefaults, DefaultVehicleHal,
+# VehicleHalUtils, IVehicleHardware) confirmed from vhal/Android.bp.
+# Does NOT use FakeVehicleHardwareDefaults (test-only) or
+# android.hardware.automotive.vehicle@aidl-default-impl-lib (does not exist).
+if [ ! -f "$VSS_BP" ] || [ "$FORCE" = "1" ]; then
+    [ "$FORCE" = "1" ] && [ -f "$VSS_BP" ] && cp "$VSS_BP" "$VSS_BP.bak.$(date +%s)"
+    cat > "$VSS_BP" << 'BPEOF'
+cc_binary {
+    name: "android.hardware.automotive.vehicle@V3-vss-service",
+    vendor: true,
+    relative_install_path: "hw",
+    defaults: [
+        "VehicleHalDefaults",
+        "android-automotive-large-parcelable-defaults",
+    ],
+    init_rc: ["android.hardware.automotive.vehicle@V3-vss-service.rc"],
+    vintf_fragments: ["manifest_vss.xml"],
+    srcs: [
+        "VssVehicleHardware.cpp",
+        "VehicleHalServiceAdas.cpp",
+        "VehicleHalServiceBody.cpp",
+        "VehicleHalServiceCabin.cpp",
+        "VehicleHalServiceChassis.cpp",
+        "VehicleHalServiceHvac.cpp",
+        "VehicleHalServiceInfotainment.cpp",
+        "VehicleHalServicePowertrain.cpp",
+    ],
+    static_libs: [
+        "DefaultVehicleHal",
+        "VehicleHalUtils",
+    ],
+    header_libs: [
+        "IVehicleHardware",
+    ],
+    shared_libs: [
+        "libbinder_ndk",
+        "libbase",
+        "liblog",
+    ],
+}
+BPEOF
+    ok "Android.bp $([ "$FORCE" = "1" ] && echo "force-regenerated" || echo "created")"
+else
+    ok "Android.bp already present — skipping (use --force to overwrite)"
+fi
+
+# ── init .rc ────────────────────────────────────────────────
+if [ ! -f "$VSS_RC" ] || [ "$FORCE" = "1" ]; then
+    [ "$FORCE" = "1" ] && [ -f "$VSS_RC" ] && cp "$VSS_RC" "$VSS_RC.bak.$(date +%s)"
+    cat > "$VSS_RC" << 'RCEOF'
+service vendor.vehicle-hal-vss /vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
+    class hal
+    user vehicle_network
+    group vehicle_network
+    disabled
+    oneshot
+RCEOF
+    ok "init rc $([ "$FORCE" = "1" ] && echo "force-regenerated" || echo "created")"
+else
+    ok "init rc already present — skipping (use --force to overwrite)"
+fi
+
+# ── vintf manifest ───────────────────────────────────────────
+if [ ! -f "$VSS_MANIFEST" ] || [ "$FORCE" = "1" ]; then
+    [ "$FORCE" = "1" ] && [ -f "$VSS_MANIFEST" ] && cp "$VSS_MANIFEST" "$VSS_MANIFEST.bak.$(date +%s)"
+    cat > "$VSS_MANIFEST" << 'XMLEOF'
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.automotive.vehicle</name>
+        <version>3</version>
+        <fqname>IVehicle/default</fqname>
+    </hal>
+</manifest>
+XMLEOF
+    ok "manifest_vss.xml $([ "$FORCE" = "1" ] && echo "force-regenerated" || echo "created")"
+else
+    ok "manifest_vss.xml already present — skipping (use --force to overwrite)"
+fi
+
+echo "   → Build files: Android.bp  |  *.rc  |  manifest_vss.xml"
 
 # ═══════════════════════════════════════════════════════════════
 # [7/7] Cuttlefish VHAL Service Selection
