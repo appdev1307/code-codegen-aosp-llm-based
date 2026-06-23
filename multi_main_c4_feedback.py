@@ -327,122 +327,129 @@ class ValidatorFeedback:
 
     @staticmethod
     def _validate_selinux(code: str) -> tuple[bool, str, float]:
-        try:
-            import tempfile
-            tmp = Path(tempfile.mktemp(suffix=".te"))
-            tmp.write_text(code)
-            result = subprocess.run(
-                ["checkpolicy", "-M", "-c", "30", "-o", "/dev/null", str(tmp)],
-                capture_output=True, timeout=10
-            )
-            tmp.unlink(missing_ok=True)
-            if result.returncode == 0:
-                return (True, "", 1.0)
-            stderr = result.stderr.decode(errors="replace")
-            msg = (
-                f"SELinux policy compilation failed:\n{stderr[:500]}\n"
-                f"Fix the policy syntax errors. Every type declaration must end with semicolon. "
-                f"Every allow rule must have the format: allow source target:class permission;"
-            )
-            return (False, msg, 0.3)
-        except FileNotFoundError:
-            # checkpolicy not available on Colab — use regex fallback
-            # Macros (init_daemon_domain, hal_server_domain, binder_use, binder_call)
-            # are valid and do NOT end with semicolon — do not flag them
-            MACRO_PREFIXES = (
-                "init_daemon_domain", "hal_server_domain",
-                "binder_use", "binder_call", "hal_client_domain",
-                "net_domain", "typeattribute",
-            )
-            issues = []
-            has_type = False
-            for i, line in enumerate(code.splitlines(), 1):
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                if stripped.startswith("type "):
-                    has_type = True
-                # Only check semicolon for explicit statements, not macros
-                if stripped.startswith(("allow ", "neverallow ", "type ")):
-                    if not stripped.endswith(";"):
-                        issues.append(f"Line {i}: missing semicolon: {stripped[:60]}")
-            if not has_type:
-                issues.append("Missing type declaration")
-            if issues:
-                return (False, "SELinux issues:\n" + "\n".join(issues[:5]), 0.5)
-            return (True, "", 1.0)
-        except subprocess.TimeoutExpired:
-            return (False, "checkpolicy timed out", 0.5)
+        """
+        Validate SELinux using the SAME logic as dspy_opt.validators.validate_selinux
+        so retry feedback matches what the final scorer checks.
+        """
+        # Use the canonical validator to get consistent score+errors
+        from dspy_opt.validators import validate as canonical_validate
+        result = canonical_validate("selinux", code)
+        if result.ok:
+            return (True, "", result.score)
+
+        # Build actionable error message listing exactly what is missing
+        missing = result.errors  # e.g. ["Missing init_daemon_domain", ...]
+        required_patterns = {
+            "Missing type declarations":
+                "Add: type hal_vehicle_<domain>, domain;\n"
+                "     type hal_vehicle_<domain>_exec, exec_type, vendor_file_type, file_type;",
+            "No domain type":
+                "Ensure the type has 'domain' attribute: type hal_vehicle_<domain>, domain;",
+            "Missing init_daemon_domain":
+                "Add: init_daemon_domain(hal_vehicle_<domain>, hal_vehicle_<domain>_exec)",
+            "Missing hal_server_domain(x, hal_vehicle)":
+                "Add: hal_server_domain(hal_vehicle_<domain>, hal_vehicle_default)",
+            "Missing binder_call/binder_use":
+                "Add: binder_use(hal_vehicle_<domain>)\n"
+                "     binder_call(hal_vehicle_<domain>, binderservicemanager)",
+            "Missing vndbinder_device allow rule":
+                "Add: allow hal_vehicle_<domain> vndbinder_device:chr_file rw_file_perms;",
+        }
+        fix_hints = []
+        for err in missing:
+            for key, hint in required_patterns.items():
+                if key.lower() in err.lower():
+                    fix_hints.append(f"- {err}\n  FIX: {hint}")
+                    break
+            else:
+                fix_hints.append(f"- {err}")
+
+        msg = (
+            "SELinux policy missing required AIDL VHAL patterns:\n"
+            + "\n".join(fix_hints) + "\n\n"
+            "Generate a COMPLETE .te file with ALL of the above. "
+            "Replace <domain> with the actual HAL domain name (e.g. adas, body, cabin). "
+            "Do NOT use HIDL patterns (hwbinder, hwservice_manager)."
+        )
+        return (False, msg, result.score)
 
     @staticmethod
     def _validate_aidl(code: str) -> tuple[bool, str, float]:
-        issues = []
-        pkg_match = re.search(
-                r"^\s*package\s+[\w.]+\s*;", code, re.MULTILINE)
-        if not pkg_match:
-            issues.append(
-                "Missing package declaration — add e.g. 'package android.hardware.automotive.vehicle;' "
-                "as the very first statement (before @VintfStability and enum/interface)")
-        else:
-            type_before = re.search(
-                r"(interface|enum|parcelable)\s+\w+", code[:pkg_match.start()])
-            if type_before:
-                issues.append(
-                    "Package declaration must be the FIRST statement — move 'package ...' "
-                    "before @VintfStability and before enum/interface declarations")
-        if not re.search(r"(interface|parcelable|enum)\s+\w+", code):
-            issues.append("Missing interface, enum, or parcelable declaration")
-        if code.count("{") != code.count("}"):
-            issues.append(f"Unbalanced braces: {code.count('{')} open, {code.count('}')} close")
-        if "@VintfStability" not in code:
-            issues.append("Missing @VintfStability annotation (required for AAOS VHAL)")
-        if issues:
-            msg = "AIDL validation errors:\n" + "\n".join(f"- {i}" for i in issues)
-            msg += "\nFix these issues and regenerate the complete AIDL file."
-            return (False, msg, max(0, 1.0 - len(issues) * 0.2))
-        return (True, "", 1.0)
+        """Use canonical validator for consistent scoring with final scorer."""
+        from dspy_opt.validators import validate as canonical_validate
+        result = canonical_validate("aidl", code)
+        if result.ok:
+            return (True, "", result.score)
+        errors = result.errors or []
+        msg = (
+            "AIDL validation errors:\n"
+            + "\n".join(f"- {e}" for e in errors) + "\n\n"
+            "Fix ALL issues. Required:\n"
+            "1. package android.hardware.automotive.vehicle; (first line)\n"
+            "2. @VintfStability annotation\n"
+            "3. @Backing(type=\"int\") for enum types\n"
+            "4. UPPER_CASE enum constants with hex values (0x1000+)\n"
+            "5. Balanced braces"
+        )
+        return (False, msg, result.score)
 
     @staticmethod
     def _validate_build(code: str) -> tuple[bool, str, float]:
-        issues = []
-        if code.count("{") != code.count("}"):
-            issues.append("Unbalanced braces")
-        if "vendor:" not in code and "vendor :" not in code:
-            issues.append("Missing 'vendor: true' — required for VHAL HAL modules")
-        if "name:" not in code and '"name"' not in code:
-            issues.append("Missing 'name' field")
-        if "srcs:" not in code and '"srcs"' not in code:
-            issues.append("Missing 'srcs' field")
-        if issues:
-            msg = "Android.bp validation errors:\n" + "\n".join(f"- {i}" for i in issues)
-            msg += "\nFix these and regenerate the complete Android.bp file."
-            return (False, msg, max(0, 1.0 - len(issues) * 0.2))
-        return (True, "", 1.0)
+        """Use canonical validator for consistent scoring with final scorer."""
+        from dspy_opt.validators import validate as canonical_validate
+        result = canonical_validate("build", code)
+        if result.ok:
+            return (True, "", result.score)
+        errors = result.errors or []
+        msg = (
+            "Android.bp validation errors:\n"
+            + "\n".join(f"- {e}" for e in errors) + "\n\n"
+            "Fix ALL issues. Required:\n"
+            "1. Block type: aidl_interface, cc_binary, or cc_library_shared\n"
+            "2. vendor: true (HAL modules must be on vendor partition)\n"
+            "3. name: \"<module_name>\"\n"
+            "4. srcs: [\"*.cpp\"]\n"
+            "5. Balanced braces"
+        )
+        return (False, msg, result.score)
 
     @staticmethod
     def _validate_kotlin(code: str) -> tuple[bool, str, float]:
-        issues = []
-        if code.count("{") != code.count("}"):
-            issues.append(f"Unbalanced braces: {code.count('{')} open, {code.count('}')} close")
-        if "class " not in code and "fun " not in code:
-            issues.append("No class or function definitions found")
-        if issues:
-            return (False, "Kotlin issues:\n" + "\n".join(issues), 0.6)
-        return (True, "", 0.9)
+        """Use canonical validator for consistent scoring with final scorer."""
+        from dspy_opt.validators import validate as canonical_validate
+        result = canonical_validate("android_app", code)
+        if result.ok:
+            return (True, "", result.score)
+        errors = result.errors or []
+        msg = (
+            "Kotlin validation errors:\n"
+            + "\n".join(f"- {e}" for e in errors) + "\n\n"
+            "Fix ALL issues. Required:\n"
+            "1. CarPropertyManager or Car.createCar usage\n"
+            "2. Fragment class with onViewCreated/onCreateView\n"
+            "3. registerCallback for CarPropertyEventCallback\n"
+            "4. Balanced braces"
+        )
+        return (False, msg, result.score)
 
     @staticmethod
     def _validate_xml(code: str) -> tuple[bool, str, float]:
-        import xml.etree.ElementTree as ET
-        try:
-            ET.fromstring(code)
-            return (True, "", 1.0)
-        except ET.ParseError as e:
-            msg = (
-                f"XML parse error: {e}\n"
-                f"Fix the XML syntax. Ensure all tags are properly closed, "
-                f"attributes are quoted, and special characters are escaped."
-            )
-            return (False, msg, 0.3)
+        """Use canonical validator for consistent scoring with final scorer."""
+        from dspy_opt.validators import validate as canonical_validate
+        result = canonical_validate("android_layout", code)
+        if result.ok:
+            return (True, "", result.score)
+        errors = result.errors or []
+        msg = (
+            f"Android layout XML validation failed (score={result.score:.2f}):\n"
+            + "\n".join(f"- {e}" for e in errors) + "\n\n"
+            "Fix ALL issues above. Ensure:\n"
+            "1. Root element is ScrollView/LinearLayout with xmlns:android and xmlns:app\n"
+            "2. Every TextView/Switch/SeekBar/Button/CheckBox/EditText has android:id\n"
+            "3. All XML tags are properly closed\n"
+            "4. No double-escaped content (&lt; &gt; as literal text)"
+        )
+        return (False, msg, result.score)
 
     @staticmethod
     def _validate_markdown(code: str) -> tuple[bool, str, float]:
@@ -550,26 +557,29 @@ class PostValidationRetry:
         for attempt in range(2, self.max_retries + 1):
             metrics["attempts"] = attempt
 
-            # Build feedback as a SEPARATE field — do NOT pollute aosp_context
             feedback_block = (
-                f"\n\nYour previous output had validation errors:\n"
+                f"Your previous output had validation errors:\n"
                 f"{error_msg}\n\n"
                 f"Fix ALL errors above. Generate the COMPLETE corrected file. "
                 f"Do not omit any sections."
             )
 
             retry_kwargs = dict(gen_kwargs)
-            # DSPy silently ignores unknown kwargs instead of raising TypeError,
-            # so the old validation_feedback approach was a no-op for all DSPy
-            # agents (selinux, build, vintf). Fix: always prepend feedback to
-            # aosp_context so the LLM actually sees the error on every retry.
-            retry_kwargs["aosp_context"] = (
-                "=== VALIDATION FAILED — FIX THESE ERRORS BEFORE ANYTHING ELSE ===\n"
+
+            # Inject error feedback into `properties` (LLM primary input field)
+            # rather than `aosp_context` (reference field LLM treats as background).
+            # NOTE: A cleaner solution would add `validation_feedback` as a dedicated
+            # DSPy Signature field — but that requires modifying all agents and
+            # re-running MIPROv2 optimisation, which is out of scope for this thesis.
+            retry_kwargs["properties"] = (
+                "=== CRITICAL: FIX THESE VALIDATION ERRORS FIRST ===\n"
                 + feedback_block
                 + "\n=== END ERRORS ===\n\n"
-                + "=== AOSP REFERENCE CONTEXT ===\n"
-                + gen_kwargs.get("aosp_context", "")
+                + "=== ORIGINAL PROPERTIES ===\n"
+                + gen_kwargs.get("properties", "")
             )
+            # Keep aosp_context clean — only AOSP reference, no error pollution
+            retry_kwargs["aosp_context"] = gen_kwargs.get("aosp_context", "")
             try:
                 new_code = agent._generate(**retry_kwargs)
             except Exception as e:
