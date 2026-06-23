@@ -503,33 +503,32 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 restore_aosp() {
     cd ~/aosp-14-auto
 
-    # 1. Remove generated files that are NOT tracked by git (git checkout won't touch these)
+    # 1. Remove generated AIDL files (not tracked by git)
     rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty{Adas,Body,Cabin,Chassis,Hvac,Infotainment,Powertrain}.aidl
+
+    # 2. Remove generated VSS impl directory
     rm -rf hardware/interfaces/automotive/vehicle/aidl/impl/vss/
 
-    # 2. Remove generated device-tree SELinux (added by apply_aosp14_fixes.sh [3/5])
-    rm -f device/google/cuttlefish/shared/sepolicy/vendor/hal_vehicle_vss.te
-
-    # 3. Remove any stale CORE-tree SELinux from older script versions
+    # 3. Remove SELinux files added by apply_aosp14_fixes.sh [3/5]
+    #    SEPOL_DEST = $AOSP_ROOT/system/sepolicy/vendor  (not cuttlefish/shared/sepolicy)
     rm -f system/sepolicy/vendor/hal_vehicle_vss.te \
           system/sepolicy/vendor/vehicle_hal_*.te \
           system/sepolicy/vendor/file_contexts_vss
 
     # 4. Revert tracked-file edits in each affected sub-repo
-    #    (device_vendor.mk VHAL swap, device.mk, file_contexts label,
-    #     vhal/Android.bp, aidl/Android.bp frozen flag, fcm_exclude.cpp,
-    #     continuous_native_tests.mk)
     for repo in hardware/interfaces \
                 system/sepolicy \
                 device/google/cuttlefish \
                 platform_testing; do
-        if [ -d "$repo/.git" ] || git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+        if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
             git -C "$repo" checkout -- . && echo "  ✓ reverted $repo"
         fi
     done
 
-    # 5. Drop the .bak device_vendor.mk left by the VHAL swap (now redundant)
-    rm -f device/google/cuttlefish/shared/auto/device_vendor.mk.bak
+    # 5. Remove stale .bak files left by apply_aosp14_fixes.sh
+    rm -f device/google/cuttlefish/shared/auto/device_vendor.mk.bak*
+    find hardware/interfaces/automotive/vehicle/aidl/impl/ \
+         -name "*.bak.*" -delete 2>/dev/null || true
 
     echo "✓ AOSP tree restored (emulator VHAL is the default again)"
 }
@@ -538,20 +537,21 @@ restore_aosp() {
 # Discard previous run's build outputs + Cuttlefish runtime + running VM.
 # Run this together with restore_aosp before applying a new C4/C5 output.
 clean_verify() {
-    # 1. Tear down any running Cuttlefish + leftover processes
-    pkill -9 -f crosvm 2>/dev/null || true
-    pkill -9 -f run_cvd 2>/dev/null || true
-    cvd reset -y 2>/dev/null || true
+    # $ANDROID_PRODUCT_OUT phải được set bởi lunch trước khi gọi hàm này
+    [ -z "$ANDROID_PRODUCT_OUT" ] && echo "ERROR: run lunch first" && return 1
 
-    # 2. Wipe the runtime composite/images so launch_cvd re-assembles from $OUT
+    pkill -9 -f crosvm  2>/dev/null || true
+    pkill -9 -f run_cvd 2>/dev/null || true
+    cvd reset -y        2>/dev/null || true
+
     rm -f ~/cuttlefish/instances/cvd-1/*.img 2>/dev/null || true
 
-    # 3. Drop the VSS artifacts + images from the staging output so a failed
-    #    rebuild cannot leave last run's binary behind to be verified by mistake
-    rm -f $ANDROID_PRODUCT_OUT/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
-    rm -f $ANDROID_PRODUCT_OUT/vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service.rc
-    rm -f $ANDROID_PRODUCT_OUT/vendor/etc/vintf/manifest/manifest_vss.xml
-    rm -f $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img $ANDROID_PRODUCT_OUT/vbmeta.img
+    rm -f "$ANDROID_PRODUCT_OUT"/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service
+    rm -f "$ANDROID_PRODUCT_OUT"/vendor/etc/init/android.hardware.automotive.vehicle@V3-vss-service.rc
+    rm -f "$ANDROID_PRODUCT_OUT"/vendor/etc/vintf/manifest/manifest_vss.xml
+    rm -f "$ANDROID_PRODUCT_OUT"/super.img \
+          "$ANDROID_PRODUCT_OUT"/vendor.img \
+          "$ANDROID_PRODUCT_OUT"/vbmeta.img
 
     echo "✓ build outputs + Cuttlefish runtime cleaned"
 }
