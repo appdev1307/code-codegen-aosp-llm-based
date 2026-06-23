@@ -262,3 +262,95 @@ echo "  1. Build:  m -j\$(nproc) 2>&1 | tee ~/build_c4.log"
 echo "  2. Launch: launch_cvd --noresume --cpus=4 --memory_mb=4096"
 echo "  3. VTS:    atest VtsHalAutomotiveVehicle"
 echo "═══════════════════════════════════════════════════════════"
+
+# ═══════════════════════════════════════════════════════════════
+# [6/6] Fix VssVehicleHardware.cpp prop IDs
+# VssGlueAgent uses raw sequential IDs (0x1000+) which are invalid
+# VHAL property IDs. Rebuild getAllPropertyConfigs() with full
+# 32-bit IDs: AREA_GLOBAL | TYPE_BITS | (raw_id & 0xFFFF)
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "[6/6] Fixing VssVehicleHardware.cpp property IDs..."
+
+VSS_CPP="$VSS_DIR/VssVehicleHardware.cpp"
+if [ ! -f "$VSS_CPP" ]; then
+    warn "VssVehicleHardware.cpp not found — skipping prop ID fix"
+else
+    python3 - "$SRC_AIDL_DIR" "$VSS_CPP" << 'PYEOF'
+import sys, re, os
+
+aidl_dir = sys.argv[1]
+cpp_path  = sys.argv[2]
+
+# Parse AIDL with full prop ID generation
+AREA_GLOBAL = 0x00000000
+TYPE_MIXED  = 0x00e00000
+comment_map = {
+    "BOOLEAN": 0x00200000,
+    "INT":     0x00400000,
+    "FLOAT":   0x00600000,
+    "STRING":  0x00100000,
+}
+
+props, seen = [], set()
+if os.path.isdir(aidl_dir):
+    for fname in sorted(os.listdir(aidl_dir)):
+        if not fname.endswith(".aidl") or "VehicleProperty" not in fname: continue
+        txt = open(os.path.join(aidl_dir, fname), errors="ignore").read()
+        for line in txt.splitlines():
+            m = re.match(r'\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)', line)
+            if not m: continue
+            name, val = m.group(1), m.group(2)
+            try:
+                raw_id = int(val, 16)
+                type_bits = TYPE_MIXED
+                for kw, bits in comment_map.items():
+                    if kw in line: type_bits = bits; break
+                prop_id = AREA_GLOBAL | type_bits | (raw_id & 0xFFFF)
+                if prop_id not in seen:
+                    seen.add(prop_id)
+                    access = "READ_WRITE" if "READ_WRITE" in line else "READ"
+                    props.append({"name": name, "prop_id": prop_id, "access": access})
+            except ValueError: pass
+
+# Rebuild getAllPropertyConfigs() body
+config_lines = []
+for p in props:
+    config_lines.append(
+        f"    {{\n"
+        f"        aidlvhal::VehiclePropConfig cfg;\n"
+        f"        cfg.prop = {p['prop_id']};\n"
+        f"        cfg.access = aidlvhal::VehiclePropertyAccess::{p['access']};\n"
+        f"        cfg.changeMode = aidlvhal::VehiclePropertyChangeMode::ON_CHANGE;\n"
+        f"        configs.push_back(cfg);\n"
+        f"    }}"
+    )
+
+configs_body = "\n".join(config_lines) if config_lines else \
+    "    // No properties parsed — check AIDL files"
+
+# Read existing cpp and replace getAllPropertyConfigs body
+cpp = open(cpp_path).read()
+new_func = (
+    f"std::vector<aidlvhal::VehiclePropConfig> VssVehicleHardware::getAllPropertyConfigs() const {{\n"
+    f"    std::vector<aidlvhal::VehiclePropConfig> configs;\n"
+    f"    configs.reserve({len(props)});\n"
+    f"{configs_body}\n"
+    f"    return configs;\n"
+    f"}}"
+)
+cpp = re.sub(
+    r'std::vector<aidlvhal::VehiclePropConfig> VssVehicleHardware::getAllPropertyConfigs\(\) const \{.*?\}',
+    new_func, cpp, flags=re.DOTALL
+)
+# Update comment
+cpp = re.sub(
+    r'// Aggregates getAllPropertyConfigs\(\) from \d+ VSS properties',
+    f'// Aggregates getAllPropertyConfigs() from {len(props)} VSS properties (full 32-bit prop IDs)',
+    cpp
+)
+open(cpp_path, "w").write(cpp)
+print(f"  Fixed {len(props)} prop IDs in VssVehicleHardware.cpp (full 32-bit VHAL IDs)")
+PYEOF
+    ok "VssVehicleHardware.cpp prop IDs fixed (full 32-bit VHAL property IDs)"
+fi
