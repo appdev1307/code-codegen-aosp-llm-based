@@ -591,8 +591,8 @@ rm -f $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
 # Keep these as separate sequential m calls so super waits for vendor.
 m selinux_policy
 m vendorimage
-m superimage
-m vbmetaimage
+m -j$(nproc) vbmetaimage superimage
+
 
 # Confirm super is newer than vendor and actually rewritten
 ls -la --time-style=full-iso $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
@@ -741,8 +741,15 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 pkill -9 -f crosvm 2>/dev/null || true
 pkill -9 -f run_cvd 2>/dev/null || true
 
-# Launch với verbose logging
-launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu-display=mode=off
+mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly
+
+launch_cvd --noresume \
+    --system_image_dir=$ANDROID_PRODUCT_OUT \
+    --cpus=8 --memory_mb=8192 \
+    --gpu_mode=guest_swiftshader \
+    --start_webrtc=false \
+    --report_anonymous_usage_stats=n \
+    2>&1 | tee ~/launch_cvd.log &
     
 # đợi VIRTUAL_DEVICE_BOOT_COMPLETED
 
@@ -766,7 +773,16 @@ adb devices
 
 # check VSS emulator
 stop_cvd
-launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader --daemon
+mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly
+
+launch_cvd --noresume \
+    --system_image_dir=$ANDROID_PRODUCT_OUT \
+    --cpus=8 --memory_mb=8192 \
+    --gpu_mode=guest_swiftshader \
+    --start_webrtc=false \
+    --report_anonymous_usage_stats=n \
+    2>&1 | tee ~/launch_cvd.log &
+
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
 adb -s 0.0.0.0:6520 shell ls /vendor/bin/hw/ | grep vss
 adb -s 0.0.0.0:6520 shell ls /vendor/etc/init/ | grep vehicle

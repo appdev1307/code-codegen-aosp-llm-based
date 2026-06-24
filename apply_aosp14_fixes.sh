@@ -35,6 +35,7 @@ VHAL_DEFAULT_XML_OUT="$AOSP_ROOT/out/target/product/vsoc_x86_64_only/vendor/etc/
 SRC_AIDL_DIR="$OUT/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
 
 mkdir -p "$AIDL_DIR" "$VSS_DIR" "$SEPOL_DEST"
+mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly /tmp/1001/cvd_1/cuttlefish/instances
 
 # ═══════════════════════════════════════════════════════════════
 # [0/5] Platform build fixes
@@ -804,9 +805,37 @@ else
 fi
 
 echo ""
+# ═══════════════════════════════════════════════════════════════
+# [8/8] Cuttlefish symlink persistence fix
+# ═══════════════════════════════════════════════════════════════
+# ~/cuttlefish → /tmp/1001/cvd_1/cuttlefish (symlink)
+# /tmp is cleared on every GCP VM reboot → assemble_cvd fails with
+# "Failed to create directory: .../cuttlefish/assembly No such file or directory"
+# Fix: ensure the target dirs exist now AND auto-recreate on every login.
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "[8/8] Fixing Cuttlefish symlink persistence..."
+
+BASHRC="$HOME/.bashrc"
+BASHRC_MARKER="# cvd-symlink-fix"
+if ! grep -q "$BASHRC_MARKER" "$BASHRC" 2>/dev/null; then
+    cat >> "$BASHRC" << 'BASHRCEOF'
+# cvd-symlink-fix: recreate /tmp symlink targets after GCP VM reboot
+mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly /tmp/1001/cvd_1/cuttlefish/instances 2>/dev/null || true
+BASHRCEOF
+    ok "Added cvd symlink fix to ~/.bashrc"
+else
+    ok "~/.bashrc already has cvd symlink fix"
+fi
+
+echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo " Done. Next steps:"
-echo " 1. Build:  m -j\$(nproc) 2>&1 | tee ~/build_c4.log"
-echo " 2. Launch: launch_cvd --noresume"
+echo " 1. Build:  m -j\$(nproc) vbmetaimage superimage 2>&1 | tee ~/build_c4.log"
+echo "    NOTE: always build BOTH vbmetaimage AND superimage together."
+echo "    Building superimage alone causes dm-verity mismatch → reboot loop."
+echo " 2. Launch: launch_cvd --noresume --cpus=8 --memory_mb=8192 \\"
+echo "              --gpu_mode=guest_swiftshader --start_webrtc=false \\"
+echo "              --report_anonymous_usage_stats=n"
 echo " 3. VTS:    atest VtsHalAutomotiveVehicleVss"
 echo "═══════════════════════════════════════════════════════════"
