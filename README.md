@@ -584,16 +584,6 @@ m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 
 m -j$(nproc)
 
-# Build the image triple so the change reaches the guest.
-# Force a real rebuild — deleting beats relying on Soong's change detection here.
-rm -f $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
-
-# Keep these as separate sequential m calls so super waits for vendor.
-m selinux_policy
-m vendorimage
-m -j$(nproc) vbmetaimage superimage
-
-
 # Confirm super is newer than vendor and actually rewritten
 ls -la --time-style=full-iso $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
 
