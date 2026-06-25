@@ -48,21 +48,20 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
         )
 
     def _build_chunk_spec(self, domain: str, chunk: list) -> str:
-        lines = [
-            "HAL Domain: " + domain,
-            "Total Properties: " + str(len(chunk)),
-            "",
-            "Properties:",
-        ]
+        """Build compact property spec for one chunk.
+        Format: NAME (TYPE, ACCESS) — one per line, easy for LLM to enumerate.
+        """
+        lines = [f"Domain: {domain}  |  {len(chunk)} properties in this chunk"]
+        lines.append("Generate one enum constant per property, in order:")
+        lines.append("")
         for p in chunk:
             if hasattr(p, "id"):
-                lines.append("- Name: " + str(p.id))
-                if hasattr(p, "type"):
-                    lines.append("  Type: " + str(p.type))
-                if hasattr(p, "access"):
-                    lines.append("  Access: " + str(p.access))
+                name   = str(p.id)
+                ptype  = str(getattr(p, "type",   "INT"))
+                access = str(getattr(p, "access", "READ_WRITE"))
+                lines.append(f"  {name}  ({ptype}, {access})")
             else:
-                lines.append("- " + str(p))
+                lines.append(f"  {p}")
         return "\n".join(lines)
 
     def run(self, module_spec) -> str:
@@ -122,28 +121,79 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
             )
         else:
             self._log(
-                "Large domain (" + str(len(prop_list)) + " props) — "
-                "chunking into " + str(CHUNK_SIZE) + "-prop batches"
+                f"Large domain ({len(prop_list)} props) — "
+                f"chunking into {CHUNK_SIZE}-prop batches"
             )
-            chunks = [prop_list[i:i+CHUNK_SIZE] for i in range(0, len(prop_list), CHUNK_SIZE)]
-            enum_constants = []
+            chunks = [prop_list[i:i+CHUNK_SIZE]
+                      for i in range(0, len(prop_list), CHUNK_SIZE)]
+            enum_constants = []   # list of (name, hex_id, comment) tuples
+            global_index = 0      # tracks offset across all chunks for ID continuity
 
             for i, chunk in enumerate(chunks):
-                chunk_spec   = self._build_chunk_spec(domain, chunk)
-                chunk_domain = domain + "_chunk" + str(i+1) + "of" + str(len(chunks))
-                chunk_output = self._generate(
-                    domain       = chunk_domain,
-                    properties   = chunk_spec,
-                    aosp_context = aosp_context,
+                chunk_base     = base + global_index
+                chunk_base_hex = hex(chunk_base)
+                chunk_base_next = hex(chunk_base + 1)
+
+                # Build per-chunk aosp_context with correct base address
+                chunk_constraint = (
+                    f"\n=== CHUNK {i+1}/{len(chunks)}: {domain.upper()} domain ===\n"
+                    f"Generate ONLY enum constants for these {len(chunk)} properties.\n"
+                    f"CRITICAL: First constant MUST be {chunk_base_hex}, incrementing by 1.\n"
+                    f"Do NOT output package/annotation/enum wrapper — constants ONLY.\n"
+                    f"Format (one per line):\n"
+                    f"    PROPERTY_NAME = {chunk_base_hex}, // TYPE, ACCESS, GLOBAL\n"
+                    f"    NEXT_PROPERTY = {chunk_base_next}, // TYPE, ACCESS, GLOBAL\n"
+                    f"=== END CHUNK RULES ===\n"
                 )
+                chunk_spec = self._build_chunk_spec(domain, chunk)
+                chunk_output = self._generate(
+                    domain       = f"{domain}_chunk{i+1}of{len(chunks)}",
+                    properties   = chunk_spec,
+                    aosp_context = chunk_constraint + aosp_context,
+                )
+
                 if chunk_output:
+                    # Strip any wrapper the LLM added (package/enum/braces)
+                    chunk_output = re.sub(r"^```[a-zA-Z]*\s*", "", chunk_output, flags=re.MULTILINE)
+                    chunk_output = re.sub(r"^```\s*$", "", chunk_output, flags=re.MULTILINE)
+                    chunk_output = re.sub(r"^\s*package\s+[\w.]+;\s*$", "", chunk_output, flags=re.MULTILINE)
+                    chunk_output = re.sub(r"^\s*@\w+.*$", "", chunk_output, flags=re.MULTILINE)
+                    chunk_output = re.sub(r"^\s*enum\s+\w+\s*\{", "", chunk_output, flags=re.MULTILINE)
+                    chunk_output = re.sub(r"^\s*\}\s*$", "", chunk_output, flags=re.MULTILINE)
+
+                    # Extract constant lines: NAME = 0xHEX, // ...
                     constants = re.findall(
-                        r"^\s+\w+\s*=\s*0x[0-9a-fA-F]+.*$",
+                        r"^\s*(\w+)\s*=\s*(0x[0-9a-fA-F]+)([\s,//].*)?$",
                         chunk_output,
                         re.MULTILINE,
                     )
-                    enum_constants.extend(constants)
-                    self._log("  Chunk " + str(i+1) + ": " + str(len(constants)) + " constants")
+
+                    # Re-encode with correct sequential IDs (override LLM IDs)
+                    for j, (name, _llm_id, comment) in enumerate(constants):
+                        correct_id = hex(chunk_base + j)
+                        comment_str = comment.strip().lstrip(",").strip() if comment else ""
+                        if comment_str and not comment_str.startswith("//"):
+                            comment_str = "// " + comment_str
+                        line = f"    {name} = {correct_id},"
+                        if comment_str:
+                            line += f"  {comment_str}"
+                        enum_constants.append(line)
+
+                    parsed_count = len(constants)
+                    global_index += parsed_count
+                    self._log(
+                        f"  Chunk {i+1}/{len(chunks)}: {parsed_count} constants "
+                        f"(IDs {chunk_base_hex}..{hex(chunk_base + parsed_count - 1)})"
+                    )
+
+                    # Warn if chunk returned fewer constants than expected
+                    if parsed_count < len(chunk):
+                        self._log(
+                            f"  ⚠ Chunk {i+1}: expected {len(chunk)}, got {parsed_count} "
+                            f"— {len(chunk) - parsed_count} signals lost to LLM truncation"
+                        )
+                else:
+                    self._log(f"  ⚠ Chunk {i+1}: empty output — skipping")
 
             if enum_constants:
                 output = (
@@ -154,7 +204,10 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
                     + "\n".join(enum_constants) + "\n"
                     + "}\n"
                 )
-                self._log("Merged " + str(len(enum_constants)) + " constants from " + str(len(chunks)) + " chunks")
+                self._log(
+                    f"Merged {len(enum_constants)}/{len(prop_list)} constants "
+                    f"from {len(chunks)} chunks (IDs {base_hex}..{hex(base + global_index - 1)})"
+                )
             else:
                 output = ""
 
