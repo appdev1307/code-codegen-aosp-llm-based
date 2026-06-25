@@ -163,55 +163,79 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
                     )
                     layout_content = getattr(result, "layout_xml", "") or ""
                 else:
-                    # Large domain — chunk and merge into single ScrollView
+                    # Large domain — chunk into widget-only batches, merge into ScrollView
                     self._log(f"Large layout ({layout_props_count} props) — chunking into {LAYOUT_CHUNK_SIZE}-prop batches")
+                    import re as _re
                     all_prop_list = prop_lines.splitlines()
                     chunks = [all_prop_list[i:i+LAYOUT_CHUNK_SIZE]
                               for i in range(0, len(all_prop_list), LAYOUT_CHUNK_SIZE)]
+                    _CLOSE_TAGS = [
+                        "TextView","Switch","SeekBar","Button","EditText",
+                        "CheckBox","ImageView","LinearLayout","RelativeLayout",
+                        "FrameLayout","androidx.constraintlayout.widget.ConstraintLayout",
+                    ]
                     inner_views = []
                     for i, chunk in enumerate(chunks):
                         chunk_spec = "\n".join(chunk)
                         chunk_result = self._layout_module(
+                            # _chunkNofM suffix tells AndroidLayoutSignature:
+                            # output widget blocks only, no root wrapper
                             domain       = f"{domain}_chunk{i+1}of{len(chunks)}",
                             properties   = chunk_spec,
                             aosp_context = layout_context,
                         )
                         chunk_xml = getattr(chunk_result, "layout_xml", "") or ""
-                        # Extract inner views (strip root element wrapper)
-                        import re as _re
-                        # Find content between root element tags
-                        inner = _re.sub(r"^<\?xml[^>]*>\s*", "", chunk_xml.strip())
-                        inner = _re.sub(r"^<[A-Za-z]+[^>]*>\s*", "", inner)
-                        inner = _re.sub(r"\s*</[A-Za-z]+>\s*$", "", inner)
-                        # Strip trailing incomplete element at chunk boundary
-                        # e.g. "android:layout_height=\"" cut mid-attribute
+
+                        # Strip markdown fences
+                        chunk_xml = _re.sub(r"^```[a-zA-Z]*\s*", "", chunk_xml, flags=_re.MULTILINE)
+                        chunk_xml = _re.sub(r"^```\s*$", "", chunk_xml, flags=_re.MULTILINE)
+
+                        # Strip XML decl + root wrapper if LLM added them anyway
+                        inner = _re.sub(r"^<\?xml[^>]*\?>\s*", "", chunk_xml.strip())
+                        # Strip root open tag (handles multiline attributes)
+                        lines = inner.splitlines()
+                        if lines and _re.match(r"^<(ScrollView|LinearLayout|FrameLayout|RelativeLayout|androidx\.constraint)", lines[0].strip()):
+                            # Consume root open tag lines until we hit >
+                            root_end = 0
+                            while root_end < len(lines) and ">" not in lines[root_end]:
+                                root_end += 1
+                            # Strip last closing root tag
+                            inner_lines = lines[root_end + 1:]
+                            for j in range(len(inner_lines) - 1, -1, -1):
+                                if inner_lines[j].strip().startswith("</"):
+                                    inner_lines = inner_lines[:j]
+                                    break
+                            inner = "\n".join(inner_lines)
+
+                        # Truncate at last safely closed widget tag
                         inner = inner.strip()
                         last_close = max(
-                            (inner.rfind(f'</{t}>')
-                             for t in ['TextView', 'Switch', 'SeekBar', 'Button',
-                                       'EditText', 'CheckBox', 'RadioButton',
-                                       'LinearLayout', 'ConstraintLayout', 'FrameLayout',
-                                       'RelativeLayout', 'CardView', 'ImageView']),
+                            (inner.rfind(f"</{t}>") for t in _CLOSE_TAGS),
                             default=-1
                         )
-                        if last_close > 0:
-                            end_idx = inner.find('>', last_close) + 1
-                            inner = inner[:end_idx]
-                        inner_views.append(inner.strip())
-                        self._log(f"  Layout chunk {i+1}: {len(chunk)} props")
-                    # Wrap all chunks in a single ScrollView
+                        if last_close > len(inner) // 4:  # only if past 25%
+                            inner = inner[:inner.find(">", last_close) + 1]
+
+                        # Validate chunk before adding
+                        try:
+                            ET.fromstring(f"<root>{inner}</root>")
+                            inner_views.append(inner.strip())
+                            self._log(f"  Layout chunk {i+1}/{len(chunks)}: {len(chunk)} props ✓")
+                        except ET.ParseError as _e:
+                            self._log(f"  Layout chunk {i+1}/{len(chunks)}: invalid XML, skipping ({_e})")
+
                     layout_content = (
-                        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
-                        "<ScrollView xmlns:android=\"http://schemas.android.com/apk/res/android\"\n"
-                        "    android:layout_width=\"match_parent\"\n"
-                        "    android:layout_height=\"match_parent\">\n"
-                        "<LinearLayout\n"
-                        "    android:layout_width=\"match_parent\"\n"
-                        "    android:layout_height=\"wrap_content\"\n"
-                        "    android:orientation=\"vertical\">\n"
+                        '<?xml version="1.0" encoding="utf-8"?>\n'
+                        '<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"\n'
+                        '    xmlns:app="http://schemas.android.com/apk/res-auto"\n'
+                        '    android:layout_width="match_parent"\n'
+                        '    android:layout_height="match_parent">\n'
+                        '<LinearLayout\n'
+                        '    android:layout_width="match_parent"\n'
+                        '    android:layout_height="wrap_content"\n'
+                        '    android:orientation="vertical">\n'
                         + "\n".join(inner_views) + "\n"
-                        "</LinearLayout>\n"
-                        "</ScrollView>"
+                        + "</LinearLayout>\n</ScrollView>"
                     )
                 self._write_layout(domain, layout_content)
             except Exception as e:
