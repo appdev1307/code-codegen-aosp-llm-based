@@ -158,6 +158,10 @@ else
     ok "SELinux label for V3-vss-service already present"
 fi
 
+# Copy SELinux files into VSS_DIR so they are built alongside the binary
+cp "$VSS_TE" "$VSS_DIR/vehicle_hal_vss.te" 2>/dev/null && ok "vehicle_hal_vss.te copied to VSS build dir" || true
+cp "$FC_VSS" "$VSS_DIR/file_contexts_vss" 2>/dev/null && ok "file_contexts_vss copied to VSS build dir" || true
+
 # ═══════════════════════════════════════════════════════════════
 # [4/5] AOSP 14 one-time fixes
 # ═══════════════════════════════════════════════════════════════
@@ -598,6 +602,34 @@ cc_binary {
         "libutils",
     ],
 }
+
+// SELinux policy — label the binary so init can domain-transition into
+// hal_vehicle_vss when starting vendor.vehicle-hal-vss service.
+se_policy_conf {
+    name: "vehicle_hal_vss_policy_conf",
+    srcs: ["vehicle_hal_vss.te"],
+    vendor: true,
+}
+
+se_policy_cil {
+    name: "vehicle_hal_vss_policy_cil",
+    src: ":vehicle_hal_vss_policy_conf",
+    vendor: true,
+}
+
+se_policy_cil {
+    name: "vehicle_hal_vss_file_contexts_cil",
+    src: ":vehicle_hal_vss_file_contexts_gen",
+    vendor: true,
+    output_extension: ".fc",
+}
+
+genrule {
+    name: "vehicle_hal_vss_file_contexts_gen",
+    srcs: ["file_contexts_vss"],
+    out: ["vehicle_hal_vss.fc"],
+    cmd: "cp $(in) $(out)",
+}
 BPEOF
     ok "Android.bp $([ "$FORCE" = "1" ] && echo "force-regenerated" || echo "created")"
 else
@@ -612,8 +644,6 @@ service vendor.vehicle-hal-vss /vendor/bin/hw/android.hardware.automotive.vehicl
     class hal
     user vehicle_network
     group vehicle_network
-    disabled
-    oneshot
 RCEOF
     ok "init rc $([ "$FORCE" = "1" ] && echo "force-regenerated" || echo "created")"
 else
@@ -805,37 +835,26 @@ else
 fi
 
 echo ""
-# ═══════════════════════════════════════════════════════════════
-# [8/8] Cuttlefish symlink persistence fix
-# ═══════════════════════════════════════════════════════════════
-# ~/cuttlefish → /tmp/1001/cvd_1/cuttlefish (symlink)
-# /tmp is cleared on every GCP VM reboot → assemble_cvd fails with
-# "Failed to create directory: .../cuttlefish/assembly No such file or directory"
-# Fix: ensure the target dirs exist now AND auto-recreate on every login.
-# ═══════════════════════════════════════════════════════════════
-echo ""
-echo "[8/8] Fixing Cuttlefish symlink persistence..."
-
+echo "═══════════════════════════════════════════════════════════"
+echo " [8/8] Fixing Cuttlefish symlink persistence..."
 BASHRC="$HOME/.bashrc"
 BASHRC_MARKER="# cvd-symlink-fix"
 if ! grep -q "$BASHRC_MARKER" "$BASHRC" 2>/dev/null; then
     cat >> "$BASHRC" << 'BASHRCEOF'
 # cvd-symlink-fix: recreate /tmp symlink targets after GCP VM reboot
 mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly /tmp/1001/cvd_1/cuttlefish/instances 2>/dev/null || true
+[ -L "$HOME/cuttlefish" ] || ln -sf /tmp/1001/cvd_1/cuttlefish "$HOME/cuttlefish"
 BASHRCEOF
-    ok "Added cvd symlink fix to ~/.bashrc"
+    echo -e "  ${GREEN}✓${NC} Added cvd symlink fix to ~/.bashrc"
 else
-    ok "~/.bashrc already has cvd symlink fix"
+    echo -e "  ${GREEN}✓${NC} ~/.bashrc already has cvd symlink fix"
 fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo " Done. Next steps:"
-echo " 1. Build:  m -j\$(nproc) vbmetaimage superimage 2>&1 | tee ~/build_c4.log"
-echo "    NOTE: always build BOTH vbmetaimage AND superimage together."
-echo "    Building superimage alone causes dm-verity mismatch → reboot loop."
-echo " 2. Launch: launch_cvd --noresume --cpus=8 --memory_mb=8192 \\"
-echo "              --gpu_mode=guest_swiftshader --start_webrtc=false \\"
-echo "              --report_anonymous_usage_stats=n"
+echo " 1. Build:  m -j\$(nproc) vendorimage vbmetaimage superimage 2>&1 | tee ~/build_vss.log"
+echo "    NOTE: always build vendorimage + vbmetaimage + superimage together."
+echo " 2. Launch: launch_cvd --noresume --cpus=8 --memory_mb=8192 --gpu_mode=guest_swiftshader"
 echo " 3. VTS:    atest VtsHalAutomotiveVehicleVss"
 echo "═══════════════════════════════════════════════════════════"
