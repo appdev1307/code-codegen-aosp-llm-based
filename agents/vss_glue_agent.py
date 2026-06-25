@@ -42,33 +42,35 @@ INSTANCE     = "android.hardware.automotive.vehicle.IVehicle/default"
 
 DOMAINS = ["adas", "body", "cabin", "chassis", "hvac", "infotainment", "powertrain"]
 
-# AAOS 32-bit prop ID: (group<<28) | (area<<20) | (type<<16) | index
-# area=0x0 (GLOBAL), group per domain
-DOMAIN_GROUP = {
-    "adas":         0x2,
-    "powertrain":   0x3,
-    "body":         0x4,
-    "cabin":        0x5,
-    "chassis":      0x6,
-    "hvac":         0x7,
-    "infotainment": 0x8,  # separate from hvac to avoid prop ID collision
-}
+# AAOS 32-bit prop ID — aligned with C5 VTS (multi_main_c5.py encode_prop_id)
+# group (0xF0000000) | area (0x0F000000) | type (0x00FF0000) | index (0x0000FFFF)
+# All VSS signals: VENDOR group + GLOBAL area
+VSS_GROUP = 0x20000000   # VehiclePropertyGroup::VENDOR
+VSS_AREA  = 0x01000000   # VehicleArea::GLOBAL
 
 VHAL_TYPE_BITS = {
-    "BOOLEAN": 0x21,
-    "INT":     0x14,
-    "INT32":   0x14,
-    "FLOAT":   0x16,
-    "STRING":  0x00,
-    "BYTES":   0x00,
-    "INT64":   0x15,
+    "BOOLEAN": 0x00200000,
+    "INT":     0x00400000,
+    "INT32":   0x00400000,
+    "INT64":   0x00500000,
+    "FLOAT":   0x00600000,
+    "STRING":  0x00100000,
+    "BYTES":   0x00400000,
+}
+
+# Domain order for stable global index across files
+DOMAIN_GROUP = {
+    "adas": 0, "body": 1, "cabin": 2, "chassis": 3,
+    "hvac": 4, "infotainment": 5, "powertrain": 6,
 }
 
 
 def _encode_prop_id(group: int, vtype: str, index: int) -> str:
-    """Encode AAOS 32-bit property ID: (group<<28)|(area<<20)|(type<<16)|index."""
-    type_bits = VHAL_TYPE_BITS.get(vtype.upper(), 0x14)
-    prop_id = (group << 28) | (0x0 << 20) | (type_bits << 16) | (index & 0xFFFF)
+    """Encode VSS prop ID — aligned with C5 VTS encode_prop_id().
+    VSS_GROUP | VSS_AREA | type_bits | (global_index & 0xFFFF)
+    """
+    type_bits = VHAL_TYPE_BITS.get(vtype.upper(), 0x00400000)
+    prop_id = VSS_GROUP | VSS_AREA | type_bits | (index & 0xFFFF)
     return hex(prop_id)
 
 
@@ -99,18 +101,19 @@ def _parse_aidl_properties(aidl_dir: str) -> list[dict]:
     SKIP = {"package", "enum", "interface", "parcelable", "import"}
 
     aidl_files = glob.glob(os.path.join(aidl_dir, "VehicleProperty*.aidl"))
+    global_index = 0  # global counter — matches C5 enumerate() order
     for f in sorted(aidl_files):
         domain = _domain_from_filename(f)
-        group  = DOMAIN_GROUP.get(domain, 0x1)
+        group  = DOMAIN_GROUP.get(domain, 0)
         content = open(f, errors="ignore").read()
-        index = 0
+        index = 0  # per-file for dedup key
         for m in pattern.finditer(content):
             name = m.group(1)
             if name in SKIP:
                 continue
             vtype  = (m.group(3) or "INT").replace("INT32", "INT")
             access = m.group(4) or "READ_WRITE"
-            prop_id = _encode_prop_id(group, vtype, index)
+            prop_id = _encode_prop_id(group, vtype, global_index)
 
             dedup_key = f"{domain}:{index}"
             if dedup_key in seen_ids:
@@ -125,6 +128,7 @@ def _parse_aidl_properties(aidl_dir: str) -> list[dict]:
                 "domain":  domain,
             })
             index += 1
+            global_index += 1
 
     logger.info(f"[VssGlueAgent] Parsed {len(props)} properties from {len(aidl_files)} AIDL files")
     return props
