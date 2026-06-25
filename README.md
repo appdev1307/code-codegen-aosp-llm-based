@@ -745,9 +745,6 @@ adb shell ls /vendor/bin/hw/ | grep -i vehicle       # @V3-vss-service, no emula
 adb root
 adb shell ps -AZ | grep vss-service                  # u:r:hal_vehicle_vss:s0  (correct domain)
 adb shell service list | grep automotive.vehicle     # IVehicle/default present
-curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/post_boot_check.sh
-./post_boot_check.sh
-
 ```
 
 ```bash
