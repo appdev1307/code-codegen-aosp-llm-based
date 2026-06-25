@@ -730,14 +730,13 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 pkill -9 -f crosvm 2>/dev/null || true
 pkill -9 -f run_cvd 2>/dev/null || true
 
-mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly
+rm -rf ~/cuttlefish_runtime ~/.cache/cuttlefish /tmp/1001 /tmp/cvd /tmp/*cuttlefi
+mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly /tmp/1001/cvd_1/cuttlefish/instances
+
 
 launch_cvd --noresume \
     --cpus=8 --memory_mb=8192 \
     --gpu_mode=guest_swiftshader 
-
-    
-# đợi VIRTUAL_DEVICE_BOOT_COMPLETED
 
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
 adb shell getprop sys.boot_completed                 # 1
