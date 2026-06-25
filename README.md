@@ -582,6 +582,7 @@ m android.hardware.automotive.vehicle-update-api
 
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service 
 rm -rf out && m -j$(nproc) 2>&1 | tee ~/build_c4.log
+m -j$(nproc) vendorimage vbmetaimage superimage 2>&1 | tee ~/build_vss.log
 
 # Confirm super is newer than vendor and actually rewritten
 ls -la --time-style=full-iso $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
