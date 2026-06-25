@@ -69,101 +69,11 @@ import html
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-def fix_android_layouts(output_dir: str = "output_rag_dspy"):
-    """Rebuild Android layout XML files from scratch, handling double-escaped
-    and chunked LLM output. Fixes: unescaped &, missing namespaces, ConstraintLayout
-    prefix, incomplete tags with odd quotes, and duplicate root wrappers."""
-    layout_dir = Path(output_dir) / "android_app" / "src" / "main" / "res" / "layout"
-    if not layout_dir.exists():
-        layout_dir = Path(output_dir) / "hmi_app" / "src" / "main" / "res" / "layout"
-    if not layout_dir.exists():
-        print("⚠ No layout directory found.")
-        return 0
-
-    fixed = 0
-    for xml_file in layout_dir.glob("fragment_*.xml"):
-        try:
-            content = xml_file.read_text(encoding="utf-8", errors="ignore")
-
-            # 1. Unescape recursively (LLM often double-escapes)
-            prev = None
-            while prev != content:
-                prev = content
-                content = html.unescape(content)
-
-            # 2. Fix ConstraintLayout → full class name
-            content = re.sub(r'<(/?)\s*ConstraintLayout\b',
-                             r'<\1androidx.constraintlayout.widget.ConstraintLayout', content)
-
-            # 3. Strip root wrappers and XML declaration
-            for rt in ['ScrollView', 'LinearLayout', 'FrameLayout', 'RelativeLayout']:
-                content = re.sub(rf'<{rt}\b[^>]*>', '', content)
-                content = re.sub(rf'</{rt}>', '', content)
-            content = re.sub(r'<\?xml[^>]*\?>', '', content)
-
-            # 4. Remove android:text (validator bug strips the prefix → parse fail)
-            content = re.sub(r'\s*android:text\s*=\s*"[^"]*"', '', content)
-
-            # 5. Remove incomplete tags (odd number of quotes = attribute cut mid-value)
-            def remove_incomplete_tags(text):
-                result, i = [], 0
-                while i < len(text):
-                    if text[i] == '<':
-                        end = text.find('>', i)
-                        if end == -1:
-                            break
-                        tag = text[i:end+1]
-                        if tag.count('"') % 2 == 0:
-                            result.append(tag)
-                            i = end + 1
-                        else:
-                            nxt = text.find('<', i+1)
-                            if nxt == -1:
-                                break
-                            i = nxt
-                    else:
-                        nxt = text.find('<', i)
-                        if nxt == -1:
-                            break
-                        result.append(text[i:nxt])
-                        i = nxt
-                return ''.join(result)
-
-            content = remove_incomplete_tags(content)
-
-            # 6. Force android:id on widgets that lack one
-            def apply_force_id(m):
-                full_tag, tag_name = m.group(0), m.group(1).lower()
-                if 'android:id' in full_tag:
-                    return full_tag
-                return (full_tag[:-2] + f' android:id="@+id/{tag_name}_view"/>'
-                        if full_tag.endswith('/>')
-                        else full_tag[:-1] + f' android:id="@+id/{tag_name}_view">')
-
-            content = re.sub(
-                r'<(TextView|Switch|SeekBar|Button|CheckBox|EditText)\b[^>]*(?:/>|>)',
-                apply_force_id, content, flags=re.IGNORECASE)
-
-            # 7. Wrap in a clean root with all required namespaces
-            content = (
-                '<ScrollView\n'
-                '    xmlns:android="http://schemas.android.com/apk/res/android"\n'
-                '    xmlns:app="http://schemas.android.com/apk/res-auto"\n'
-                '    android:layout_width="match_parent"\n'
-                '    android:layout_height="match_parent">\n'
-                + content.strip() +
-                '\n</ScrollView>'
-            )
-
-            ET.fromstring(content)  # validate
-            xml_file.write_text(content, encoding="utf-8")
-            print(f"✅ Fixed: {xml_file.name}")
-            fixed += 1
-        except Exception as e:
-            print(f"❌ Failed {xml_file.name}: {e}")
-
-    print(f"🔧 Fixed {fixed} layout files.")
-    return fixed
+def fix_android_layouts(output_dir: str = "output_rag_dspy",
+                        fnames: list = None) -> int:
+    """Delegates to validators.fix_android_layouts_dir (proven notebook logic)."""
+    from dspy_opt.validators import fix_android_layouts_dir
+    return fix_android_layouts_dir(output_dir, fnames)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration

@@ -171,6 +171,14 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
                     chunks = [all_prop_list[i:i+LAYOUT_CHUNK_SIZE]
                               for i in range(0, len(all_prop_list), LAYOUT_CHUNK_SIZE)]
                     inner_views = []
+                    import re as _re
+                    # Tags whose closing tag marks a safe chunk boundary
+                    _CLOSE_TAGS = [
+                        'TextView', 'Switch', 'SeekBar', 'Button', 'EditText',
+                        'CheckBox', 'RadioButton', 'ImageView', 'CardView',
+                        'LinearLayout', 'RelativeLayout', 'FrameLayout',
+                        'androidx.constraintlayout.widget.ConstraintLayout',
+                    ]
                     for i, chunk in enumerate(chunks):
                         chunk_spec = "\n".join(chunk)
                         chunk_result = self._layout_module(
@@ -179,28 +187,51 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
                             aosp_context = layout_context,
                         )
                         chunk_xml = getattr(chunk_result, "layout_xml", "") or ""
-                        # Extract inner views (strip root element wrapper)
-                        import re as _re
-                        # Find content between root element tags
-                        inner = _re.sub(r"^<\?xml[^>]*>\s*", "", chunk_xml.strip())
-                        inner = _re.sub(r"^<[A-Za-z]+[^>]*>\s*", "", inner)
-                        inner = _re.sub(r"\s*</[A-Za-z]+>\s*$", "", inner)
-                        # Strip trailing incomplete element at chunk boundary
-                        # e.g. "android:layout_height=\"" cut mid-attribute
+
+                        # 1. Strip XML declaration
+                        inner = _re.sub(r"^<\?xml[^>]*\?>\s*", "", chunk_xml.strip())
+
+                        # 2. Strip outermost root wrapper only (not nested layouts)
+                        #    Use a line-by-line approach to handle multiline root tags
+                        lines = inner.splitlines()
+                        # Find first non-empty line — the root open tag
+                        start_i = next((i for i, l in enumerate(lines) if l.strip()), 0)
+                        root_line = lines[start_i].strip()
+                        # Consume entire root open tag (may span multiple lines)
+                        root_end = start_i
+                        open_count = root_line.count('<') - root_line.count('</')
+                        while open_count > 0 and not root_line.rstrip().endswith('>'):
+                            root_end += 1
+                            if root_end >= len(lines):
+                                break
+                            root_line += lines[root_end]
+                            open_count = root_line.count('<') - root_line.count('</')
+                        # Strip root open tag lines and last closing tag line
+                        inner_lines = lines[root_end + 1:]
+                        # Strip last closing root tag
+                        for j in range(len(inner_lines) - 1, -1, -1):
+                            if inner_lines[j].strip().startswith('</'):
+                                inner_lines = inner_lines[:j]
+                                break
+                        inner = "\n".join(inner_lines)
+
+                        # 3. Truncate at last safe closing tag (handles LLM truncation)
                         inner = inner.strip()
                         last_close = max(
-                            (inner.rfind(f'</{t}>')
-                             for t in ['TextView', 'Switch', 'SeekBar', 'Button',
-                                       'EditText', 'CheckBox', 'RadioButton',
-                                       'LinearLayout', 'ConstraintLayout', 'FrameLayout',
-                                       'RelativeLayout', 'CardView', 'ImageView']),
+                            (inner.rfind(f'</{t}>') for t in _CLOSE_TAGS),
                             default=-1
                         )
                         if last_close > 0:
-                            end_idx = inner.find('>', last_close) + 1
-                            inner = inner[:end_idx]
-                        inner_views.append(inner.strip())
-                        self._log(f"  Layout chunk {i+1}: {len(chunk)} props")
+                            inner = inner[:inner.find('>', last_close) + 1]
+
+                        # 4. Validate chunk is parseable before adding
+                        try:
+                            import xml.etree.ElementTree as _ET
+                            _ET.fromstring(f"<root>{inner}</root>")
+                            inner_views.append(inner.strip())
+                            self._log(f"  Layout chunk {i+1}: {len(chunk)} props ✓")
+                        except Exception as _e:
+                            self._log(f"  Layout chunk {i+1}: XML invalid, skipping ({_e})")
                     # Wrap all chunks in a single ScrollView
                     layout_content = (
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"

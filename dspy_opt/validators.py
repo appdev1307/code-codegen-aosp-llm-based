@@ -671,6 +671,10 @@ def validate_layout_xml(xml_str: str) -> ValidatorResult:
     # === AUTO-FIXES ===
     import re  # ensure re is available
 
+    # 0. Strip markdown fences
+    content = re.sub(r'^```[a-zA-Z]*\s*', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^```\s*$', '', content, flags=re.MULTILINE)
+
     # 1. Add missing namespace
     if 'xmlns:android=' not in content and 'android:' in content:
         content = re.sub(
@@ -733,6 +737,191 @@ def validate_layout_xml(xml_str: str) -> ValidatorResult:
     score = round(min(score, 1.0), 3)
     ok = score >= 0.70
     return ValidatorResult(ok=ok, score=score, errors=errors, tool=tool)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# C2b — Android Layout repair  (extracted from notebook cell 71)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def fix_android_layout_file(xml_path: "Path | str") -> tuple[bool, float, str]:
+    """
+    Repair a single Android layout XML file in-place.
+    Logic extracted from notebook fix_mismatched_tags (cell 71) — the proven
+    working version. Returns (ok, score, message).
+
+    Steps:
+      1. html.unescape recursively
+      2. ConstraintLayout → full class name
+      3. Strip root wrappers (ScrollView/LinearLayout/etc) + XML decl + android:text
+      4. Remove HTML comments
+      5. remove_incomplete_tags_multiline — quote-aware tag scanner
+      6. auto_close_tags — push/pop stack, append missing closing tags
+      7. force android:id on widgets missing it
+      8. Rewrap in ScrollView with namespaces
+      9. ET.fromstring validate + write + rescore
+    """
+    import html as _html
+    from pathlib import Path as _Path
+
+    xml_path = _Path(xml_path)
+    if not xml_path.exists():
+        return False, 0.0, f"File not found: {xml_path}"
+
+    content = xml_path.read_text(encoding="utf-8", errors="ignore")
+
+    # 1. Unescape recursively
+    prev = None
+    while prev != content:
+        prev = content
+        content = _html.unescape(content)
+
+    # 2. Strip markdown fences (LLM often wraps output in ```xml ... ```)
+    content = re.sub(r'^```[a-zA-Z]*\s*', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^```\s*$', '', content, flags=re.MULTILINE)
+
+    # 3. ConstraintLayout prefix
+    content = re.sub(r'<(/?)\s*ConstraintLayout\b',
+                     r'<\1androidx.constraintlayout.widget.ConstraintLayout', content)
+
+    # 4. Strip root wrappers + XML decl + android:text
+    for rt in ['ScrollView', 'LinearLayout', 'FrameLayout', 'RelativeLayout']:
+        content = re.sub(rf'<{rt}\b[^>]*>', '', content)
+        content = re.sub(rf'</{rt}>', '', content)
+    content = re.sub(r'<\?xml[^>]*\?>', '', content)
+    content = re.sub(r'\s*android:text\s*=\s*"[^"]*"', '', content)
+
+    # 5. Remove HTML comments
+    content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
+
+    # 6. remove_incomplete_tags_multiline — quote-aware
+    def _remove_incomplete(text):
+        result, i, n = [], 0, len(text)
+        while i < n:
+            if text[i] == '<':
+                j, in_quote, quote_char, found_end = i+1, False, None, False
+                while j < n:
+                    c = text[j]
+                    if in_quote:
+                        if c == quote_char:
+                            in_quote = False
+                    else:
+                        if c in ('"', "'"):
+                            in_quote, quote_char = True, c
+                        elif c == '>':
+                            found_end = True
+                            break
+                        elif c == '<':
+                            break
+                    j += 1
+                if found_end:
+                    result.append(text[i:j+1])
+                    i = j + 1
+                else:
+                    nxt = text.find('<', i+1)
+                    if nxt == -1:
+                        break
+                    i = nxt
+            else:
+                nxt = text.find('<', i)
+                if nxt == -1:
+                    result.append(text[i:])
+                    break
+                result.append(text[i:nxt])
+                i = nxt
+        return ''.join(result)
+
+    content = _remove_incomplete(content)
+
+    # 7. auto_close_tags — push/pop stack
+    def _auto_close(text):
+        stack = []
+        for m in re.finditer(r'<(/?)([A-Za-z][\w.]*)[^>]*?(/?)>', text, re.DOTALL):
+            is_close     = m.group(1) == '/'
+            tag_name     = m.group(2)
+            is_self_close = m.group(3) == '/'
+            if is_self_close or tag_name.lower() in ('br', 'hr', 'img', 'input'):
+                continue
+            if is_close:
+                if stack and stack[-1] == tag_name:
+                    stack.pop()
+            else:
+                stack.append(tag_name)
+        return text + ''.join(f'</{t}>' for t in reversed(stack))
+
+    content = _auto_close(content)
+
+    # 8. Force android:id on widgets missing it
+    def _force_id(m):
+        full_tag, tag_name = m.group(0), m.group(1).lower()
+        if 'android:id' in full_tag:
+            return full_tag
+        return (full_tag[:-2] + f' android:id="@+id/{tag_name}_view"/>'
+                if full_tag.endswith('/>')
+                else full_tag[:-1] + f' android:id="@+id/{tag_name}_view">')
+
+    content = re.sub(
+        r'<(TextView|Switch|SeekBar|Button|CheckBox|EditText)\b[^>]*(?:/>|>)',
+        _force_id, content, flags=re.IGNORECASE)
+
+    # 9. Rewrap
+    result = (
+        '<ScrollView\n'
+        '    xmlns:android="http://schemas.android.com/apk/res/android"\n'
+        '    xmlns:app="http://schemas.android.com/apk/res-auto"\n'
+        '    android:layout_width="match_parent"\n'
+        '    android:layout_height="match_parent">\n'
+        + content.strip()
+        + '\n</ScrollView>'
+    )
+
+    # 10. Validate + write
+    try:
+        ET.fromstring(result)
+        xml_path.write_text(result, encoding="utf-8")
+        r = validate_layout_xml(result)
+        return True, r.score, f"✅ {xml_path.name}: score={r.score}"
+    except ET.ParseError as e:
+        lines = result.splitlines()
+        err_line = e.position[0]
+        ctx = "\n".join(
+            f"  {i+max(1,err_line-2):4}: {repr(l[:100])}"
+            for i, l in enumerate(lines[max(0, err_line-3):err_line+2])
+        )
+        return False, 0.0, f"❌ {xml_path.name}: {e}\n{ctx}"
+
+
+# Alias — matches notebook cell 71 usage: fix_mismatched_tags(output_dir, fnames)
+def fix_mismatched_tags(output_dir: str, fnames: list = None) -> int:
+    return fix_android_layouts_dir(output_dir, fnames)
+
+
+def fix_android_layouts_dir(output_dir: str,
+                             fnames: Optional[list] = None) -> int:
+    """
+    Fix all fragment_*.xml files in output_dir using fix_android_layout_file.
+    If fnames is None, fixes all fragment_*.xml in the layout dir.
+    Returns number of files successfully fixed.
+    """
+    from pathlib import Path as _Path
+    layout_dir = _Path(output_dir) / "android_app" / "src" / "main" / "res" / "layout"
+    if not layout_dir.exists():
+        layout_dir = _Path(output_dir) / "hmi_app" / "src" / "main" / "res" / "layout"
+    if not layout_dir.exists():
+        print(f"⚠ No layout directory found in {output_dir}")
+        return 0
+
+    files = ([layout_dir / f for f in fnames]
+             if fnames else sorted(layout_dir.glob("fragment_*.xml")))
+
+    fixed = 0
+    for xml_path in files:
+        ok, score, msg = fix_android_layout_file(xml_path)
+        print(msg)
+        if ok:
+            fixed += 1
+    print(f"🔧 {fixed}/{len(files)} layout files fixed.")
+    return fixed
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # D — Python outputs  ·  ast.parse  (always available, full syntax check)
