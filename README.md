@@ -756,19 +756,6 @@ cd ~/aosp-14-auto && source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk
 
 adb devices
 # Expected: 0.0.0.0:6520  device
-
-# check VSS emulator
-stop_cvd
-mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly
-
-launch_cvd --noresume \
-    --system_image_dir=$ANDROID_PRODUCT_OUT \
-    --cpus=8 --memory_mb=8192 \
-    --gpu_mode=guest_swiftshader \
-    --start_webrtc=false \
-    --report_anonymous_usage_stats=n \
-    2>&1 | tee ~/launch_cvd.log &
-
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
 adb -s 0.0.0.0:6520 shell ls /vendor/bin/hw/ | grep vss
 adb -s 0.0.0.0:6520 shell ls /vendor/etc/init/ | grep vehicle
