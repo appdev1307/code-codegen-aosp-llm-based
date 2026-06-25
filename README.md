@@ -733,12 +733,9 @@ pkill -9 -f run_cvd 2>/dev/null || true
 mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly
 
 launch_cvd --noresume \
-    --system_image_dir=$ANDROID_PRODUCT_OUT \
     --cpus=8 --memory_mb=8192 \
-    --gpu_mode=guest_swiftshader \
-    --start_webrtc=false \
-    --report_anonymous_usage_stats=n \
-    2>&1 | tee ~/launch_cvd.log &
+    --gpu_mode=guest_swiftshader 
+
     
 # đợi VIRTUAL_DEVICE_BOOT_COMPLETED
 
