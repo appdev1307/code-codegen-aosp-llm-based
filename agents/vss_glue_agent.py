@@ -346,8 +346,9 @@ def _generate_init_rc() -> str:
 service {SERVICE_NAME} /vendor/bin/hw/{BINARY_NAME}
     class hal
     user vehicle_network
-    group vehicle_network
-    oneshot
+    group vehicle_network system inet
+    capabilities BLOCK_SUSPEND
+    ioprio be 4
 """
 
 
