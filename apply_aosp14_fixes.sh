@@ -153,14 +153,19 @@ fi
 FC_VSS="$SEPOL_DEST/file_contexts_vss"
 if ! grep -qF "V3-vss-service" "$FC_VSS" 2>/dev/null; then
     echo "/vendor/bin/hw/android\\.hardware\\.automotive\\.vehicle@V3-vss-service u:object_r:hal_vehicle_vss_exec:s0" >> "$FC_VSS"
-    ok "SELinux label for V3-vss-service added"
+    ok "SELinux label added to file_contexts_vss"
 else
-    ok "SELinux label for V3-vss-service already present"
+    ok "SELinux label already present in file_contexts_vss"
 fi
 
-# Copy SELinux files into VSS_DIR so they are built alongside the binary
-cp "$VSS_TE" "$VSS_DIR/vehicle_hal_vss.te" 2>/dev/null && ok "vehicle_hal_vss.te copied to VSS build dir" || true
-cp "$FC_VSS" "$VSS_DIR/file_contexts_vss" 2>/dev/null && ok "file_contexts_vss copied to VSS build dir" || true
+# Add label to the main vendor file_contexts so it is built into the image
+MAIN_FC="$AOSP_ROOT/system/sepolicy/vendor/file_contexts"
+if [ -f "$MAIN_FC" ] && ! grep -qF "V3-vss-service" "$MAIN_FC" 2>/dev/null; then
+    echo "/vendor/bin/hw/android\\.hardware\\.automotive\\.vehicle@V3-vss-service u:object_r:hal_vehicle_vss_exec:s0" >> "$MAIN_FC"
+    ok "SELinux label added to system/sepolicy/vendor/file_contexts"
+else
+    ok "SELinux label already present in system/sepolicy/vendor/file_contexts"
+fi
 
 # ═══════════════════════════════════════════════════════════════
 # [4/5] AOSP 14 one-time fixes
@@ -601,34 +606,6 @@ cc_binary {
         "liblog",
         "libutils",
     ],
-}
-
-// SELinux policy — label the binary so init can domain-transition into
-// hal_vehicle_vss when starting vendor.vehicle-hal-vss service.
-se_policy_conf {
-    name: "vehicle_hal_vss_policy_conf",
-    srcs: ["vehicle_hal_vss.te"],
-    vendor: true,
-}
-
-se_policy_cil {
-    name: "vehicle_hal_vss_policy_cil",
-    src: ":vehicle_hal_vss_policy_conf",
-    vendor: true,
-}
-
-se_policy_cil {
-    name: "vehicle_hal_vss_file_contexts_cil",
-    src: ":vehicle_hal_vss_file_contexts_gen",
-    vendor: true,
-    output_extension: ".fc",
-}
-
-genrule {
-    name: "vehicle_hal_vss_file_contexts_gen",
-    srcs: ["file_contexts_vss"],
-    out: ["vehicle_hal_vss.fc"],
-    cmd: "cp $(in) $(out)",
 }
 BPEOF
     ok "Android.bp $([ "$FORCE" = "1" ] && echo "force-regenerated" || echo "created")"
