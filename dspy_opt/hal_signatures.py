@@ -109,93 +109,117 @@ class AIDLSignature(dspy.Signature):
     )
 
 class ModernCppVehicleHardwareSignature(dspy.Signature):
-    """Generate **production-ready pure AIDL V3 only** C++ Vehicle HAL for Android 14+.
+    """Generate a domain-specific C++ Vehicle HAL service class for Android 14 AIDL VHAL V3.
 
-    STRICT RULES — NO EXCEPTIONS, NO HIDL ANYWHERE:
+    ARCHITECTURE — MUST FOLLOW EXACTLY:
 
-    1. HEADER FILE (VssVehicleHardware.h) **MUST START EXACTLY** WITH:
-       #include <IVehicleHardware.h>
-       #include <VehicleHalTypes.h>
-       #include <android/binder_manager.h>
-       #include <android/binder_process.h>
-       #include <vector>
-       #include <memory>
-       #include <functional>
+    This agent generates ONE domain service class (e.g. VehicleHalServiceAdas),
+    NOT VssVehicleHardware. VssVehicleHardware is the aggregator generated separately
+    by VssGlueAgent. Each domain generates its own independent helper class.
 
-    2. NAMESPACE: android::hardware::automotive::vehicle (NOT aidl:: prefix)
+    GENERATED CLASS (for domain e.g. "adas"):
 
-    3. The class MUST be:
-       class VssVehicleHardware : public IVehicleHardware {
-       public:
-           std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
-           StatusCode getValues(std::shared_ptr<const GetValuesCallback> callback,
-                                const std::vector<GetValueRequest>& requests) const override;
-           StatusCode setValues(std::shared_ptr<const SetValuesCallback> callback,
-                                const std::vector<SetValueRequest>& requests) override;
-           StatusCode updateSampleRate(int32_t cookie, int32_t propId, float sampleRate) override;
-           StatusCode subscribe(const SubscribeOptions& options) override;
-           StatusCode unsubscribe(int32_t cookie, int32_t propId) override;
-           DumpResult dump(const std::vector<std::string>& options) override;
-           StatusCode checkHealth() override;
-           void registerOnPropertyChangeEvent(
-               std::unique_ptr<const PropertyChangeCallback> callback) override;
-           void registerOnPropertySetErrorEvent(
-               std::unique_ptr<const PropertySetErrorCallback> callback) override;
-       };
+      Header file: VehicleHalServiceAdas.h
+      ─────────────────────────────────────
+      #pragma once
+      #include <aidl/android/hardware/automotive/vehicle/VehiclePropConfig.h>
+      #include <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
+      #include <aidl/android/hardware/automotive/vehicle/GetValueRequest.h>
+      #include <aidl/android/hardware/automotive/vehicle/GetValueResult.h>
+      #include <aidl/android/hardware/automotive/vehicle/SetValueRequest.h>
+      #include <aidl/android/hardware/automotive/vehicle/SetValueResult.h>
+      #include <vector>
 
-    4. Main service (VehicleService{Domain}.cpp):
-       auto hw = std::make_unique<VssVehicleHardware>();
-       auto vhal = ndk::SharedRefBase::make<DefaultVehicleHal>(std::move(hw));
-       AServiceManager_addService(vhal->asBinder().get(), instance.c_str());
-       ABinderProcess_joinThreadPool();
+      namespace android::hardware::automotive::vehicle {
 
-    5. NEVER output markdown fences (no ```cpp), no extra explanation
+      namespace aidlvhal = ::aidl::android::hardware::automotive::vehicle;
 
-    FORBIDDEN (Android 13 types — do NOT use in Android 14):
-    - IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
-    - VssVehicleHardwareImpl — does not exist
-    - hidl_interface, @2.0, HIDL_FETCH_*, BnVehicle, Return<>, .valueType
-    - #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>
-    - #include <ndk/ScopedAStatus.h>
-    - aidlvhal:: namespace prefix
+      class VehicleHalServiceAdas {
+      public:
+          // Returns prop configs for THIS domain only (prop IDs assigned by VssGlueAgent)
+          std::vector<aidlvhal::VehiclePropConfig> getAllPropertyConfigs() const;
 
-    Android.bp MUST be pure AIDL style only.
+          // Handle get/set for THIS domain's properties only
+          void getValues(const std::vector<aidlvhal::GetValueRequest>& requests,
+                         std::vector<aidlvhal::GetValueResult>& results) const;
+          void setValues(const std::vector<aidlvhal::SetValueRequest>& requests,
+                         std::vector<aidlvhal::SetValueResult>& results);
+
+          // Returns true if this domain handles the given propId
+          bool handlesProperty(int32_t propId) const;
+      };
+
+      }  // namespace android::hardware::automotive::vehicle
+
+      Impl file: VehicleServiceAdas.cpp
+      ─────────────────────────────────
+      - Implement getAllPropertyConfigs() returning stub VehiclePropConfig entries
+        (prop IDs are placeholders — VssGlueAgent assigns correct 32-bit IDs)
+      - getValues: for matching props return StatusCode::OK, value=0/false
+      - setValues: accept and store, return StatusCode::OK
+      - handlesProperty: check against getAllPropertyConfigs()
+
+    RULES:
+    - Class name MUST be VehicleHalService{Domain} (e.g. VehicleHalServiceAdas)
+    - DO NOT generate VssVehicleHardware — that is VssGlueAgent's job
+    - DO NOT generate main() or AServiceManager_addService — not needed here
+    - DO NOT generate Android.bp — VssGlueAgent generates the single unified bp
+    - DO NOT subclass IVehicleHardware — this is a helper class, not a HAL
+    - NEVER output markdown fences (no ```cpp)
+    - NEVER use HIDL includes or types
+
+    FORBIDDEN:
+      VssVehicleHardware, IVehicleHardware, DefaultVehicleHal
+      #include <hidl/>, Return<>, BnVehicle, HIDL_FETCH_*
+      main(), AServiceManager_addService, ABinderProcess_joinThreadPool
+      aidlvhal:: prefix — use namespace aidlvhal = ::aidl::... alias instead
     """
-    domain: str = dspy.InputField(desc="HAL domain name (e.g. HVAC, ADAS)")
-    properties: str = dspy.InputField(desc="List of properties with name, type, access")
-    aosp_context: str = dspy.InputField(desc="Retrieved high-quality AOSP AIDL V3 examples")
+    domain: str = dspy.InputField(desc="HAL domain name (e.g. adas, hvac, body)")
+    properties: str = dspy.InputField(desc="List of VSS properties with name, type, access for this domain")
+    aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 VehicleHalService examples")
 
-    cpp_header: str = dspy.OutputField(desc="Full content of VssVehicleHardware.h")
-    cpp_impl: str = dspy.OutputField(desc="Full content of VssVehicleHardware.cpp")
-    main_service: str = dspy.OutputField(desc="Full content of VehicleService.cpp using DefaultVehicleHal")
-    android_bp: str = dspy.OutputField(desc="Pure AIDL Android.bp — NO hidl_interface")
-    reasoning: str = dspy.OutputField(desc="Brief reasoning about AIDL compliance")
+    cpp_header: str = dspy.OutputField(
+        desc="Full content of VehicleHalService{Domain}.h — domain helper class, NOT IVehicleHardware subclass"
+    )
+    cpp_impl: str = dspy.OutputField(
+        desc="Full content of VehicleService{Domain}.cpp — implements VehicleHalService{Domain} methods"
+    )
+    reasoning: str = dspy.OutputField(desc="Brief reasoning about domain coverage and prop IDs")
 
 class CppVehicleAssertions(dspy.Module):
+    """
+    Validates domain helper class output.
+    Domain agents generate VehicleHalService{Domain}, NOT VssVehicleHardware.
+    """
     def __init__(self, strict: bool = False):
         super().__init__()
         self.strict = strict
 
     def forward(self, pred):
         header = getattr(pred, "cpp_header", "") or ""
-        impl = getattr(pred, "cpp_impl", "") or ""
-        main = getattr(pred, "main_service", "") or ""
-        full = header + impl + main
+        impl   = getattr(pred, "cpp_impl",   "") or ""
+        full   = header + impl
 
         violations = []
 
-        if "IVehicleHardware" not in header:
-            violations.append("Must inherit from IVehicleHardware")
-        if "DefaultVehicleHal" not in main:
-            violations.append("Must use DefaultVehicleHal wrapper in main_service")
-        if "AServiceManager_addService" not in main:
-            violations.append("Must register using AServiceManager_addService")
-        if not ("GetValueRequest" in full and "GetValuesCallback" in full):
-            violations.append("getValues must use async pattern (GetValueRequest + GetValuesCallback)")
-        if not ("SetValueRequest" in full and "SetValuesCallback" in full):
-            violations.append("setValues must use async pattern")
+        # Domain class must be present (VehicleHalService*)
+        if "VehicleHalService" not in header:
+            violations.append("Header must define VehicleHalService{Domain} class")
 
-        forbidden = ["HIDL_FETCH", "hidl/", "Return<", ".valueType"]
+        # Must have domain-level getAllPropertyConfigs
+        if "getAllPropertyConfigs" not in full:
+            violations.append("Must implement getAllPropertyConfigs() for this domain")
+
+        # Must NOT generate the aggregator or HAL entry point
+        if "VssVehicleHardware" in full:
+            violations.append("Domain agent must NOT generate VssVehicleHardware — that is VssGlueAgent's job")
+        if "AServiceManager_addService" in full:
+            violations.append("Domain agent must NOT generate main() entry point")
+        if "DefaultVehicleHal" in full:
+            violations.append("Domain agent must NOT use DefaultVehicleHal — VssGlueAgent handles this")
+
+        # HIDL checks
+        forbidden = ["HIDL_FETCH", "hidl/", "Return<", ".valueType", "@2.0"]
         for term in forbidden:
             if term in full:
                 violations.append(f"Forbidden HIDL pattern: {term}")
@@ -571,7 +595,7 @@ class SimulatorSignature(dspy.Signature):
 # ═══════════════════════════════════════════════════════════════════
 SIGNATURE_REGISTRY: dict[str, tuple] = {
     "aidl":           (AIDLSignature,         "aidl_code"),
-    "cpp":            (ModernCppVehicleHardwareSignature, "cpp_impl"),
+    "cpp":            (ModernCppVehicleHardwareSignature, "cpp_impl"),  # domain helper class
     "selinux":        (SELinuxSignature,       "policy"),
     "build":          (BuildFileSignature,     "build_file"),
     "vintf":          (VINTFSignature,         "manifest"),
