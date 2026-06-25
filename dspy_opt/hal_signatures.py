@@ -453,38 +453,49 @@ class AndroidAppSignature(dspy.Signature):
 
 class AndroidLayoutSignature(dspy.Signature):
     """
-    CRITICAL ESCAPING RULE — ALWAYS FOLLOW:
-    In EVERY android:text="..." attribute, escape these characters:
-      &  →  &amp;
-      <  →  &lt;
-      >  →  &gt;
-    Never output raw VSS property names that contain & or <.
+    Generate Android XML widget blocks for HAL properties in an AAOS app.
 
-    Generate an Android XML layout file for displaying HAL property values
-    in an Android Automotive OS app. The layout should be clear and usable
-    on a vehicle infotainment screen.
+    ESCAPING — ALWAYS:
+      & → &amp;   < → &lt;   > → &gt;   in android:text="..." values.
 
-    Requirements:
-    - Use ConstraintLayout or LinearLayout as root
-    - Include a ScrollView for long property lists
-    - Display each property with a label (TextView) and value view
-    - Use Switch for boolean READ_WRITE properties
-    - Use SeekBar/Slider for numeric READ_WRITE properties
-    - Use TextView for READ-only properties
-    - Set correct android:id values matching the Fragment's ViewBinding
-    - Use appropriate text sizes for in-car display (min 14sp)
+    OUTPUT FORMAT — two modes depending on domain field:
+    - If domain ends with "_chunkNofM": output ONLY inner widget blocks,
+      NO root tag, NO <?xml?>, NO ScrollView/LinearLayout wrapper.
+      Start directly with the first <TextView> or <Switch> etc.
+    - Otherwise: output complete XML with ScrollView root and <?xml?> header.
+
+    Widget rules (ALWAYS follow):
+    - BOOLEAN READ_WRITE → <Switch android:id="@+id/sw{Name}" ... />
+    - INT/FLOAT READ_WRITE → <SeekBar android:id="@+id/sb{Name}" ... />
+    - READ-only → <TextView android:id="@+id/tv{Name}" ... />
+    - Every widget MUST have android:id, android:layout_width, android:layout_height
+    - Text sizes min 14sp for in-car display
+    - NEVER output markdown fences (no ```xml)
+    - NEVER truncate mid-tag — complete every opened tag
+
+    Example chunk output (domain="hvac_chunk1of3"):
+        <TextView
+            android:id="@+id/tvTempLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="14sp" />
+        <SeekBar
+            android:id="@+id/sbTemp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="30" android:min="16" android:progress="22" />
     """
     domain:       str = dspy.InputField(
-        desc="HAL domain name"
+        desc="HAL domain name, or domain_chunkNofM for chunk mode (widgets only, no root)"
     )
     properties:   str = dspy.InputField(
-        desc="Property names and types to display in the layout"
+        desc="Property names and types to display"
     )
     aosp_context: str = dspy.InputField(
         desc="Retrieved Android layout XML examples"
     )
     layout_xml:   str = dspy.OutputField(
-        desc="Complete Android layout XML starting with <?xml version='1.0'?>"
+        desc="Widget blocks only (chunk mode) OR complete XML (single mode). No markdown fences."
     )
 
 
