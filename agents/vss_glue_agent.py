@@ -53,8 +53,9 @@ ACCESS_MAP = {
 }
 
 # Full 32-bit VHAL property ID bits
-# bits[23:16] = type, bits[31:24] = area
-_AREA_GLOBAL = 0x00000000
+# Format: [31:28]=area_major [27:24]=area_minor [23:16]=type [15:0]=index
+# VTS expects: 0x21xxxxxx = VEHICLE area (0x21000000) | type | index
+_AREA_VEHICLE = 0x21000000  # VehicleArea::VEHICLE
 _TYPE_BITS = {
     "BOOLEAN": 0x00200000,
     "INT":     0x00400000,
@@ -66,9 +67,12 @@ _TYPE_BITS = {
 _TYPE_DEFAULT = 0x00e00000  # MIXED fallback
 
 def _build_full_prop_id(raw_id: int, vtype: str) -> int:
-    """Convert sequential LLM-generated enum ID to full 32-bit VHAL property ID."""
+    """Convert sequential LLM-generated enum ID to full 32-bit VHAL property ID.
+    Matches VTS expected format: AREA_VEHICLE | type_bits | (raw_id & 0xFFFF)
+    e.g. 0x21401000 = 0x21000000 | 0x00400000 | 0x1000
+    """
     type_bits = _TYPE_BITS.get(vtype, _TYPE_DEFAULT)
-    return _AREA_GLOBAL | type_bits | (raw_id & 0xFFFF)
+    return _AREA_VEHICLE | type_bits | (raw_id & 0xFFFF)
 
 
 def _parse_aidl_properties(aidl_dir: str) -> list[dict]:
