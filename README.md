@@ -475,12 +475,14 @@ screen -S aosp
 # Download outputs and integration script
 gcloud storage cp gs://aosp-thesis-temp/output_c4_feedback.zip ~/
 gcloud storage cp gs://aosp-thesis-temp/output_c5.zip ~/
+gcloud storage cp gs://aosp-thesis-temp/output_c4_minimal.zip ~/
 
 curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/apply_aosp14_fixes.sh
 chmod +x ~/apply_aosp14_fixes.sh
 
 unzip ~/output_c4_feedback.zip -d ~/output_c4
 unzip ~/output_c5.zip -d ~/output_c5
+unzip ~/output_c4_minimal.zip -d ~/output_c4_minimal
 
 cd ~/aosp-14-auto
 source build/envsetup.sh
@@ -576,6 +578,11 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 restore_aosp
 clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto --force
+
+# or minimal
+restore_aosp
+clean_verify
+~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto --force
 
 # Update API (new .aidl files require an API bump)
 m android.hardware.automotive.vehicle-update-api
