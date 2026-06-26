@@ -26,7 +26,7 @@ from apply_chroma_fix import *
 
 # ── Agents ─────────────────────────────────────────────────
 from agents.rag_dspy_aidl_agent    import RAGDSPyAIDLAgent
-from agents.rag_dspy_cpp_agent     import RagDspyCppAgent
+from agents.rag_dspy_cpp_agent     import RAGDSPyCppAgent
 from agents.rag_dspy_selinux_agent import RAGDSPySELinuxAgent
 from agents.vss_glue_agent         import VssGlueAgent
 from agents.module_planner_agent   import plan_modules_from_spec
@@ -151,7 +151,7 @@ print("  Minimal HAL: AIDL + CPP + SELinux (RAG+DSPy+Retry)")
 print("══════════════════════════════════════════════════════")
 
 aidl_agent    = RAGDSPyAIDLAgent(**AGENT_CFG)
-cpp_agent     = RagDspyCppAgent(**AGENT_CFG)
+cpp_agent     = RAGDSPyCppAgent(**AGENT_CFG)
 selinux_agent = RAGDSPySELinuxAgent(**AGENT_CFG)
 
 # ── Load spec (same as C4 — from labeled signals cache) ───
