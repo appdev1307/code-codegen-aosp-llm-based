@@ -588,7 +588,10 @@ clean_verify
 m android.hardware.automotive.vehicle-update-api
 
 rm -rf out
-m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service 
+
+m clean android.hardware.automotive.vehicle@V3-vss-service
+m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
+
 m -j$(nproc) 2>&1 | tee ~/build_c4.log
 m -j$(nproc) vendorimage vbmetaimage superimage 2>&1 | tee ~/build_vss.log
 
