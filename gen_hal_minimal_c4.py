@@ -388,11 +388,16 @@ def verify_output(base=str(OUTPUT_DIR)):
     print("\n=== 4. VssGlueAgent Artifacts ===")
     vss_dir = base + "/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
     for f in ["VssVehicleHardware.h", "VssVehicleHardware.cpp",
-              "VssVehicleService.cpp", "Android.bp",
+              "Android.bp",
               "android.hardware.automotive.vehicle@V3-vss-service.rc",
               "manifest_vss.xml"]:
         exists = os.path.exists(os.path.join(vss_dir, f))
         print(f"  {'✓' if exists else '✗'} {f}")
+    # VssGlueAgent may name service main differently
+    service_main = next(
+        (f for f in ["VehicleServiceMain.cpp", "VssVehicleService.cpp"]
+         if os.path.exists(os.path.join(vss_dir, f))), None)
+    print(f"  {'✓' if service_main else '✗'} {service_main or 'VehicleServiceMain.cpp (missing)'}")
 
     print("\n=== 5. SELinux Files ===")
     for fpath in sorted(glob.glob(base + "/**/vehicle_hal_*.te", recursive=True)):
