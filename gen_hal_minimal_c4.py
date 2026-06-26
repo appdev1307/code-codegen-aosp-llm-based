@@ -1,13 +1,12 @@
 """
-gen_hal_minimal_c4.py
+gen_hal_minimal.py
 ══════════════════════════════════════════════════════════════
 Minimal HAL generation: AIDL + CPP + SELinux + VssGlue only.
-No backend, no android_app, no design_doc — saves Colab time.
+RAG + DSPy (C3) + post-validation retry (C4).
+No backend, android_app, design_doc — saves Colab time.
 For testing VssGlueAgent fix and GCP VM integration.
 
 Usage (Colab cell):
-    %run gen_hal_minimal.py
-    # or
     exec(open('gen_hal_minimal.py').read())
 ══════════════════════════════════════════════════════════════
 """
@@ -34,9 +33,12 @@ from agents.module_planner_agent   import plan_modules_from_spec
 from schemas.yaml_loader           import load_hal_spec_from_yaml_text
 
 # ── Config ─────────────────────────────────────────────────
-OUTPUT_DIR  = Path("output_c4_minimal")
-YAML_SPEC   = Path("output_c4_feedback/SPEC_FROM_VSS_500.yaml")  # reuse existing spec
-AGENT_CFG   = dict(dspy_programs_dir="dspy_opt/saved", rag_top_k=8, rag_db_path="rag/chroma_db")
+OUTPUT_DIR       = Path("output_c4_minimal")
+AGENT_CFG        = dict(dspy_programs_dir="dspy_opt/saved", rag_top_k=8, rag_db_path="rag/chroma_db")
+MAX_RETRIES      = 3
+LABELLED_CACHE   = Path("/content/vss_temp/VSS_LABELLED_500.json")
+VENDOR_NAMESPACE = "vendor.vss"
+TEST_SIGNAL_COUNT = 500
 
 # ── Output dirs ────────────────────────────────────────────
 AIDL_OUT = OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
@@ -46,18 +48,6 @@ VSS_OUT  = OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl/impl/vss"
 for d in [AIDL_OUT, CPP_OUT, SE_OUT, VSS_OUT]:
     d.mkdir(parents=True, exist_ok=True)
 
-print("══════════════════════════════════════════════════")
-print("  Minimal HAL Generation: AIDL + CPP + SELinux")
-print("══════════════════════════════════════════════════")
-
-# ── Load spec ──────────────────────────────────────────────
-yaml_spec         = YAML_SPEC.read_text()
-full_spec         = load_hal_spec_from_yaml_text(yaml_spec)
-module_signal_map = plan_modules_from_spec(yaml_spec, use_fast_mode=True)
-properties_by_id  = {getattr(p,"id",None): p for p in full_spec.properties if getattr(p,"id",None)}
-print(f"  Spec   : {len(full_spec.properties)} properties")
-print(f"  Modules: {list(module_signal_map.keys())}")
-
 # ── ModuleSpec (same as C4) ────────────────────────────────
 class ModuleSpec:
     def __init__(self, domain: str, properties: list):
@@ -65,92 +55,207 @@ class ModuleSpec:
         self.properties = properties
         self.aosp_level = 14
         self.vendor     = "AOSP"
+
     def to_llm_spec(self) -> str:
         lines = [f"HAL Domain: {self.domain}", f"AOSP Level: {self.aosp_level}",
                  f"Vendor: {self.vendor}", f"Properties: {len(self.properties)}", ""]
         for prop in self.properties:
-            name   = getattr(prop, "id",     "UNKNOWN")
-            typ    = getattr(prop, "type",   "UNKNOWN")
-            access = getattr(prop, "access", "READ_WRITE")
-            areas  = getattr(prop, "areas",  ["GLOBAL"])
+            name      = getattr(prop, "id",     "UNKNOWN")
+            typ       = getattr(prop, "type",   "UNKNOWN")
+            access    = getattr(prop, "access", "READ_WRITE")
+            areas     = getattr(prop, "areas",  ["GLOBAL"])
             areas_str = ", ".join(areas) if isinstance(areas, (list, tuple)) else str(areas)
             lines += [f"- Name: {name}", f"  Type: {typ}",
                       f"  Access: {access}", f"  Areas: {areas_str}", ""]
         return "\n".join(lines)
 
+# ── Retry helper (same logic as C4 PostValidationRetry) ───
+def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None):
+    """
+    Validate generated file; retry with error feedback if it fails.
+    Mirrors C4 PostValidationRetry.validate_and_retry_file().
+    """
+    if not fpath.exists():
+        return False, 0.0, 0
+
+    code = fpath.read_text(encoding="utf-8", errors="ignore")
+    code_to_val = code
+    if extra_files:
+        extra = "\n".join(p.read_text(errors="ignore") for p in extra_files if p.exists())
+        code_to_val = code + "\n" + extra
+
+    r = validate(agent_type, code_to_val)
+    if r.ok:
+        return True, r.score, 1
+
+    best_code, best_score = code, r.score
+    error_msg = r.errors[0] if r.errors else "validation failed"
+    print(f"    ✗ Initial failed (score={r.score:.3f}) — retrying...")
+
+    for attempt in range(2, MAX_RETRIES + 1):
+        feedback = (
+            f"Your previous output had validation errors:\n{error_msg}\n\n"
+            f"Fix ALL errors above. Generate the COMPLETE corrected file."
+        )
+        retry_kwargs = dict(gen_kwargs)
+        # Inject error feedback into `properties` field (same as C4)
+        retry_kwargs["properties"] = (
+            "=== CRITICAL: FIX THESE VALIDATION ERRORS FIRST ===\n"
+            + feedback
+            + "\n=== END ERRORS ===\n\n"
+            + "=== ORIGINAL PROPERTIES ===\n"
+            + gen_kwargs.get("properties", "")
+        )
+        retry_kwargs["aosp_context"] = gen_kwargs.get("aosp_context", "")
+
+        try:
+            new_code = agent._generate(**retry_kwargs)
+        except Exception as e:
+            print(f"    Attempt {attempt}: generation error: {e}")
+            continue
+
+        if not new_code or not new_code.strip():
+            print(f"    Attempt {attempt}: empty output")
+            continue
+
+        code_for_val = new_code
+        if extra_files:
+            extra = "\n".join(p.read_text(errors="ignore") for p in extra_files if p.exists())
+            code_for_val = new_code + "\n" + extra
+
+        r = validate(agent_type, code_for_val)
+        if r.score > best_score:
+            best_code, best_score = new_code, r.score
+
+        if r.ok:
+            fpath.write_text(new_code, encoding="utf-8")
+            print(f"    ✓ Passed on attempt {attempt} (score={r.score:.3f})")
+            return True, r.score, attempt
+
+        error_msg = r.errors[0] if r.errors else "validation failed"
+        print(f"    Attempt {attempt}: still failing (score={r.score:.3f})")
+
+    # Write best version even if not passing
+    fpath.write_text(best_code, encoding="utf-8")
+    return False, best_score, MAX_RETRIES
+
 # ── Init agents ────────────────────────────────────────────
+print("══════════════════════════════════════════════════════")
+print("  Minimal HAL: AIDL + CPP + SELinux (RAG+DSPy+Retry)")
+print("══════════════════════════════════════════════════════")
+
 aidl_agent    = RAGDSPyAIDLAgent(**AGENT_CFG)
 cpp_agent     = RagDspyCppAgent(**AGENT_CFG)
 selinux_agent = RAGDSPySELinuxAgent(**AGENT_CFG)
+
+# ── Load spec (same as C4 — from labeled signals cache) ───
+from vss_to_yaml import vss_to_yaml_spec
+
+if LABELLED_CACHE.exists():
+    print(f"[LABELLING] Cached labels: {LABELLED_CACHE}")
+    yaml_spec, prop_count = vss_to_yaml_spec(
+        vss_json_path=str(LABELLED_CACHE),
+        include_prefixes=None, max_props=None,
+        vendor_namespace=VENDOR_NAMESPACE, add_meta=True,
+    )
+    spec_path = OUTPUT_DIR / f"SPEC_FROM_VSS_{TEST_SIGNAL_COUNT}.yaml"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(yaml_spec, encoding="utf-8")
+    print(f"  {prop_count} properties from labelled signals")
+else:
+    raise FileNotFoundError(
+        f"Labelled cache not found: {LABELLED_CACHE}\n"
+        "Run VSSLabellingAgent first or restore from Google Drive."
+    )
+
+full_spec         = load_hal_spec_from_yaml_text(yaml_spec)
+module_signal_map = plan_modules_from_spec(yaml_spec, use_fast_mode=True)
+print(f"  Spec   : {len(full_spec.properties)} properties")
+print(f"  Modules: {list(module_signal_map.keys())}")
 
 # ── Generate per module ────────────────────────────────────
 scores = {"aidl": [], "cpp": [], "selinux": []}
 t_total = time.time()
 
 for domain, signal_ids in module_signal_map.items():
-    print(f"\n{'='*52}")
+    print(f"\n{'='*54}")
     print(f"  MODULE: {domain} ({len(signal_ids)} signals)")
-    print(f"{'='*52}")
+    print(f"{'='*54}")
     t0 = time.time()
 
-    # Build ModuleSpec for this domain
     domain_props = [p for p in full_spec.properties
                     if getattr(p, "id", "") in signal_ids]
-    mspec = ModuleSpec(domain=domain, properties=domain_props)
+    mspec    = ModuleSpec(domain=domain, properties=domain_props)
+    llm_spec = mspec.to_llm_spec()
+
+    # RAG context per agent type
+    def _rag(agent, query):
+        return agent._retrieve(query) if hasattr(agent, '_retrieve') else ""
 
     # ── AIDL ──────────────────────────────────────────────
     try:
-        code = aidl_agent.run(mspec)
+        aidl_code = aidl_agent.run(mspec)
         fpath = AIDL_OUT / f"VehicleProperty{domain.capitalize()}.aidl"
-        fpath.write_text(code)
-        s = score_file("aidl", code)
-        r = validate("aidl", code)
-        scores["aidl"].append(s)
-        print(f"  [{'✓' if r.ok else '✗'}] aidl    score={s:.3f} ({len(code)} chars)")
+        fpath.write_text(aidl_code)
+        rag_ctx = _rag(aidl_agent, f"VehicleProperty enum AIDL {domain} android automotive")
+        passed, score, attempts = _retry_agent(
+            agent=aidl_agent, agent_type="aidl", fpath=fpath,
+            gen_kwargs={"domain": domain, "properties": llm_spec, "aosp_context": rag_ctx}
+        )
+        scores["aidl"].append(score)
+        print(f"  [{'✓' if passed else '~'}] aidl    score={score:.3f}  attempts={attempts}")
     except Exception as e:
         print(f"  [✗] aidl    ERROR: {e}")
 
     # ── CPP ───────────────────────────────────────────────
     try:
-        code = cpp_agent.run(mspec)
-        # cpp_agent.run returns impl string
-        fname = f"VehicleHalService{domain.capitalize()}.cpp"
-        fpath = CPP_OUT / fname
-        fpath.write_text(code if isinstance(code, str) else str(code))
-        s = score_file("cpp", code if isinstance(code, str) else str(code))
-        r = validate("cpp", code if isinstance(code, str) else str(code))
-        scores["cpp"].append(s)
-        print(f"  [{'✓' if r.ok else '✗'}] cpp     score={s:.3f} ({len(str(code))} chars)")
+        cpp_code = cpp_agent.run(mspec)
+        domain_cap = domain.capitalize()
+        impl_fpath = CPP_OUT / f"VehicleHalService{domain_cap}.cpp"
+        impl_fpath.write_text(cpp_code if isinstance(cpp_code, str) else str(cpp_code))
+        extra = [CPP_OUT / f"VehicleHalService{domain_cap}.h",
+                 CPP_OUT / f"VehicleService{domain_cap}.cpp"]
+        rag_ctx = _rag(cpp_agent, f"IVehicleHardware CPP {domain} android automotive vehicle")
+        passed, score, attempts = _retry_agent(
+            agent=cpp_agent, agent_type="cpp", fpath=impl_fpath,
+            gen_kwargs={"domain": domain, "properties": llm_spec, "aosp_context": rag_ctx},
+            extra_files=extra
+        )
+        scores["cpp"].append(score)
+        print(f"  [{'✓' if passed else '~'}] cpp     score={score:.3f}  attempts={attempts}")
     except Exception as e:
         print(f"  [✗] cpp     ERROR: {e}")
 
     # ── SELinux ───────────────────────────────────────────
     try:
-        code = selinux_agent.run(mspec)
+        se_code = selinux_agent.run(mspec)
         fpath = SE_OUT / f"vehicle_hal_{domain.lower()}.te"
-        fpath.write_text(code)
-        s = score_file("selinux", code)
-        r = validate("selinux", code)
-        scores["selinux"].append(s)
-        print(f"  [{'✓' if r.ok else '✗'}] selinux score={s:.3f} ({len(code)} chars)")
+        fpath.write_text(se_code)
+        rag_ctx = _rag(selinux_agent, f"hal_vehicle SELinux AIDL Android 14 binder {domain}")
+        passed, score, attempts = _retry_agent(
+            agent=selinux_agent, agent_type="selinux", fpath=fpath,
+            gen_kwargs={"domain": domain, "service_name": f"vendor.vss.{domain.lower()}",
+                        "aosp_context": rag_ctx}
+        )
+        scores["selinux"].append(score)
+        print(f"  [{'✓' if passed else '~'}] selinux score={score:.3f}  attempts={attempts}")
     except Exception as e:
         print(f"  [✗] selinux ERROR: {e}")
 
     print(f"  Done in {time.time()-t0:.1f}s")
 
-# ── VssGlueAgent (fixed prop IDs) ─────────────────────────
-print(f"\n{'='*52}")
+# ── VssGlueAgent (fixed 32-bit prop IDs) ──────────────────
+print(f"\n{'='*54}")
 print("  VssGlueAgent (full 32-bit prop IDs)")
-print(f"{'='*52}")
+print(f"{'='*54}")
 try:
     agent = VssGlueAgent()
     agent.run(str(VSS_OUT), aidl_dir=str(AIDL_OUT))
-    # Verify prop IDs
     import re
     cpp_content = (VSS_OUT / "VssVehicleHardware.cpp").read_text()
     raw_ids = re.findall(r'cfg\.prop = (0x[0-9a-fA-F]+|\d+)', cpp_content)
     invalid = [x for x in raw_ids if int(x, 16) < 0x00100000]
-    print(f"  Props  : {len(raw_ids)} total, {len(invalid)} invalid")
+    print(f"  Props  : {len(raw_ids)} total")
     print(f"  IDs    : {'✅ All valid 32-bit VHAL IDs' if not invalid else '❌ ' + str(invalid[:3])}")
 except Exception as e:
     print(f"  ❌ VssGlueAgent ERROR: {e}")
@@ -191,14 +296,14 @@ bp_path.write_text(aidl_bp)
 print(f"  ✅ AIDL Android.bp generated")
 
 # ── Summary ────────────────────────────────────────────────
-print(f"\n{'='*52}")
+print(f"\n{'='*54}")
 print("  SUMMARY")
-print(f"{'='*52}")
-for agent, sc in scores.items():
-    avg = sum(sc)/len(sc) if sc else 0
-    print(f"  {agent:<10}: {avg:.3f} ({len(sc)} files)")
-print(f"  Total time: {time.time()-t_total:.1f}s")
-print(f"  Output: {OUTPUT_DIR}")
+print(f"{'='*54}")
+for agent_type, sc in scores.items():
+    avg = sum(sc)/len(sc) if sc else 0.0
+    print(f"  {agent_type:<10}: avg={avg:.3f} ({len(sc)} files)")
+print(f"  Total time : {time.time()-t_total:.1f}s")
+print(f"  Output dir : {OUTPUT_DIR}")
 
 # ── Zip for GCP VM ────────────────────────────────────────
 print(f"\n[+] Zipping for GCP VM...")
