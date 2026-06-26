@@ -810,11 +810,11 @@ adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.auto
 
 adb shell stop vendor.vehicle-hal-vss
 adb shell start vendor.vehicle-hal-vss
+sleep 5
 
 # Verify và run VTS
 adb shell ps -AZ | grep vss-service
-atest VtsHalAutomotiveVehicleVss
-
+atest VtsHalAutomotiveVehicleVss -- --log-level=VERBOSE --log-level-display=VERBOSE
 ```
 
 ### Step 8 — Build VTS, Deploy VssVehicleHardware, Run Tests
