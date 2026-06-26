@@ -369,10 +369,11 @@ def verify_output(base=str(OUTPUT_DIR)):
     else:
         print("✓ No HIDL patterns")
 
-    print("\n=== 2. Android 14 Standard (VehicleHalService*.h) ===")
-    for fpath in sorted(glob.glob(base + "/**/VehicleHalService*.h", recursive=True)):
-        content = open(fpath, errors="ignore").read()
-        missing = [p for p in A14_REQUIRED_IN_H if p not in content]
+    print("\n=== 2. Android 14 Standard (VehicleHalService*.cpp) ===")
+    for fpath in sorted(glob.glob(base + "/**/VehicleHalService*.cpp", recursive=True)):
+        txt = open(fpath, errors="ignore").read()
+        A14_REQUIRED_IN_CPP = ["IVehicleHardware", "getAllPropertyConfigs", "getValues"]
+        missing = [p for p in A14_REQUIRED_IN_CPP if p not in txt]
         fname = fpath.split("/")[-1]
         print(f"  {'✓' if not missing else '✗'} {fname}" + (f": missing {missing}" if missing else ""))
 
@@ -387,7 +388,7 @@ def verify_output(base=str(OUTPUT_DIR)):
     print("\n=== 4. VssGlueAgent Artifacts ===")
     vss_dir = base + "/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
     for f in ["VssVehicleHardware.h", "VssVehicleHardware.cpp",
-              "VehicleServiceMain.cpp", "Android.bp",
+              "VssVehicleService.cpp", "Android.bp",
               "android.hardware.automotive.vehicle@V3-vss-service.rc",
               "manifest_vss.xml"]:
         exists = os.path.exists(os.path.join(vss_dir, f))
