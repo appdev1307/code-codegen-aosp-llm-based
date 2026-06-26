@@ -34,6 +34,12 @@ from schemas.yaml_loader           import load_hal_spec_from_yaml_text
 
 # ── Config ─────────────────────────────────────────────────
 OUTPUT_DIR       = Path("output_c4_minimal")
+
+# Delete output dir first (clean run)
+import shutil
+if OUTPUT_DIR.exists():
+    shutil.rmtree(OUTPUT_DIR)
+    print(f"🗑  Deleted {OUTPUT_DIR}")
 AGENT_CFG        = dict(dspy_programs_dir="dspy_opt/saved", rag_top_k=8, rag_db_path="rag/chroma_db")
 MAX_RETRIES      = 3
 LABELLED_CACHE   = Path("/content/vss_temp/VSS_LABELLED_500.json")
@@ -325,3 +331,73 @@ print("\nDone! Run on GCP VM:")
 print("  unzip output_c4_minimal.zip -d ~/output_c4_minimal")
 print("  ./apply_aosp14_fixes_fixed.sh ~/output_c4_minimal ~/aosp")
 print("  m -j$(nproc)")
+
+# ── Verify output ──────────────────────────────────────────
+import os, glob
+
+def verify_output(base=str(OUTPUT_DIR)):
+    HIDL_BAD = [
+        "hal_attribute_hwservice", "add_hwservice", "hwbinder_device",
+        "IOnPropertyChangeCallback", "IOnPropertySetErrorCallback",
+        "callback->onValues(", "callback->onResult(",
+        "VssVehicleHardwareImpl",
+        "<aidl/android/hardware/automotive/vehicle/DefaultVehicleHal.h>",
+    ]
+    A14_REQUIRED_IN_H = [
+        "<IVehicleHardware.h>",
+        "getAllPropertyConfigs",
+        "GetValuesCallback",
+    ]
+    AIDL_REQUIRED = [
+        "package android.hardware.automotive.vehicle",
+        "@VintfStability",
+        '@Backing(type="int")',
+    ]
+
+    print("=== 1. HIDL Contamination ===")
+    hidl_issues = []
+    for fpath in glob.glob(base + "/**/*", recursive=True):
+        if not os.path.isfile(fpath): continue
+        if not fpath.endswith((".cpp",".h",".te",".xml",".aidl")): continue
+        content = open(fpath, errors="ignore").read()
+        bad = [p for p in HIDL_BAD if p in content]
+        if bad:
+            hidl_issues.append((fpath.replace(base+"/",""), bad[:1]))
+    if hidl_issues:
+        print(f"✗ {len(hidl_issues)} files:")
+        for f, b in hidl_issues[:5]: print(f"  {f}: {b}")
+    else:
+        print("✓ No HIDL patterns")
+
+    print("\n=== 2. Android 14 Standard (VehicleHalService*.h) ===")
+    for fpath in sorted(glob.glob(base + "/**/VehicleHalService*.h", recursive=True)):
+        content = open(fpath, errors="ignore").read()
+        missing = [p for p in A14_REQUIRED_IN_H if p not in content]
+        fname = fpath.split("/")[-1]
+        print(f"  {'✓' if not missing else '✗'} {fname}" + (f": missing {missing}" if missing else ""))
+
+    print("\n=== 3. AIDL Files ===")
+    for fpath in sorted(glob.glob(base + "/**/VehicleProperty*.aidl", recursive=True)):
+        content = open(fpath, errors="ignore").read()
+        missing = [p for p in AIDL_REQUIRED if p not in content]
+        lines = len(content.splitlines())
+        fname = fpath.split("/")[-1]
+        print(f"  {'✓' if not missing else '✗'} {fname} ({lines} lines)" + (f": missing {missing}" if missing else ""))
+
+    print("\n=== 4. VssGlueAgent Artifacts ===")
+    vss_dir = base + "/hardware/interfaces/automotive/vehicle/aidl/impl/vss"
+    for f in ["VssVehicleHardware.h", "VssVehicleHardware.cpp",
+              "VehicleServiceMain.cpp", "Android.bp",
+              "android.hardware.automotive.vehicle@V3-vss-service.rc",
+              "manifest_vss.xml"]:
+        exists = os.path.exists(os.path.join(vss_dir, f))
+        print(f"  {'✓' if exists else '✗'} {f}")
+
+    print("\n=== 5. SELinux Files ===")
+    for fpath in sorted(glob.glob(base + "/**/vehicle_hal_*.te", recursive=True)):
+        content = open(fpath, errors="ignore").read()
+        ok = "type " in content and "init_daemon_domain" in content and "hal_server_domain" in content
+        fname = fpath.split("/")[-1]
+        print(f"  {'✓' if ok else '✗'} {fname}")
+
+verify_output()
