@@ -789,7 +789,7 @@ adb -s 0.0.0.0:6520 push \
     $(find $ANDROID_PRODUCT_OUT -name "android.hardware.automotive.vehicle-V3-ndk.so" | head -1) \
     /data/local/tmp/VtsHalAutomotiveVehicleVss/x86_64/
 
-
+# NDK part
 m android.hardware.automotive.vehicle-V3-ndk
 
 adb root
@@ -799,8 +799,18 @@ adb sync
 adb push out/target/product/vsoc_x86_64_only/system/lib64/android.hardware.automotive.vehicle-V3-ndk.so /system/lib64/
 adb reboot
 
-# Run lại
-atest VtsHalAutomotiveVehicleVss -- --serial 0.0.0.0:6520
+# SDK park
+# Push binary trực tiếp không cần reboot
+adb root
+adb remount
+adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
+
+adb shell stop vendor.vehicle-hal-vss
+adb shell start vendor.vehicle-hal-vss
+
+# Verify và run VTS
+adb shell ps -AZ | grep vss-service
+atest VtsHalAutomotiveVehicleVss
 
 ```
 

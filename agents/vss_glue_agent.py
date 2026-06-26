@@ -32,7 +32,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 BINARY_NAME  = "android.hardware.automotive.vehicle@V3-vss-service"
-SERVICE_NAME = "vendor.vehicle-vss"
+SERVICE_NAME = "vendor.vehicle-hal-vss"
 INSTANCE     = "android.hardware.automotive.vehicle.IVehicle/default"
 
 DOMAINS = ["adas", "body", "cabin", "chassis", "hvac", "infotainment", "powertrain"]
