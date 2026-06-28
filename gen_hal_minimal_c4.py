@@ -259,9 +259,10 @@ try:
     agent.run(str(VSS_OUT), aidl_dir=str(AIDL_OUT))
     import re
     cpp_content = (VSS_OUT / "VssVehicleHardware.cpp").read_text()
-    raw_ids = re.findall(r'cfg\.prop = (0x[0-9a-fA-F]+|\d+)', cpp_content)
-    invalid = [x for x in raw_ids if int(x, 16) < 0x00100000]
+    raw_ids = re.findall(r'mPropIds\.push_back\((0x[0-9a-fA-F]+)\)', cpp_content)
+    invalid = [x for x in raw_ids if int(x, 16) < 0x20000000]
     print(f"  Props  : {len(raw_ids)} total")
+    print(f"  Sample : {raw_ids[:3]}")
     print(f"  IDs    : {'✅ All valid 32-bit VHAL IDs' if not invalid else '❌ ' + str(invalid[:3])}")
 except Exception as e:
     print(f"  ❌ VssGlueAgent ERROR: {e}")

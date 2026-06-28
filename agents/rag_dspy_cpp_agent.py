@@ -172,13 +172,13 @@ class RAGDSPyCppAgent:
     def __init__(self, **kwargs):
         self.inner = RagDspyCppAgent(**kwargs)
 
-    def run(self, module_spec) -> str:
-        """Called by architect — returns impl string (not dict)."""
+    def run(self, module_spec) -> dict:
+        """Called by architect — returns dict with header + impl."""
         out = self.inner.generate(
             domain     = module_spec.domain,
             properties = module_spec.to_llm_spec(),
         )
-        return out.get("impl", "")
+        return out  # dict with header, impl, main_service, android_bp
 
     def _generate(self, domain: str, properties: str,
                   aosp_context: str = "", **kwargs) -> str:
