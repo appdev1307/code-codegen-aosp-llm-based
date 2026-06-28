@@ -215,16 +215,22 @@ for domain, signal_ids in module_signal_map.items():
 
     # ── CPP ───────────────────────────────────────────────
     try:
-        cpp_code = cpp_agent.run(mspec)
+        cpp_result = cpp_agent.run(mspec)
         domain_cap = domain.capitalize()
         impl_fpath = CPP_OUT / f"VehicleHalService{domain_cap}.cpp"
-        impl_fpath.write_text(cpp_code if isinstance(cpp_code, str) else str(cpp_code))
+        # Extract header and impl from dict result
+        if isinstance(cpp_result, dict):
+            if cpp_result.get("header"):
+                (CPP_OUT / f"VehicleHalService{domain_cap}.h").write_text(cpp_result["header"])
+            impl_fpath.write_text(cpp_result.get("impl", ""))
+        else:
+            impl_fpath.write_text(str(cpp_result))
         extra = [CPP_OUT / f"VehicleHalService{domain_cap}.h",
                  CPP_OUT / f"VehicleService{domain_cap}.cpp"]
         rag_ctx = _rag(cpp_agent, f"IVehicleHardware CPP {domain} android automotive vehicle")
         passed, score, attempts = _retry_agent(
             agent=cpp_agent, agent_type="cpp", fpath=impl_fpath,
-            gen_kwargs={"domain": domain, "properties": llm_spec, "aosp_context": rag_ctx},
+            gen_kwargs={"domain": domain, "properties": llm_spec + _get_aidl_content(domain), "aosp_context": rag_ctx},
             extra_files=extra
         )
         scores["cpp"].append(score)
