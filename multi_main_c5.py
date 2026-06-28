@@ -358,6 +358,74 @@ TEST(VssPropertyIdTest, AllIdsWellFormed) {{
         << "ID 0x" << std::hex << id << " has no value-type bits";
   }}
 }}
+
+// ── Test 5: getValues() returns OK or NOT_AVAILABLE for all VSS props ────
+// Validates that each property is accessible (status-only, no value check).
+TEST_F(VssVhalTest, VssPropertiesReadable) {{
+  int ok_count = 0, na_count = 0, err_count = 0;
+  for (int32_t propId : kVssPropertyIds) {{
+    std::vector<GetValueRequest> reqs;
+    GetValueRequest req;
+    req.requestId = static_cast<int64_t>(propId);
+    req.prop.prop = propId;
+    req.prop.areaId = 0;
+    reqs.push_back(req);
+
+    std::vector<GetValueResult> results;
+    auto status = vehicle->getValues(reqs, &results);
+    if (!status.isOk()) {{
+      err_count++;
+      continue;
+    }}
+    for (const auto& r : results) {{
+      if (r.status == StatusCode::OK) ok_count++;
+      else if (r.status == StatusCode::NOT_AVAILABLE) na_count++;
+      else err_count++;
+    }}
+  }}
+  std::cout << "  getValues: OK=" << ok_count
+            << " NOT_AVAILABLE=" << na_count
+            << " error=" << err_count << std::endl;
+  // Pass if no unexpected errors (OK + NOT_AVAILABLE are both acceptable)
+  EXPECT_EQ(err_count, 0)
+      << err_count << " properties returned unexpected error from getValues()";
+}}
+
+// ── Test 6: setValues() mock write for READ_WRITE VSS props ──────────────
+// Uses default int32 value=0; validates service does not crash or return
+// unexpected errors. NOT_AVAILABLE is acceptable (prop may be read-only).
+TEST_F(VssVhalTest, VssPropertiesWritable) {{
+  int ok_count = 0, na_count = 0, err_count = 0;
+  for (int32_t propId : kVssPropertyIds) {{
+    std::vector<SetValueRequest> reqs;
+    SetValueRequest req;
+    req.requestId = static_cast<int64_t>(propId);
+    req.value.prop = propId;
+    req.value.areaId = 0;
+    req.value.value.int32Values = {{0}};  // mock default value
+    reqs.push_back(req);
+
+    std::vector<SetValueResult> results;
+    auto status = vehicle->setValues(reqs, &results);
+    if (!status.isOk()) {{
+      err_count++;
+      continue;
+    }}
+    for (const auto& r : results) {{
+      if (r.status == StatusCode::OK) ok_count++;
+      else if (r.status == StatusCode::NOT_AVAILABLE ||
+               r.status == StatusCode::ACCESS_DENIED ||
+               r.status == StatusCode::INVALID_ARG) na_count++;
+      else err_count++;
+    }}
+  }}
+  std::cout << "  setValues: OK=" << ok_count
+            << " skipped=" << na_count
+            << " error=" << err_count << std::endl;
+  // Service must not crash — all responses must be received
+  EXPECT_EQ(err_count, 0)
+      << err_count << " properties returned unexpected error from setValues()";
+}}
 """
 
 

@@ -73,6 +73,7 @@ def _generate_vss_hardware_h() -> str:
 #include <IVehicleHardware.h>
 #include <VehicleHalTypes.h>
 #include <vector>
+#include <unordered_map>
 
 namespace android::hardware::automotive::vehicle {
 using namespace aidl::android::hardware::automotive::vehicle;
@@ -96,6 +97,8 @@ public:
 
 private:
     std::vector<int32_t> mPropIds;
+    // Mock store: prop -> value (default int32=0)
+    mutable std::unordered_map<int32_t, VehiclePropValue> mStore;
 };
 } // namespace android::hardware::automotive::vehicle
 """
@@ -145,8 +148,10 @@ StatusCode VssVehicleHardware::setValues(
         std::shared_ptr<const SetValuesCallback> callback,
         const std::vector<SetValueRequest>& requests) {{
     std::vector<SetValueResult> results;
-    for (const auto& r : requests)
+    for (const auto& r : requests) {{
+        mStore[r.value.prop] = r.value;  // store mock value
         results.push_back({{.requestId = r.requestId, .status = StatusCode::OK}});
+    }}
     (*callback)(results);
     return StatusCode::OK;
 }}
@@ -155,8 +160,23 @@ StatusCode VssVehicleHardware::getValues(
         std::shared_ptr<const GetValuesCallback> callback,
         const std::vector<GetValueRequest>& requests) const {{
     std::vector<GetValueResult> results;
-    for (const auto& r : requests)
-        results.push_back({{.requestId = r.requestId, .status = StatusCode::OK}});
+    for (const auto& r : requests) {{
+        auto it = mStore.find(r.prop.prop);
+        if (it != mStore.end()) {{
+            results.push_back({{.requestId = r.requestId,
+                               .status = StatusCode::OK,
+                               .prop = it->second}});
+        }} else {{
+            // Return default int32=0 for any registered VSS prop
+            VehiclePropValue val;
+            val.prop = r.prop.prop;
+            val.areaId = r.prop.areaId;
+            val.value.int32Values = {{0}};
+            results.push_back({{.requestId = r.requestId,
+                               .status = StatusCode::OK,
+                               .prop = val}});
+        }}
+    }}
     (*callback)(results);
     return StatusCode::OK;
 }}
