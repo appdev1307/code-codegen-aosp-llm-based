@@ -183,6 +183,14 @@ print(f"  Modules: {list(module_signal_map.keys())}")
 scores = {"aidl": [], "cpp": [], "selinux": []}
 t_total = time.time()
 
+def _get_aidl_content(domain: str) -> str:
+    """Read generated AIDL enum to inject exact prop IDs into CPP prompt."""
+    import glob as _glob
+    files = _glob.glob(str(AIDL_OUT / f"VehicleProperty{domain.capitalize()}.aidl"))
+    if files:
+        return "\n=== Generated AIDL enum (use these exact prop IDs) ===\n" + open(files[0], errors="ignore").read()
+    return ""
+
 for domain, signal_ids in module_signal_map.items():
     print(f"\n{'='*54}")
     print(f"  MODULE: {domain} ({len(signal_ids)} signals)")
