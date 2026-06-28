@@ -55,7 +55,9 @@ ACCESS_MAP = {
 # Full 32-bit VHAL property ID bits
 # Format: [31:28]=area_major [27:24]=area_minor [23:16]=type [15:0]=index
 # VTS expects: 0x21xxxxxx = VEHICLE area (0x21000000) | type | index
-_AREA_VEHICLE = 0x21000000  # VehicleArea::VEHICLE
+_VSS_GROUP = 0x20000000  # VehiclePropertyGroup::VENDOR
+_VSS_AREA  = 0x01000000  # VehicleArea::GLOBAL
+_GLOBAL_IDX_START = 0x1000  # Must match C5 global_idx = 0x1000
 _TYPE_BITS = {
     "BOOLEAN": 0x00200000,
     "INT":     0x00400000,
@@ -66,41 +68,39 @@ _TYPE_BITS = {
 }
 _TYPE_DEFAULT = 0x00e00000  # MIXED fallback
 
-def _build_full_prop_id(raw_id: int, vtype: str) -> int:
+def _build_full_prop_id(global_idx: int, vtype: str) -> int:
     """Convert sequential LLM-generated enum ID to full 32-bit VHAL property ID.
     Matches VTS expected format: AREA_VEHICLE | type_bits | (raw_id & 0xFFFF)
     e.g. 0x21401000 = 0x21000000 | 0x00400000 | 0x1000
     """
     type_bits = _TYPE_BITS.get(vtype, _TYPE_DEFAULT)
-    return _AREA_VEHICLE | type_bits | (raw_id & 0xFFFF)
+    return _VSS_GROUP | _VSS_AREA | type_bits | (global_idx & 0xFFFF)
 
 
 def _parse_aidl_properties(aidl_dir: str) -> list[dict]:
-    """Parse property IDs from generated AIDL enum files."""
+    """Parse property IDs from generated AIDL enum files.
+    
+    Uses a continuous global index starting at 0x1000 — same as C5 encode_prop_id()
+    so that VssVehicleHardware IDs match kVssPropertyIds in VTS test.
+    """
     props = []
     pattern = re.compile(
-        r"(\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+)"
-        r"(?:\s*,\s*//\s*(BOOLEAN|INT|FLOAT|STRING|BYTES|INT64)?"
-        r"(?:,\s*(READ|WRITE|READ_WRITE))?(?:,\s*(GLOBAL|VEHICLE))?)?",
+        r"^\s+(\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+),\s*//\s*(\w+)(?:,\s*(\w+))?",
         re.MULTILINE,
     )
     aidl_files = glob.glob(os.path.join(aidl_dir, "VehicleProperty*.aidl"))
+    global_idx = _GLOBAL_IDX_START  # continuous across all domain files
     for f in sorted(aidl_files):
         content = open(f, errors="ignore").read()
         for m in pattern.finditer(content):
-            name    = m.group(1)
-            prop_id = m.group(2)
-            vtype   = m.group(3) or "INT"
-            access  = m.group(4) or "READ_WRITE"
-            # Build full 32-bit VHAL property ID from raw sequential LLM ID
-            try:
-                raw_int = int(prop_id, 16) if prop_id.startswith("0x") else int(prop_id)
-                full_id = _build_full_prop_id(raw_int, vtype)
-                prop_id_final = hex(full_id)
-            except ValueError:
-                prop_id_final = prop_id  # fallback to raw
-            props.append({"name": name, "prop_id": prop_id_final,
+            name   = m.group(1)
+            vtype  = m.group(3) or "INT"
+            access = m.group(4) or "READ_WRITE"
+            # Use global continuous index — matches C5 encode_prop_id()
+            full_id = _build_full_prop_id(global_idx, vtype)
+            props.append({"name": name, "prop_id": hex(full_id),
                           "type": vtype, "access": access})
+            global_idx += 1
     logger.info(f"[VssGlueAgent] Parsed {len(props)} properties from {len(aidl_files)} AIDL files")
     return props
 
@@ -123,6 +123,7 @@ namespace aidlvhal = ::aidl::android::hardware::automotive::vehicle;
 
 class VssVehicleHardware : public IVehicleHardware {
 public:
+    VssVehicleHardware();
     ~VssVehicleHardware() override = default;
 
     // Returns configs for all 500 VSS properties across 7 domains.
@@ -143,6 +144,12 @@ public:
             std::unique_ptr<const PropertyChangeCallback> callback) override;
     void registerOnPropertySetErrorEvent(
             std::unique_ptr<const PropertySetErrorCallback> callback) override;
+
+    // Override getPropConfigs to return config for any requested prop ID
+    // This is needed because DefaultVehicleHal looks up props in internal map
+    aidlvhal::StatusCode getPropConfigs(
+            const std::vector<int32_t>& props,
+            std::vector<aidlvhal::VehiclePropConfig>* outConfigs);
 };
 
 }  // namespace android::hardware::automotive::vehicle
@@ -150,39 +157,59 @@ public:
 
 
 def _generate_vss_hardware_cpp(props: list[dict]) -> str:
-    """Generate VssVehicleHardware.cpp aggregating all domain property configs."""
-    config_lines = []
+    """Generate VssVehicleHardware.cpp with mPropIds constructor and getPropConfigs override."""
     ACCESS_MAP = {"READ": "READ", "WRITE": "WRITE", "READ_WRITE": "READ_WRITE"}
+    
+    # Constructor: initialize mPropIds with all prop IDs
+    init_lines = []
     for p in props:
-        prop_id = p["prop_id"]
-        access  = ACCESS_MAP.get(p.get("access", "READ_WRITE"), "READ_WRITE")
-        config_lines.append(
-            f"    {{\n"
-            f"        aidlvhal::VehiclePropConfig cfg;\n"
-            f"        cfg.prop = {prop_id};\n"
-            f"        cfg.access = aidlvhal::VehiclePropertyAccess::{access};\n"
-            f"        cfg.changeMode = aidlvhal::VehiclePropertyChangeMode::ON_CHANGE;\n"
-            f"        configs.push_back(cfg);\n"
-            f"    }}"
-        )
-
-    configs_body = "\n".join(config_lines) if config_lines else \
-        "    // No properties parsed — check AIDL files"
+        init_lines.append(f"    mPropIds.push_back({p['prop_id']});")
+    init_body = "\n".join(init_lines) if init_lines else "    // No properties"
 
     return f"""\
 // Generated by VssGlueAgent — DO NOT EDIT
-// Aggregates getAllPropertyConfigs() from {len(props)} VSS properties across 7 domains.
+// Aggregates getAllPropertyConfigs() from {len(props)} VSS properties.
+// IDs encoded with C5 encode_prop_id(): VSS_GROUP|VSS_AREA|type|global_idx
 #include "VssVehicleHardware.h"
 
 namespace android::hardware::automotive::vehicle {{
 
 namespace aidlvhal = ::aidl::android::hardware::automotive::vehicle;
 
+VssVehicleHardware::VssVehicleHardware() {{
+    mPropIds.reserve({len(props)});
+{init_body}
+}}
+
+static aidlvhal::VehiclePropConfig makeCfg(int32_t propId) {{
+    aidlvhal::VehiclePropConfig cfg;
+    cfg.prop = propId;
+    cfg.access = aidlvhal::VehiclePropertyAccess::READ_WRITE;
+    cfg.changeMode = aidlvhal::VehiclePropertyChangeMode::ON_CHANGE;
+    aidlvhal::VehicleAreaConfig areaCfg;
+    areaCfg.areaId = 0;
+    cfg.areaConfigs = {{areaCfg}};
+    return cfg;
+}}
+
 std::vector<aidlvhal::VehiclePropConfig> VssVehicleHardware::getAllPropertyConfigs() const {{
     std::vector<aidlvhal::VehiclePropConfig> configs;
-    configs.reserve({len(props)});
-{configs_body}
+    for (int32_t id : mPropIds) configs.push_back(makeCfg(id));
     return configs;
+}}
+
+aidlvhal::StatusCode VssVehicleHardware::getPropConfigs(
+        const std::vector<int32_t>& props,
+        std::vector<aidlvhal::VehiclePropConfig>* outConfigs) {{
+    outConfigs->clear();
+    for (int32_t p : props) {{
+        aidlvhal::VehiclePropConfig cfg;
+        cfg.prop = p;
+        cfg.access = aidlvhal::VehiclePropertyAccess::READ_WRITE;
+        cfg.changeMode = aidlvhal::VehiclePropertyChangeMode::ON_CHANGE;
+        outConfigs->push_back(cfg);
+    }}
+    return aidlvhal::StatusCode::OK;
 }}
 
 aidlvhal::StatusCode VssVehicleHardware::setValues(
