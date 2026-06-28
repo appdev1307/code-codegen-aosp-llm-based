@@ -47,12 +47,25 @@ def _parse_aidl_properties(aidl_dir: str) -> list[dict]:
     aidl_files = sorted(glob.glob(os.path.join(aidl_dir, "VehicleProperty*.aidl")))
     global_idx = _GLOBAL_IDX_START
 
+    _TYPE_KEYWORDS = ["BOOLEAN", "FLOAT", "STRING", "BYTES", "INT64", "INT"]
+
     for f in aidl_files:
         content = open(f, errors="ignore").read()
         for m in pattern.finditer(content):
             name = m.group(1)
-            vtype = m.group(3) or "INT"
-            access = m.group(4) or "READ_WRITE"
+            # Find type keyword anywhere in comment — handles any order
+            comment_text = ((m.group(3) or "") + " " + (m.group(4) or "")).upper()
+            # Also check raw line after //
+            raw_after = content[m.end():m.end()+50]
+            comment_match = re.search(r",\s*(\w+)\s*$", raw_after.split("\n")[0])
+            if comment_match:
+                comment_text += " " + comment_match.group(1).upper()
+            vtype = "INT"
+            for tk in _TYPE_KEYWORDS:
+                if tk in comment_text:
+                    vtype = tk
+                    break
+            access = "READ_WRITE" if "READ_WRITE" in comment_text else "READ"
             full_id = _build_full_prop_id(global_idx, vtype)
             props.append({
                 "name": name,
