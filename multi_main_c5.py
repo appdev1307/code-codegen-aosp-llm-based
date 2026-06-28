@@ -490,11 +490,12 @@ cc_test {{
             # Score — count both TEST_F() and TEST() macros
             has_fixture  = "VssVhalTest" in cpp_content
             test_count   = cpp_content.count("TEST_F(") + cpp_content.count("TEST(")
-            has_tests    = test_count >= 3
+            has_tests    = test_count >= 6  # expect 6 tests: 4 basic + 2 read/write
             has_includes = "IVehicle.h" in cpp_content
+            has_readwrite = "VssPropertiesReadable" in cpp_content and "VssPropertiesWritable" in cpp_content
             struct_score = 1.0 if (has_fixture and has_tests and has_includes) else 0.5
-            coverage     = min(1.0, test_count / 10.0)
-            score        = 0.40 * struct_score + 0.40 * 1.0 + 0.20 * coverage
+            coverage     = min(1.0, test_count / 6.0)  # 6 = full test suite
+            score        = 0.40 * struct_score + 0.30 * 1.0 + 0.20 * coverage + 0.10 * (1.0 if has_readwrite else 0.0)
 
             print(f"  [VTS] Attempt {attempt}: score={score:.3f} tests={test_count}")
 
