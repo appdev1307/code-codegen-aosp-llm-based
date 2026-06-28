@@ -807,18 +807,19 @@ adb -s 0.0.0.0:6520 push \
 m android.hardware.automotive.vehicle-V3-ndk
 
 adb root
+adb shell vdc checkpoint commitChanges
 adb remount
 adb sync
 
+# NDK part
 adb push out/target/product/vsoc_x86_64_only/system/lib64/android.hardware.automotive.vehicle-V3-ndk.so /system/lib64/
-adb reboot
-
 # SDK park
-# Push binary trực tiếp không cần reboot
-adb root
-adb remount
 adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
 
+adb reboot
+adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
+
+adb root
 adb shell stop vendor.vehicle-hal-vss
 adb shell start vendor.vehicle-hal-vss
 sleep 5
@@ -875,20 +876,26 @@ atest VtsHalAutomotiveVehicleVss -- --serial 0.0.0.0:6520
 
 #### 8d — Install and verify HMI app
 
+We will improve this parter.
+
 ```bash
 # Copy HMI app into AOSP packages
 rm -rf packages/apps/VssDashboard
 mkdir -p packages/apps/VssDashboard
 cp -r ~/output_c5/hmi_app/* packages/apps/VssDashboard/
 
+ls -l packages/apps/VssDashboard/
+ls -l packages/apps/VssDashboard/src/main/java/com/vss/
+
 # Build HMI app
+
 mmm packages/apps/VssDashboard 2>&1 | tail -5
+
 
 # Install on Cuttlefish
 adb root
 adb remount
-adb -s 0.0.0.0:6520 install -r \
-    out/target/product/vsoc_x86_64_only/system/app/VssDashboardApp/VssDashboardApp.apk
+adb install out/target/product/vsoc_x86_64_only/system/app/VssDashboard/VssDashboard.apk    
 
 # Launch app
 adb -s 0.0.0.0:6520 shell am start -n com.vss.vehicleapp/.MainActivity
