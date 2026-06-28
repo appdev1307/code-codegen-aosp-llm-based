@@ -223,7 +223,22 @@ for domain, signal_ids in module_signal_map.items():
 
     # ── CPP ───────────────────────────────────────────────
     try:
-        cpp_result = cpp_agent.run(mspec)
+        # Inject AIDL content into mspec for CPP agent
+        aidl_content = _get_aidl_content(domain)
+        if aidl_content:
+            # Patch module_spec to include AIDL enum in llm_spec
+            class _PatchedSpec:
+                def __init__(self, spec, extra):
+                    self._spec = spec
+                    self._extra = extra
+                    self.domain = spec.domain
+                    self.properties = spec.properties
+                def to_llm_spec(self):
+                    return self._spec.to_llm_spec() + self._extra
+            patched_spec = _PatchedSpec(mspec, aidl_content)
+        else:
+            patched_spec = mspec
+        cpp_result = cpp_agent.run(patched_spec)
         domain_cap = domain.capitalize()
         impl_fpath = CPP_OUT / f"VehicleHalService{domain_cap}.cpp"
         # Extract header and impl from dict result
