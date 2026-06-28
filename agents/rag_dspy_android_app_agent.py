@@ -29,7 +29,8 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
             return None
 
     def _write_app_scaffold(self) -> None:
-        # (Giữ nguyên phần manifest, strings, icons của bạn - tốt rồi)
+        """Create basic app structure."""
+        # Manifest
         manifest_path = self._output_dir / "src/main/AndroidManifest.xml"
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         if not manifest_path.exists():
@@ -56,7 +57,45 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
     </application>
 </manifest>
 """)
-        # strings.xml + icons (giữ nguyên hàm _create_placeholder_icons của bạn)
+
+        # strings.xml
+        strings_path = self._output_dir / "src/main/res/values/strings.xml"
+        strings_path.parent.mkdir(parents=True, exist_ok=True)
+        if not strings_path.exists():
+            strings_path.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VSS Dashboard</string>
+</resources>
+""")
+
+        # Icons
+        self._create_placeholder_icons()
+
+    def _create_placeholder_icons(self) -> None:
+        """Create minimal placeholder launcher icons."""
+        try:
+            import struct, zlib
+            def _make_png():
+                raw = b"\x00\x42\x85\xF4"  # Blue color
+                compressed = zlib.compress(raw)
+                def chunk(name, data):
+                    c = name + data
+                    return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+                png = b"\x89PNG\r\n\x1a\n"
+                png += chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+                png += chunk(b"IDAT", compressed)
+                png += chunk(b"IEND", b"")
+                return png
+
+            png_data = _make_png()
+            for density in ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]:
+                icon_path = self._output_dir / f"src/main/res/mipmap-{density}/ic_launcher.png"
+                icon_path.parent.mkdir(parents=True, exist_ok=True)
+                if not icon_path.exists():
+                    icon_path.write_bytes(png_data)
+            self._log("Created placeholder launcher icons")
+        except Exception as e:
+            self._log(f"Failed to create placeholder icons: {e}")
 
     def run(self, module_signal_map: dict, properties: list) -> None:
         t_start = time.time()
@@ -73,7 +112,6 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
     def _generate_module(self, domain: str, signal_names: list[str], all_properties: list) -> None:
         prop_ids = set(signal_names)
         module_props = [p for p in all_properties if getattr(p, "id", "") in prop_ids]
-
         prop_lines = "\n".join(f"- {getattr(p, 'id', '')} ({getattr(p, 'type', 'UNKNOWN')})" for p in module_props)
 
         aosp_context = self._retrieve_multi([
@@ -81,11 +119,9 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
             f"CarPropertyEventCallback Android Automotive",
         ])
 
-        # Kotlin
         kt_content = self._generate(domain=domain, properties=prop_lines, aosp_context=aosp_context)
         self._write_kotlin(domain, kt_content)
 
-        # Layout with chunking
         self._generate_layout(domain, prop_lines, len(module_props) or len(signal_names))
 
     def _generate_layout(self, domain: str, prop_lines: str, prop_count: int) -> None:
@@ -111,7 +147,6 @@ class RAGDSPyAndroidAppAgent(RAGDSPyMixin):
                         aosp_context=layout_context
                     )
                     chunk_xml = getattr(chunk_result, "layout_xml", "") or ""
-                    # Clean XML
                     inner = re.sub(r'^<\?xml[^>]*>\s*', '', chunk_xml.strip(), flags=re.DOTALL)
                     inner = re.sub(r'^<[^>]+>\s*', '', inner, flags=re.DOTALL)
                     inner = re.sub(r'\s*</[^>]+>\s*$', '', inner, flags=re.DOTALL)
