@@ -593,7 +593,10 @@ m clean android.hardware.automotive.vehicle@V3-vss-service
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 
 m -j$(nproc) 2>&1 | tee ~/build_c4.log
-m -j$(nproc) vendorimage vbmetaimage superimage 2>&1 | tee ~/build_vss.log
+touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.cpp
+touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.h
+m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service vendorimage superimage
+
 
 # Confirm super is newer than vendor and actually rewritten
 ls -la --time-style=full-iso $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
@@ -745,12 +748,16 @@ pkill -9 -f run_cvd 2>/dev/null || true
 rm -rf ~/cuttlefish_runtime ~/.cache/cuttlefish /tmp/1001 /tmp/cvd /tmp/*cuttlefi
 mkdir -p /tmp/1001/cvd_1/cuttlefish/assembly /tmp/1001/cvd_1/cuttlefish/instances
 
+ls -lh ~/cuttlefish/instances/cvd-1/*.img
 
 launch_cvd --noresume \
     --cpus=8 --memory_mb=8192 \
     --gpu_mode=guest_swiftshader 
 
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
+
+adb logcat -b all | grep -iE "panic|fatal|abort|crash|SIGABRT|reboot" | head -20
+
 adb shell getprop sys.boot_completed                 # 1
 adb shell ls /vendor/bin/hw/ | grep -i vehicle       # @V3-vss-service, no emulator
 adb root
