@@ -376,13 +376,19 @@ def verify_output(base=str(OUTPUT_DIR)):
     else:
         print("✓ No HIDL patterns")
 
-    print("\n=== 2. Android 14 Standard (VehicleHalService*.cpp) ===")
-    for fpath in sorted(glob.glob(base + "/**/VehicleHalService*.cpp", recursive=True)):
-        txt = open(fpath, errors="ignore").read()
-        A14_REQUIRED_IN_CPP = ["IVehicleHardware", "getAllPropertyConfigs", "getValues"]
-        missing = [p for p in A14_REQUIRED_IN_CPP if p not in txt]
-        fname = fpath.split("/")[-1]
-        print(f"  {'✓' if not missing else '✗'} {fname}" + (f": missing {missing}" if missing else ""))
+    print("\n=== 2. Android 14 Standard (VehicleHalService*.cpp/.h) ===")
+    for cpp_path in sorted(glob.glob(base + "/**/VehicleHalService*.cpp", recursive=True)):
+        cpp_txt = open(cpp_path, errors="ignore").read()
+        h_path = cpp_path.replace(".cpp", ".h")
+        h_txt = open(h_path, errors="ignore").read() if os.path.exists(h_path) else ""
+        combined = cpp_txt + h_txt
+        A14_REQUIRED = ["getAllPropertyConfigs", "getValues"]
+        missing = [p for p in A14_REQUIRED if p not in combined]
+        has_h = os.path.exists(h_path)
+        fname = cpp_path.split("/")[-1]
+        status = "✓" if not missing else "✗"
+        h_status = "(.h ✓)" if has_h else "(.h ✗)"
+        print(f"  {status} {fname} {h_status}" + (f": missing {missing}" if missing else ""))
 
     print("\n=== 3. AIDL Files ===")
     for fpath in sorted(glob.glob(base + "/**/VehicleProperty*.aidl", recursive=True)):
