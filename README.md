@@ -885,6 +885,8 @@ cp -r ~/output_c5/hmi_app/* packages/apps/VssDashboard/
 mmm packages/apps/VssDashboard 2>&1 | tail -5
 
 # Install on Cuttlefish
+adb root
+adb remount
 adb -s 0.0.0.0:6520 install -r \
     out/target/product/vsoc_x86_64_only/system/app/VssDashboardApp/VssDashboardApp.apk
 
