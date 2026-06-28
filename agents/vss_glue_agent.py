@@ -359,42 +359,42 @@ class VssGlueAgent:
         props = _parse_aidl_properties(aidl_dir) if aidl_dir and os.path.isdir(aidl_dir) else []
 
         # Detect actual domains from generated AIDL files
-    detected_domains = []
-    if aidl_dir and os.path.isdir(aidl_dir):
-        for f in sorted(glob.glob(os.path.join(aidl_dir, "VehicleProperty*.aidl"))):
-            basename = os.path.basename(f)  # e.g. VehiclePropertyAdas.aidl
-            domain = basename.replace("VehicleProperty", "").replace(".aidl", "").lower()
-            if domain:
-                detected_domains.append(domain)
-    active_domains = detected_domains if detected_domains else DOMAINS
-    logger.info(f"[VssGlueAgent] Active domains: {active_domains}")
+        detected_domains = []
+        if aidl_dir and os.path.isdir(aidl_dir):
+            for f in sorted(glob.glob(os.path.join(aidl_dir, "VehicleProperty*.aidl"))):
+                basename = os.path.basename(f)
+                domain = basename.replace("VehicleProperty", "").replace(".aidl", "").lower()
+                if domain:
+                    detected_domains.append(domain)
+        active_domains = detected_domains if detected_domains else DOMAINS
+        logger.info(f"[VssGlueAgent] Active domains: {active_domains}")
 
-    # Read generated domain headers for class name parsing
-    domain_headers = {}
-    if aidl_dir:
-        impl_dir = os.path.join(os.path.dirname(os.path.dirname(aidl_dir)), "impl")
-        for d in active_domains:
-            h_path = os.path.join(impl_dir, f"VehicleHalService{d.capitalize()}.h")
-            if os.path.exists(h_path):
-                domain_headers[d] = open(h_path, errors="ignore").read()
+        # Read generated domain headers for class name parsing
+        domain_headers = {}
+        if aidl_dir:
+            impl_dir = os.path.join(os.path.dirname(os.path.dirname(aidl_dir)), "impl")
+            for d in active_domains:
+                h_path = os.path.join(impl_dir, f"VehicleHalService{d.capitalize()}.h")
+                if os.path.exists(h_path):
+                    domain_headers[d] = open(h_path, errors="ignore").read()
 
-    artifacts = {
-            "VssVehicleHardware.h": _generate_vss_hardware_h(),
+        artifacts = {
+            "VssVehicleHardware.h":   _generate_vss_hardware_h(),
             "VssVehicleHardware.cpp": _generate_vss_hardware_cpp(props, active_domains, domain_headers),
-            "VssVehicleService.cpp": _generate_service_main(),
-            "Android.bp": _generate_android_bp(domains=active_domains),
-            f"{BINARY_NAME}.rc": _generate_init_rc(),
-            "manifest_vss.xml": _generate_manifest(),
-            "vehicle_hal_vss.te": _generate_vss_te(),
+            "VssVehicleService.cpp":  _generate_service_main(),
+            "Android.bp":             _generate_android_bp(domains=active_domains),
+            f"{BINARY_NAME}.rc":      _generate_init_rc(),
+            "manifest_vss.xml":       _generate_manifest(),
+            "vehicle_hal_vss.te":     _generate_vss_te(),
         }
 
-        for filename, content in artifacts.items():
+        for filename, file_content in artifacts.items():
             with open(os.path.join(output_dir, filename), "w") as f:
-                f.write(content)
+                f.write(file_content)
 
         prop_count = len(props)
         logger.info(f"[VssGlueAgent] Generated {len(artifacts)} artifacts with {prop_count} properties")
-        print(f"[VssGlueAgent] ✓ Generated {len(artifacts)} artifacts ({prop_count} properties)")
+        print(f"  [VssGlueAgent] ✓ {len(artifacts)} artifacts, {prop_count} VSS properties → {output_dir}")
         return artifacts
 
     def validate(self, output_dir: str) -> bool:
