@@ -1,0 +1,87 @@
+
+
+cat > ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.h << 'EOF'
+#pragma once
+
+#include <IVehicleHardware.h>
+#include <VehicleHalTypes.h>
+#include <vector>
+
+namespace android::hardware::automotive::vehicle {
+using namespace aidl::android::hardware::automotive::vehicle;
+
+class VssVehicleHardware : public IVehicleHardware {
+public:
+    VssVehicleHardware();
+    ~VssVehicleHardware() override = default;
+
+    std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
+
+    // Remove 'override' here because it's not virtual in base class
+    StatusCode getPropConfigs(const std::vector<int32_t>& props,
+                              std::vector<VehiclePropConfig>* outConfigs);
+
+    StatusCode setValues(std::shared_ptr<const SetValuesCallback> callback,
+                         const std::vector<SetValueRequest>& requests) override;
+
+    StatusCode getValues(std::shared_ptr<const GetValuesCallback> callback,
+                         const std::vector<GetValueRequest>& requests) const override;
+
+    DumpResult dump(const std::vector<std::string>&) override;
+    StatusCode checkHealth() override;
+
+    void registerOnPropertyChangeEvent(std::unique_ptr<const PropertyChangeCallback>) override;
+    void registerOnPropertySetErrorEvent(std::unique_ptr<const PropertySetErrorCallback>) override;
+
+private:
+    std::vector<int32_t> mPropIds;
+};
+
+} // namespace android::hardware::automotive::vehicle
+EOF
+
+
+
+adb shell ps -AZ | grep vss-service
+atest VtsHalAutomotiveVehicleVss -- --log-level=VERBOSE --log-level-display=VERBOSE
+u:r:hal_vehicle_vss:s0         vehicle_network 2436   1   10787156   6128 binder_ioctl_write_read 0 S android.hardware.automotive.vehicle@V3-vss-service
+Atest results and logs directory: /tmp/atest_result_nguyenngoctam1307/20260628_100050_irr2bihj
+
+Reading config: /home/nguyenngoctam1307/.atest/config
+
+Building Dependencies...
+out/target/product/vsoc_x86_64_only/module-info.json
+
+ninja: no work to do.
+2026-06-28 10:00:56,907 atest_utils.py:436:INFO: Build successful
+
+Finding Tests...
+Found 'VtsHalAutomotiveVehicleVss' as CACHE
+(Test info has been cached for speeding up the next run, if test info needs to be updated, please add -c to clean the old cache.)
+
+Building Dependencies...
+aapt2-host, atest-tradefed-host, VtsHalAutomotiveVehicleVss-target, atest_tradefed.sh-host, aapt-host, vts-core-tradefed-harness-host, atest_script_help.sh-host, tradefed-host, compatibility-host-util-host, adb-host, out/target/product/vsoc_x86_64_only/module-info.json
+
+ninja: no work to do.
+2026-06-28 10:01:03,726 atest_utils.py:436:INFO: Build successful
+
+Running Tests...
+
+x86_64 VtsHalAutomotiveVehicleVss
+---------------------------------
+VtsHalAutomotiveVehicleVss (4 Tests)
+[1/4] VssVhalTest#ServiceAvailable: PASSED (0ms)
+[2/4] VssVhalTest#VssPropertiesRegistered: PASSED (1ms)
+[3/4] VssPropertyIdTest#AllIdsUnique: PASSED (0ms)
+[4/4] VssPropertyIdTest#AllIdsWellFormed: PASSED (0ms)
+
+Summary (Test executed with 1 devices.)
+-------
+x86_64 VtsHalAutomotiveVehicleVss: Passed: 4, Failed: 0, Ignored: 0, Assumption Failed: 0  
+
+All tests passed!
+Test Logs have been saved in /tmp/atest_result_nguyenngoctam1307/20260628_100050_irr2bihj/log
+Run 'atest --history' to review test result history.
+
+To access logs, press "ctrl" and click on
+file:///tmp/atest_result_nguyenngoctam1307/20260628_100050_irr2bihj/log/test_logs.html
