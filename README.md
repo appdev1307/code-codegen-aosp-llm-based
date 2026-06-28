@@ -592,14 +592,18 @@ rm -rf out
 m clean android.hardware.automotive.vehicle@V3-vss-service
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 
+# if there are cyclic reset, run the below again
 m -j$(nproc) 2>&1 | tee ~/build_c4.log
+
 touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.cpp
 touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.h
-m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service vendorimage superimage
+
+rm -f out/target/product/vsoc_x86_64_only/
+m -j$(nproc) init_bootimage vendor_bootimage bootimage
 
 
 # Confirm super is newer than vendor and actually rewritten
-ls -la --time-style=full-iso $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img
+ls -la --time-style=full-iso $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img $ANDROID_PRODUCT_OUT/init_bootimage.img
 
 # Offline-verify the binary is really inside the image (saves a boot)
 simg2img $ANDROID_PRODUCT_OUT/super.img /tmp/super.raw
