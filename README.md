@@ -589,7 +589,16 @@ m android.hardware.automotive.vehicle-update-api
 
 rm -rf out
 
+# 1. Clean the AIDL interface module
+rm -rf out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-V3-ndk-source
 m clean android.hardware.automotive.vehicle@V3-vss-service
+
+# 2. Rebuild the AIDL interface (this generates the headers)
+m android.hardware.automotive.vehicle-V3-ndk-source -j$(nproc)
+
+# 3. Build service
+mmm hardware/interfaces/automotive/vehicle/aidl -j$(nproc)
+m -j$(nproc) android.hardware.automotive.vehicle-V3-ndk
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 
 # if there are cyclic reset, run the below again
@@ -600,6 +609,10 @@ touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVeh
 
 rm -f out/target/product/vsoc_x86_64_only/
 m -j$(nproc) init_bootimage vendor_bootimage bootimage
+
+# Build AIDL header files.
+cd ~/aosp-14-auto
+mmm hardware/interfaces/automotive/vehicle/aidl
 
 
 # Confirm super is newer than vendor and actually rewritten
@@ -803,8 +816,7 @@ adb -s 0.0.0.0:6520 push \
     $(find $ANDROID_PRODUCT_OUT -name "android.hardware.automotive.vehicle-V3-ndk.so" | head -1) \
     /data/local/tmp/VtsHalAutomotiveVehicleVss/x86_64/
 
-# NDK part
-m android.hardware.automotive.vehicle-V3-ndk
+
 
 adb root
 adb shell vdc checkpoint commitChanges
