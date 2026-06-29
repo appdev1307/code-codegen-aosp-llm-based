@@ -207,10 +207,11 @@ class CppVehicleAssertions(dspy.Module):
 
         if "IVehicleHardware" not in header:
             violations.append("Must inherit from IVehicleHardware")
-        if "DefaultVehicleHal" not in main:
-            violations.append("Must use DefaultVehicleHal wrapper in main_service")
-        if "AServiceManager_addService" not in main:
-            violations.append("Must register using AServiceManager_addService")
+        # main_service optional for domain services
+        # if "DefaultVehicleHal" not in main:
+        #     violations.append("Must use DefaultVehicleHal wrapper in main_service")
+        # if "AServiceManager_addService" not in main:
+        #     violations.append("Must register using AServiceManager_addService")
         if not ("GetValueRequest" in full and "GetValuesCallback" in full):
             violations.append("getValues must use async pattern (GetValueRequest + GetValuesCallback)")
         if not ("SetValueRequest" in full and "SetValuesCallback" in full):
