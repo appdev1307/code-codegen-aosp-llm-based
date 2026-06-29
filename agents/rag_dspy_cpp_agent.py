@@ -67,8 +67,12 @@ HEADER FILE (VehicleHalService{Domain}.h):
   with getAllPropertyConfigs(), getValues(), setValues() etc.
 
 IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp):
+  MUST start with:
+  #include "VehicleHalService{Domain}.h"
+  #include <aidl/android/hardware/automotive/vehicle/VehicleProperty{Domain}.h>
+  
   Implement getAllPropertyConfigs() returning ONLY the props for this domain.
-  Use prop IDs from the AIDL enum — exact hex values.
+  Use enum names with static_cast from the domain header.
 
 MANDATORY signatures — Android 14 IVehicleHardware API (NOT Android 13):
 Android 14 uses function types defined in IVehicleHardware.h:
