@@ -584,10 +584,10 @@ restore_aosp
 clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto --force
 
+rm -rf out
+
 # Update API (new .aidl files require an API bump)
 m android.hardware.automotive.vehicle-update-api
-
-rm -rf out
 
 # 1. Clean the AIDL interface module
 rm -rf out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-V3-ndk-source

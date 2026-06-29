@@ -322,7 +322,7 @@ cc_binary {{
         "VssVehicleHardware",
         "DefaultVehicleHal",
         "VehicleHalUtils",
-        "android.hardware.automotive.vehicle-V4-ndk",
+        "android.hardware.automotive.vehicle-V3-ndk",
     ],
     shared_libs: [
         "libbinder_ndk",
