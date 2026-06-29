@@ -182,8 +182,16 @@ std::vector<VehiclePropConfig> VssVehicleHardware::getAllPropertyConfigs() const
     std::vector<VehiclePropConfig> configs;
     // Aggregate from domain services
     {domain_configs}
-    // Fallback: if domain services return empty, use AIDL-parsed prop IDs
-    if (configs.empty()) {{
+    // If domain services returned raw 16-bit IDs, use deterministic mPropIds instead
+    bool has_invalid = false;
+    for (const auto& cfg : configs) {{
+        if ((static_cast<uint32_t>(cfg.prop) & 0xF0000000u) == 0) {{
+            has_invalid = true;
+            break;
+        }}
+    }}
+    if (configs.empty() || has_invalid) {{
+        configs.clear();
         for (int32_t id : mPropIds) configs.push_back(makeConfig(id));
     }}
     LOG(INFO) << "[VSS] Registered " << configs.size() << " VSS properties";
@@ -314,6 +322,7 @@ cc_binary {{
         "VssVehicleHardware",
         "DefaultVehicleHal",
         "VehicleHalUtils",
+        "android.hardware.automotive.vehicle-V4-ndk",
     ],
     shared_libs: [
         "libbinder_ndk",

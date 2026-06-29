@@ -48,11 +48,18 @@ CLASS NAMING CONVENTION:
   Domain POWERTRAIN  → class VehicleHalServicePowertrain : public IVehicleHardware
 
 PROP IDs:
-  Use EXACT full 32-bit hex prop IDs from the AIDL enum comment in the properties section.
-  The AIDL enum provided shows full 32-bit IDs in comments (e.g. 0x21401000).
-  ALWAYS use those full hex values: {.prop = 0x21401000, .access = VehiclePropertyAccess::READ}
-  NEVER use raw enum values like VehiclePropertyAdas::VEHICLE_CHILDREN_ADAS_... — 
-  those are 16-bit raw values (0x1000) not the full 32-bit VHAL prop IDs.
+  Use enum constant names from the generated AIDL headers.
+  ALWAYS include the domain header at the top of BOTH .h and .cpp files:
+  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.h>   // for ADAS
+  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyBody.h>    // for BODY
+  etc.
+
+  Then use enum names with static_cast:
+  {.prop = static_cast<int32_t>(VehiclePropertyAdas::VEHICLE_CHILDREN_ADAS_CHILDREN_EBA_CHILDREN_ISENABLED),
+   .access = VehiclePropertyAccess::READ_WRITE}
+
+  The enum names come from the AIDL enum provided in the properties section.
+  Do NOT use raw hex values like 0x1000 — those are 16-bit raw values, not valid VHAL prop IDs.
   Do NOT use placeholder IDs like 0x12345678.
 
 HEADER FILE (VehicleHalService{Domain}.h):
