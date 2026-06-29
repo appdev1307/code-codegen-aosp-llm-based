@@ -143,7 +143,14 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        Example for domain HVAC:
        class VehicleHalServiceHvac : public IVehicleHardware { ... };
 
-    4. getAllPropertyConfigs() MUST use EXACT prop IDs from the AIDL enum in properties field.
+    4. getAllPropertyConfigs() MUST use enum constant names from the AIDL enum in properties field.
+       Include the domain header at top of BOTH .h and .cpp:
+       #include <aidl/android/hardware/automotive/vehicle/VehicleProperty{Domain}.h>
+
+       Use enum names with static_cast:
+       {.prop = static_cast<int32_t>(VehiclePropertyAdas::VEHICLE_CHILDREN_ADAS_...),
+        .access = VehiclePropertyAccess::READ_WRITE}
+
        Do NOT use placeholder IDs like 0x12345678.
 
     5. NEVER output markdown fences (no ```cpp), no extra explanation
