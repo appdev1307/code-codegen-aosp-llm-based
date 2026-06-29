@@ -48,8 +48,12 @@ CLASS NAMING CONVENTION:
   Domain POWERTRAIN  → class VehicleHalServicePowertrain : public IVehicleHardware
 
 PROP IDs:
-  Use EXACT hex values from the AIDL enum provided in the properties section.
-  Do NOT invent or hallucinate prop IDs. Copy them directly from the AIDL enum.
+  Use EXACT full 32-bit hex prop IDs from the AIDL enum comment in the properties section.
+  The AIDL enum provided shows full 32-bit IDs in comments (e.g. 0x21401000).
+  ALWAYS use those full hex values: {.prop = 0x21401000, .access = VehiclePropertyAccess::READ}
+  NEVER use raw enum values like VehiclePropertyAdas::VEHICLE_CHILDREN_ADAS_... — 
+  those are 16-bit raw values (0x1000) not the full 32-bit VHAL prop IDs.
+  Do NOT use placeholder IDs like 0x12345678.
 
 HEADER FILE (VehicleHalService{Domain}.h):
   Declare class VehicleHalService{Domain} : public IVehicleHardware
