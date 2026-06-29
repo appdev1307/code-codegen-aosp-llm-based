@@ -69,10 +69,18 @@ HEADER FILE (VehicleHalService{Domain}.h):
 IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp):
   MUST start with:
   #include "VehicleHalService{Domain}.h"
-  #include <aidl/android/hardware/automotive/vehicle/VehicleProperty{Domain}.h>
   
-  Implement getAllPropertyConfigs() returning ONLY the props for this domain.
-  Use enum names with static_cast from the domain header.
+  Then wrap ALL implementations in namespace:
+  namespace android::hardware::automotive::vehicle {
+  using namespace aidl::android::hardware::automotive::vehicle;
+  
+  std::vector<VehiclePropConfig> VehicleHalService{Domain}::getAllPropertyConfigs() const {
+      return {
+          {.prop = static_cast<int32_t>(VehicleProperty{Domain}::VEHICLE_CHILDREN_...), ...},
+      };
+  }
+  // ... other method implementations
+  } // namespace android::hardware::automotive::vehicle
 
 MANDATORY signatures — Android 14 IVehicleHardware API (NOT Android 13):
 Android 14 uses function types defined in IVehicleHardware.h:
