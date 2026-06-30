@@ -20,20 +20,36 @@ _QUERIES = [
 _CONTRACT = """
 === Android 14 AIDL VHAL V3 contract — NO EXCEPTIONS ===
 CRITICAL INCLUDES — ALWAYS ADD THESE AT THE TOP OF HEADER FILE:
+#pragma once
 #include <IVehicleHardware.h>
-#include <android/log.h>
-#include <android/binder_manager.h>
-#include <android/binder_status.h>
+#include <VehicleHalTypes.h>
 #include <vector>
 #include <memory>
-#include <string>
-NAMESPACE:
-using namespace aidl::android::hardware::automotive::vehicle;
+#include <android/log.h>
+#include "android/hardware/automotive/vehicle/VehicleProperty{Domain}.h"
+
+NAMESPACE (VERY IMPORTANT - ALWAYS DO THIS):
+- In .h file:
+  namespace android::hardware::automotive::vehicle {
+      class VehicleHalService{Domain} : public IVehicleHardware {
+          ...
+      };
+  } // namespace android::hardware::automotive::vehicle
+
+- In .cpp file:
+  #include "VehicleHalService{Domain}.h"
+
+  namespace android::hardware::automotive::vehicle {
+  using namespace aidl::android::hardware::automotive::vehicle;
+
+  // all method implementations here
+  } // namespace android::hardware::automotive::vehicle
+
 ARCHITECTURE:
   VehicleHalService{Domain} : public IVehicleHardware ← you implement this (domain-specific)
   e.g. VehicleHalServiceAdas, VehicleHalServiceBody, VehicleHalServiceCabin, etc.
-  Each domain has its OWN class with a UNIQUE name — never use VssVehicleHardware.
-  DefaultVehicleHal ← AOSP binder layer (do NOT subclass this)
+  Each domain has its OWN class with a UNIQUE name — NEVER use VssVehicleHardware for domain classes.
+  DefaultVehicleHal is the binder layer — do NOT subclass it.
 CLASS NAMING CONVENTION:
   Domain ADAS → class VehicleHalServiceAdas : public IVehicleHardware
   Domain BODY → class VehicleHalServiceBody : public IVehicleHardware
