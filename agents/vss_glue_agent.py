@@ -324,7 +324,7 @@ cc_library_static {{
     ],
     local_include_dirs: ["{_DOMAIN_REL_DIR}"],
     header_libs: ["IVehicleHardware", "VehicleHalUtilHeaders"],
-    static_libs: ["android.hardware.automotive.vehicle-V4-ndk"],
+    static_libs: ["android.hardware.automotive.vehicle-V3-ndk"],
     export_include_dirs: ["."],
 }}
 
@@ -340,7 +340,7 @@ cc_binary {{
         "VssVehicleHardware",
         "DefaultVehicleHal",
         "VehicleHalUtils",
-        "android.hardware.automotive.vehicle-V4-ndk",
+        "android.hardware.automotive.vehicle-V3-ndk",
     ],
     shared_libs: [
         "libbinder_ndk",
