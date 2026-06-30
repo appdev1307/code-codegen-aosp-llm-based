@@ -146,8 +146,13 @@ class RAGDSPyArchitectAgent:
                     f"{self._CPP_DIR}/VehicleService{domain_cap}.cpp",
                     content["main_service"]))
             if content.get("android_bp"):
+                # Same reasoning as _write_build: NEVER name this
+                # "Android.bp" — Soong would pick it up and it would
+                # collide/overwrite across domains. Kept as a
+                # debug/audit artifact only; VssGlueAgent's
+                # aidl/impl/vss/Android.bp is the real build file.
                 written.append(self._write(
-                    f"{self._CPP_DIR}/Android_{domain_lower}.bp",
+                    f"{self._CPP_DIR}/Android_{domain_lower}.bp.draft",
                     content["android_bp"]))
         else:
             # Legacy string output — write single impl file
@@ -224,8 +229,34 @@ class RAGDSPyArchitectAgent:
         return written
 
     def _write_build(self, domain: str, content: str) -> list[Path]:
-        """Write Android.bp build file."""
-        return [self._write(f"{self._BUILD_DIR}/Android.bp", content)]
+        """Write the per-module Android.bp DRAFT from RAGDSPyBuildAgent.
+
+        IMPORTANT: this is intentionally NOT named "Android.bp".
+
+        Soong only ever reads a file literally named `Android.bp` in a
+        given directory — so if this method wrote `impl/Android.bp`,
+        every domain run (AIDL/CPP/SELinux/Build loop happens once per
+        domain, sequentially) would silently overwrite the previous
+        domain's build file. With srcs:["*.cpp"] (the pattern shown in
+        BuildFileSignature's own example), whichever domain ran LAST
+        would end up owning a Soong module that tries to compile EVERY
+        domain's .cpp — including all 7 domains' VehicleService{Domain}.cpp
+        main() entrypoints in one binary, which fails to link
+        ("multiple definition of 'main'").
+
+        The actual, authoritative Android.bp for this whole HAL tree is
+        written later by VssGlueAgent (aidl/impl/vss/Android.bp), which
+        explicitly lists each domain's .cpp by name via
+        ../../../impl/VehicleHalService{Domain}.cpp — no wildcards, no
+        cross-domain collision. So RAGDSPyBuildAgent's output here is
+        kept only as a per-domain debug/audit artifact under a name
+        Soong will never pick up.
+        """
+        domain_lower = domain.lower()
+        return [self._write(
+            f"{self._BUILD_DIR}/Android_{domain_lower}.bp.draft",
+            content,
+        )]
 
     # ─────────────────────────────────────────────────────────────
     # Orchestration
