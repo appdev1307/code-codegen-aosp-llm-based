@@ -40,6 +40,8 @@ Signatures are grouped by pipeline layer:
 ═══════════════════════════════════════════════════════════════════
 """
 
+import re
+
 import dspy
 
 
@@ -230,6 +232,71 @@ class CppVehicleAssertions(dspy.Module):
             f"{domain.strip().capitalize()}.h"
         )
 
+    # ── Cross-check against the REAL generated AIDL enum ────────────
+    # This is the architecture contract: CPP must only reference
+    # property names that actually exist in the .aidl file the AIDL
+    # sub-agent already wrote for this domain (injected into the
+    # `properties` InputField by
+    # RAGDSPyArchitectAgent._get_aidl_content()). Without this check,
+    # the LLM can "hallucinate" a plausible-looking enum constant name
+    # that compiles in its own head but does not exist in the real
+    # enum, producing "no member named X in enum
+    # VehicleProperty{Domain}" at AOSP compile time — the single
+    # biggest remaining source of C++ build failures once the
+    # structural defects (pragma once, includes, namespace) are fixed.
+
+    _AIDL_CONST_RE = re.compile(
+        r"^\s*(\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+)\s*,",
+        re.MULTILINE,
+    )
+
+    def _extract_real_aidl_constants(self, properties_text: str) -> set:
+        """Pull every enum constant NAME out of the real generated .aidl
+        content embedded in the `properties` field (after the
+        '=== Generated AIDL enum ===' marker, if present — falls back
+        to scanning the whole string if the marker is absent, since
+        the regex only matches NAME = 0xHEX, lines anyway)."""
+        if not properties_text:
+            return set()
+        marker = "=== Generated AIDL enum"
+        idx = properties_text.find(marker)
+        aidl_section = properties_text[idx:] if idx != -1 else properties_text
+        return {m.group(1) for m in self._AIDL_CONST_RE.finditer(aidl_section)}
+
+    def _extract_used_constants(self, impl: str, domain: str) -> set:
+        """Pull every VehicleProperty{Domain}::NAME reference used in
+        cpp_impl via static_cast<int32_t>(VehicleProperty{Domain}::NAME)
+        or any other VehicleProperty{Domain}:: usage."""
+        if not impl or not domain:
+            return set()
+        enum_name = f"VehicleProperty{domain.strip().capitalize()}"
+        pattern = re.compile(rf"{re.escape(enum_name)}::(\w+)")
+        return {m.group(1) for m in pattern.finditer(impl)}
+
+    def _strip_hallucinated_property_blocks(self, impl: str, domain: str,
+                                             hallucinated: set) -> str:
+        """Remove getAllPropertyConfigs() entries that reference a
+        hallucinated (non-existent) enum constant, rather than letting
+        a single bad name fail the whole file's compilation. Matches
+        the common '{.prop = static_cast<int32_t>(VehicleProperty{Domain}::NAME), ...}'
+        block pattern and deletes just that one initializer entry.
+        """
+        if not impl or not hallucinated:
+            return impl
+        enum_name = f"VehicleProperty{domain.strip().capitalize()}"
+        for name in hallucinated:
+            # Remove a single brace-delimited initializer entry that
+            # references this constant, including a trailing comma if
+            # present. Non-greedy match bounded to one `{...}` block.
+            block_pattern = re.compile(
+                r"\{\s*\.prop\s*=\s*static_cast<int32_t>\(" +
+                re.escape(enum_name) + r"::" + re.escape(name) +
+                r"\)[^{}]*\}\s*,?",
+                re.DOTALL,
+            )
+            impl = block_pattern.sub("", impl)
+        return impl
+
     def _ensure_pragma_once(self, header: str) -> str:
         if "#pragma once" in header:
             return header
@@ -281,6 +348,7 @@ class CppVehicleAssertions(dspy.Module):
         impl = getattr(pred, "cpp_impl", "") or ""
         main = getattr(pred, "main_service", "") or ""
         domain = getattr(pred, "domain", "") or ""
+        properties = getattr(pred, "properties", "") or ""
 
         violations = []
 
@@ -306,6 +374,24 @@ class CppVehicleAssertions(dspy.Module):
                     f"enum but missing #include <{aidl_path}>"
                 )
 
+        # ── AIDL architecture cross-check ────────────────────────────
+        # Only meaningful when we actually have the real generated AIDL
+        # enum to compare against (properties contains the
+        # "=== Generated AIDL enum ===" block RAGDSPyArchitectAgent
+        # injects). Without it, an empty real_constants set means
+        # "nothing to check against" — never flag hallucination based
+        # on absence of ground truth.
+        hallucinated = set()
+        real_constants = self._extract_real_aidl_constants(properties)
+        if domain and impl and real_constants:
+            used_constants = self._extract_used_constants(impl, domain)
+            hallucinated = used_constants - real_constants
+            if hallucinated:
+                violations.append(
+                    "cpp_impl references property names not present in the "
+                    f"generated AIDL enum (hallucinated): {sorted(hallucinated)}"
+                )
+
         forbidden = ["HIDL_FETCH", "hidl/", "Return<", ".valueType"]
         for term in forbidden:
             if term in (header + impl + main):
@@ -319,6 +405,8 @@ class CppVehicleAssertions(dspy.Module):
                 impl = self._ensure_self_include(impl, domain)
                 if f"VehicleProperty{domain.strip().capitalize()}" in impl:
                     impl = self._ensure_aidl_include(impl, domain)
+                if hallucinated:
+                    impl = self._strip_hallucinated_property_blocks(impl, domain, hallucinated)
                 impl = self._ensure_namespace_wrapper(impl)
 
             pred.cpp_header = header
