@@ -19,7 +19,6 @@ _QUERIES = [
 # Injected into every generation — explicit AIDL V3 contract
 _CONTRACT = """
 === Android 14 AIDL VHAL V3 contract — NO EXCEPTIONS ===
-
 CRITICAL INCLUDES — ALWAYS ADD THESE AT THE TOP OF HEADER FILE:
 #include <IVehicleHardware.h>
 #include <android/log.h>
@@ -28,52 +27,44 @@ CRITICAL INCLUDES — ALWAYS ADD THESE AT THE TOP OF HEADER FILE:
 #include <vector>
 #include <memory>
 #include <string>
-
 NAMESPACE:
 using namespace aidl::android::hardware::automotive::vehicle;
-
 ARCHITECTURE:
-  VehicleHalService{Domain} : public IVehicleHardware  ← you implement this (domain-specific)
+  VehicleHalService{Domain} : public IVehicleHardware ← you implement this (domain-specific)
   e.g. VehicleHalServiceAdas, VehicleHalServiceBody, VehicleHalServiceCabin, etc.
   Each domain has its OWN class with a UNIQUE name — never use VssVehicleHardware.
-  DefaultVehicleHal  ← AOSP binder layer (do NOT subclass this)
-
+  DefaultVehicleHal ← AOSP binder layer (do NOT subclass this)
 CLASS NAMING CONVENTION:
-  Domain ADAS        → class VehicleHalServiceAdas : public IVehicleHardware
-  Domain BODY        → class VehicleHalServiceBody : public IVehicleHardware
-  Domain CABIN       → class VehicleHalServiceCabin : public IVehicleHardware
-  Domain CHASSIS     → class VehicleHalServiceChassis : public IVehicleHardware
-  Domain HVAC        → class VehicleHalServiceHvac : public IVehicleHardware
+  Domain ADAS → class VehicleHalServiceAdas : public IVehicleHardware
+  Domain BODY → class VehicleHalServiceBody : public IVehicleHardware
+  Domain CABIN → class VehicleHalServiceCabin : public IVehicleHardware
+  Domain CHASSIS → class VehicleHalServiceChassis : public IVehicleHardware
+  Domain HVAC → class VehicleHalServiceHvac : public IVehicleHardware
   Domain INFOTAINMENT → class VehicleHalServiceInfotainment : public IVehicleHardware
-  Domain POWERTRAIN  → class VehicleHalServicePowertrain : public IVehicleHardware
-
+  Domain POWERTRAIN → class VehicleHalServicePowertrain : public IVehicleHardware
 PROP IDs:
   Use enum constant names from the generated AIDL headers.
   ALWAYS include the domain header at the top of BOTH .h and .cpp files:
-  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.h>   // for ADAS
-  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyBody.h>    // for BODY
+  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.h> // for ADAS
+  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyBody.h> // for BODY
   etc.
-
   Then use enum names with static_cast:
   {.prop = static_cast<int32_t>(VehiclePropertyAdas::VEHICLE_CHILDREN_ADAS_CHILDREN_EBA_CHILDREN_ISENABLED),
    .access = VehiclePropertyAccess::READ_WRITE}
-
   The enum names come from the AIDL enum provided in the properties section.
   Do NOT use raw hex values like 0x1000 — those are 16-bit raw values, not valid VHAL prop IDs.
   Do NOT use placeholder IDs like 0x12345678.
-
 HEADER FILE (VehicleHalService{Domain}.h):
   Declare class VehicleHalService{Domain} : public IVehicleHardware
   with getAllPropertyConfigs(), getValues(), setValues() etc.
-
 IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp):
   MUST start with:
   #include "VehicleHalService{Domain}.h"
-  
+ 
   Then wrap ALL implementations in namespace:
   namespace android::hardware::automotive::vehicle {
   using namespace aidl::android::hardware::automotive::vehicle;
-  
+ 
   std::vector<VehiclePropConfig> VehicleHalService{Domain}::getAllPropertyConfigs() const {
       return {
           {.prop = static_cast<int32_t>(VehicleProperty{Domain}::VEHICLE_CHILDREN_...), ...},
@@ -81,14 +72,12 @@ IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp):
   }
   // ... other method implementations
   } // namespace android::hardware::automotive::vehicle
-
 MANDATORY signatures — Android 14 IVehicleHardware API (NOT Android 13):
 Android 14 uses function types defined in IVehicleHardware.h:
   using GetValuesCallback = std::function<void(std::vector<GetValueResult>)>;
   using SetValuesCallback = std::function<void(std::vector<SetValueResult>)>;
   using PropertyChangeCallback = std::function<void(std::vector<VehiclePropValue>)>;
   using PropertySetErrorCallback = std::function<void(std::vector<SetValueErrorEvent>)>;
-
 CORRECT Android 14 method signatures:
   std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
   StatusCode getValues(
@@ -106,20 +95,17 @@ CORRECT Android 14 method signatures:
       std::unique_ptr<const PropertyChangeCallback> callback) override;
   void registerOnPropertySetErrorEvent(
       std::unique_ptr<const PropertySetErrorCallback> callback) override;
-
 FORBIDDEN Android 13 types (do NOT use):
   IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
   VssVehicleHardwareImpl — does not exist in Android 14
-
 FORBIDDEN:
-  #include <hidl/>          — HIDL headers
-  #include <ndk/ScopedAStatus.h>  — wrong path, use <android/binder_status.h>
-  #include <binder/AServiceManager.h>  — wrong, use <android/binder_manager.h>
-  #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h>  — wrong path, use <IVehicleHardware.h>
-  #include <aidl/android/hardware/automotive/vehicle/DefaultVehicleHal.h>  — wrong path, use <DefaultVehicleHal.h>
+  #include <hidl/> — HIDL headers
+  #include <ndk/ScopedAStatus.h> — wrong path, use <android/binder_status.h>
+  #include <binder/AServiceManager.h> — wrong, use <android/binder_manager.h>
+  #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h> — wrong path, use <IVehicleHardware.h>
+  #include <aidl/android/hardware/automotive/vehicle/DefaultVehicleHal.h> — wrong path, use <DefaultVehicleHal.h>
   HIDL_FETCH_* | Return<> | BnVehicle | BnIVehicle | .valueType | sync getValues
   aidlvhal:: prefix — use namespace directly via using namespace
-
 Start every .h file with the includes above. Do not omit them.
 """
 
