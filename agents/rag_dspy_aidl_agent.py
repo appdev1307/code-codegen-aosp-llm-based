@@ -17,6 +17,11 @@ import re
 from agents.rag_dspy_mixin import RAGDSPyMixin
 
 # Domain-specific base addresses for globally unique property IDs.
+# These are 16-bit *local* offsets within a domain, used only to keep
+# enum constants ordered and to give the LLM a concrete starting point.
+# The FINAL emitted enum value is the full 32-bit AAOS-encoded prop ID
+# (see _aaos_encode below) so domain C++ agents can `static_cast` it
+# directly without any further re-encoding by VssGlueAgent.
 DOMAIN_BASE = {
     "adas":          0x1000,
     "body":          0x2000,
@@ -28,6 +33,35 @@ DOMAIN_BASE = {
 }
 
 CHUNK_SIZE = 60  # Max properties per LLM call before chunking
+
+# ── AAOS 32-bit property ID encoding ──────────────────────────────────
+# Must stay in sync with VssGlueAgent._build_full_prop_id /
+# agents/vss_glue_agent.py — both halves of the pipeline encode the
+# SAME way so a domain enum value already IS the final 32-bit ID.
+_VSS_GROUP = 0x20000000
+_VSS_AREA  = 0x01000000
+_TYPE_BITS = {
+    "BOOLEAN": 0x00200000,
+    "INT":     0x00400000,
+    "FLOAT":   0x00600000,
+    "STRING":  0x00100000,
+    "BYTES":   0x00700000,
+    "INT64":   0x00500000,
+}
+_TYPE_DEFAULT = 0x00e00000
+
+
+def _aaos_encode(local_id: int, vtype: str = "INT") -> int:
+    """Encode a 16-bit local property index into the full 32-bit AAOS
+    VehicleProperty ID: VSS group | area:GLOBAL | type bits | local id.
+
+    Keeping this identical to VssGlueAgent._build_full_prop_id means
+    the enum constant the LLM (or fallback) emits in the .aidl file is
+    already the correct value the C++ agents can static_cast directly —
+    no second re-encoding pass is needed downstream.
+    """
+    type_bits = _TYPE_BITS.get((vtype or "INT").upper(), _TYPE_DEFAULT)
+    return _VSS_GROUP | _VSS_AREA | type_bits | (local_id & 0xFFFF)
 
 
 class RAGDSPyAIDLAgent(RAGDSPyMixin):
@@ -64,14 +98,64 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
                 lines.append(f"  {p}")
         return "\n".join(lines)
 
+    def _reencode_enum_output(self, output: str, domain: str, base: int, prop_list: list) -> str:
+        """Force every enum constant in a single-shot LLM output to the
+        correct full 32-bit AAOS ID, regardless of what the LLM wrote.
+
+        This is the single-shot counterpart of the per-chunk re-encode
+        done in the chunked branch of run() — keeping both paths
+        deterministic means the final .aidl enum value is ALWAYS the
+        real VHAL property ID the domain C++ agents can static_cast
+        directly, never a bare 16-bit offset.
+        """
+        match = re.search(
+            r"(enum\s+VehicleProperty\w+\s*\{)(.*?)(\})",
+            output,
+            re.DOTALL,
+        )
+        if not match:
+            return output
+
+        body = match.group(2)
+        constants = re.findall(
+            r"^\s*(\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+)\s*,?([^\n]*)$",
+            body,
+            re.MULTILINE,
+        )
+        if not constants:
+            return output
+
+        new_lines = []
+        for j, (name, _llm_id, trailing) in enumerate(constants):
+            prop_type = "INT"
+            if j < len(prop_list):
+                prop_type = str(getattr(prop_list[j], "type", "INT") or "INT")
+            correct_id = hex(_aaos_encode(base + j, prop_type))
+            trailing = trailing.strip()
+            line = f"    {name} = {correct_id},"
+            if trailing:
+                if not trailing.startswith("//"):
+                    trailing = "// " + trailing.lstrip("/").strip()
+                line += f"  {trailing}"
+            new_lines.append(line)
+
+        new_body = "\n" + "\n".join(new_lines) + "\n"
+        return output[:match.start(2)] + new_body + output[match.end(2):]
+
     def run(self, module_spec) -> str:
         domain     = module_spec.domain
         properties = module_spec.to_llm_spec()
         prop_list  = module_spec.properties
 
-        base          = DOMAIN_BASE.get(domain.lower(), 0x1000)
-        base_hex      = hex(base)
-        base_next_hex = hex(base + 1)
+        base            = DOMAIN_BASE.get(domain.lower(), 0x1000)
+        # Emit the FULL 32-bit AAOS-encoded ID in the prompt/example, not
+        # the bare 16-bit local offset — the .aidl enum value becomes the
+        # literal C++ constant the domain agents static_cast<int32_t>(),
+        # so it must already be the real VHAL property ID.
+        first_type     = (prop_list[0].type if prop_list and hasattr(prop_list[0], "type") else "INT") if prop_list else "INT"
+        second_type    = (prop_list[1].type if len(prop_list) > 1 and hasattr(prop_list[1], "type") else "INT") if len(prop_list) > 1 else "INT"
+        base_hex        = hex(_aaos_encode(base, first_type))
+        base_next_hex   = hex(_aaos_encode(base + 1, second_type))
 
         query = (
             "VehicleProperty enum AIDL @Backing @VintfStability "
@@ -87,11 +171,12 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
             '- Use @Backing(type="int") annotation\n'
             "- Declare an ENUM, NOT an interface: 'enum VehicleProperty" + domain.capitalize() + " { ... }'\n"
             "- The enum name MUST match the filename (VehicleProperty" + domain.capitalize() + ")\n"
-            "- Each enum constant is a property ID with hex value:\n"
+            "- Each enum constant is the FULL 32-bit AAOS VehicleProperty ID (NOT a bare 16-bit offset):\n"
             "    FIRST_PROPERTY = " + base_hex + ",\n"
             "    SECOND_PROPERTY = " + base_next_hex + ",\n"
-            "- IMPORTANT: ALL property IDs MUST start at " + base_hex + " (domain base for " + domain.upper() + ")\n"
-            "- DO NOT use 0x1000 as base unless domain is ADAS\n"
+            "- IMPORTANT: ALL property IDs for this domain MUST start at " + base_hex + "\n"
+            "  and increment only in the low 16 bits — the upper bits (group/area/type) stay fixed.\n"
+            "- DO NOT use a bare 16-bit value like 0x1000 — that is NOT a valid VHAL prop ID on its own.\n"
             "- DO NOT generate 'interface IVehicleAdas' — that is WRONG\n"
             "- DO NOT generate getter/setter methods\n"
             "- DO NOT use 'oneway', 'out', 'throws', or 'import'\n"
@@ -119,6 +204,8 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
                 properties   = properties,
                 aosp_context = aosp_context,
             )
+            if output:
+                output = self._reencode_enum_output(output, domain, base, prop_list)
         else:
             self._log(
                 f"Large domain ({len(prop_list)} props) — "
@@ -168,9 +255,18 @@ class RAGDSPyAIDLAgent(RAGDSPyMixin):
                         re.MULTILINE,
                     )
 
-                    # Re-encode with correct sequential IDs (override LLM IDs)
+                    # Re-encode with correct sequential 32-bit AAOS IDs
+                    # (override whatever (possibly bare 16-bit) value the
+                    # LLM emitted). Type comes from the matching VSS
+                    # property in `chunk` by position — falls back to INT
+                    # if the LLM dropped/added a constant and positions
+                    # drift, which is the safest default per
+                    # _TYPE_DEFAULT/_TYPE_BITS above.
                     for j, (name, _llm_id, comment) in enumerate(constants):
-                        correct_id = hex(chunk_base + j)
+                        prop_type = "INT"
+                        if j < len(chunk):
+                            prop_type = str(getattr(chunk[j], "type", "INT") or "INT")
+                        correct_id = hex(_aaos_encode(chunk_base + j, prop_type))
                         comment_str = comment.strip().lstrip(",").strip() if comment else ""
                         if comment_str and not comment_str.startswith("//"):
                             comment_str = "// " + comment_str

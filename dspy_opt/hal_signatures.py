@@ -193,34 +193,136 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
     reasoning: str = dspy.OutputField(desc="Brief reasoning about class name and prop IDs used")
 
 class CppVehicleAssertions(dspy.Module):
-    def __init__(self, strict: bool = False):
+    """Validates + auto-repairs the structural contract for domain HAL C++ output.
+
+    Beyond flagging violations (for the DSPy repair loop), this module
+    deterministically FIXES the four most common structural defects so a
+    single bad LLM completion doesn't propagate into the build:
+      1. Missing '#pragma once' in cpp_header
+      2. cpp_impl missing '#include "VehicleHalService{Domain}.h"'
+      3. cpp_header / cpp_impl missing the
+         'namespace android::hardware::automotive::vehicle { ... }' wrapper
+      4. cpp_impl missing the domain's AIDL enum header
+         (#include <aidl/.../VehicleProperty{Domain}.h>)
+    """
+
+    _NS_OPEN = "namespace android::hardware::automotive::vehicle {"
+    _NS_USING = "using namespace aidl::android::hardware::automotive::vehicle;"
+    _NS_CLOSE = "} // namespace android::hardware::automotive::vehicle"
+
+    def __init__(self, strict: bool = False, auto_fix: bool = True):
         super().__init__()
         self.strict = strict
+        self.auto_fix = auto_fix
+
+    @staticmethod
+    def _class_name(domain: str) -> str:
+        return f"VehicleHalService{domain.strip().capitalize()}"
+
+    @staticmethod
+    def _header_file_name(domain: str) -> str:
+        return f"VehicleHalService{domain.strip().capitalize()}.h"
+
+    @staticmethod
+    def _aidl_header_path(domain: str) -> str:
+        return (
+            "aidl/android/hardware/automotive/vehicle/VehicleProperty"
+            f"{domain.strip().capitalize()}.h"
+        )
+
+    def _ensure_pragma_once(self, header: str) -> str:
+        if "#pragma once" in header:
+            return header
+        return "#pragma once\n" + header
+
+    def _ensure_self_include(self, impl: str, domain: str) -> str:
+        own_header = self._header_file_name(domain)
+        if f'#include "{own_header}"' in impl:
+            return impl
+        return f'#include "{own_header}"\n' + impl
+
+    def _ensure_aidl_include(self, impl: str, domain: str) -> str:
+        aidl_path = self._aidl_header_path(domain)
+        if f"#include <{aidl_path}>" in impl:
+            return impl
+        own_header = self._header_file_name(domain)
+        marker = f'#include "{own_header}"'
+        new_include = f"#include <{aidl_path}>\n"
+        if marker in impl:
+            return impl.replace(marker, marker + "\n" + new_include, 1)
+        return new_include + impl
+
+    def _ensure_namespace_wrapper(self, code: str) -> str:
+        if self._NS_OPEN in code and self._NS_CLOSE in code:
+            return code
+        if self._NS_OPEN in code:
+            # Namespace opened but not properly closed — leave as-is,
+            # safer to flag than to mutate ambiguous braces.
+            return code
+
+        lines = code.splitlines()
+        split_idx = 0
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped == "":
+                split_idx = i + 1
+            else:
+                break
+        includes = "\n".join(lines[:split_idx])
+        body = "\n".join(lines[split_idx:])
+        wrapped = (
+            f"{includes}\n\n{self._NS_OPEN}\n{self._NS_USING}\n\n"
+            f"{body}\n\n{self._NS_CLOSE}\n"
+        )
+        return wrapped
 
     def forward(self, pred):
         header = getattr(pred, "cpp_header", "") or ""
         impl = getattr(pred, "cpp_impl", "") or ""
         main = getattr(pred, "main_service", "") or ""
-        full = header + impl + main
+        domain = getattr(pred, "domain", "") or ""
 
         violations = []
 
         if "IVehicleHardware" not in header:
             violations.append("Must inherit from IVehicleHardware")
-        # main_service optional for domain services
-        # if "DefaultVehicleHal" not in main:
-        #     violations.append("Must use DefaultVehicleHal wrapper in main_service")
-        # if "AServiceManager_addService" not in main:
-        #     violations.append("Must register using AServiceManager_addService")
-        if not ("GetValueRequest" in full and "GetValuesCallback" in full):
+        if not ("GetValueRequest" in (header + impl) and "GetValuesCallback" in (header + impl)):
             violations.append("getValues must use async pattern (GetValueRequest + GetValuesCallback)")
-        if not ("SetValueRequest" in full and "SetValuesCallback" in full):
+        if not ("SetValueRequest" in (header + impl) and "SetValuesCallback" in (header + impl)):
             violations.append("setValues must use async pattern")
+        if header and "#pragma once" not in header:
+            violations.append("Missing #pragma once in header")
+        if domain and impl and f'#include "{self._header_file_name(domain)}"' not in impl:
+            violations.append(f'cpp_impl missing #include "{self._header_file_name(domain)}"')
+        if header and self._NS_OPEN not in header:
+            violations.append("Missing namespace wrapper in header")
+        if impl and self._NS_OPEN not in impl:
+            violations.append("Missing namespace wrapper in cpp_impl")
+        if domain and impl and f"VehicleProperty{domain.strip().capitalize()}" in impl:
+            aidl_path = self._aidl_header_path(domain)
+            if f"#include <{aidl_path}>" not in impl:
+                violations.append(
+                    f"cpp_impl uses VehicleProperty{domain.strip().capitalize()} "
+                    f"enum but missing #include <{aidl_path}>"
+                )
 
         forbidden = ["HIDL_FETCH", "hidl/", "Return<", ".valueType"]
         for term in forbidden:
-            if term in full:
+            if term in (header + impl + main):
                 violations.append(f"Forbidden HIDL pattern: {term}")
+
+        if self.auto_fix and domain:
+            if header:
+                header = self._ensure_pragma_once(header)
+                header = self._ensure_namespace_wrapper(header)
+            if impl:
+                impl = self._ensure_self_include(impl, domain)
+                if f"VehicleProperty{domain.strip().capitalize()}" in impl:
+                    impl = self._ensure_aidl_include(impl, domain)
+                impl = self._ensure_namespace_wrapper(impl)
+
+            pred.cpp_header = header
+            pred.cpp_impl = impl
 
         pred.violations = violations
         return pred
