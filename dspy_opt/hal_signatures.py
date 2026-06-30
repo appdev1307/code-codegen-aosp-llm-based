@@ -19,27 +19,6 @@ Signatures are grouped by pipeline layer:
 ═══════════════════════════════════════════════════════════════════
 """
 
-"""
-dspy_opt/hal_signatures.py
-═══════════════════════════════════════════════════════════════════
-DSPy Signature definitions — one per generation agent.
-
-A DSPy Signature is a formal contract that specifies:
-  - InputField(s):  what the LLM receives
-  - OutputField(s): what the LLM must produce
-  - Docstring:      task instruction (the part MIPROv2 optimises)
-
-MIPROv2 rewrites the docstring and selects few-shot demonstrations
-automatically, guided by the metric functions in metrics.py.
-
-Signatures are grouped by pipeline layer:
-  A. HAL Layer      — AIDL, C++, SELinux, Android.bp, VINTF
-  B. Design Layer   — Design document, PlantUML diagrams
-  C. App Layer      — Android Kotlin fragments + XML layouts
-  D. Backend Layer  — FastAPI server, Pydantic models, Simulator
-═══════════════════════════════════════════════════════════════════
-"""
-
 import re
 
 import dspy
@@ -194,6 +173,126 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
     cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp — MUST include own .h, namespace wrapper, enum names in getAllPropertyConfigs()")
     reasoning: str = dspy.OutputField(desc="Brief reasoning about class name and prop IDs used")
 
+
+class CppSkeletonSignature(dspy.Signature):
+    """Generate the FULL VehicleHalService{Domain}.h header AND the
+    VehicleHalService{Domain}.cpp implementation for EVERY method EXCEPT
+    the body of getAllPropertyConfigs() — used as pass 1 of the chunked
+    generation path for domains with more properties than fit in one
+    LLM call (see CHUNK_SIZE in agents/rag_dspy_cpp_agent.py). The
+    property entries themselves are generated separately, in chunks,
+    and spliced into the placeholder marker below by Python — this
+    keeps this call's output size independent of property count.
+
+    HEADER FILE (VehicleHalService{Domain}.h) MUST BE EXACTLY:
+       #pragma once
+       #include <IVehicleHardware.h>
+       #include <VehicleHalTypes.h>
+       #include <aidl/android/hardware/automotive/vehicle/VehicleProperty{Domain}.h>
+       #include <vector>
+       #include <memory>
+
+       namespace android::hardware::automotive::vehicle {
+       using namespace aidl::android::hardware::automotive::vehicle;
+
+       class VehicleHalService{Domain} : public IVehicleHardware {
+       public:
+           std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
+           StatusCode getValues(std::shared_ptr<const GetValuesCallback> callback,
+                                const std::vector<GetValueRequest>& requests) const override;
+           StatusCode setValues(std::shared_ptr<const SetValuesCallback> callback,
+                                const std::vector<SetValueRequest>& requests) override;
+           DumpResult dump(const std::vector<std::string>& options) override;
+           StatusCode checkHealth() override;
+           void registerOnPropertyChangeEvent(
+               std::unique_ptr<const PropertyChangeCallback> callback) override;
+           void registerOnPropertySetErrorEvent(
+               std::unique_ptr<const PropertySetErrorCallback> callback) override;
+       };
+
+       } // namespace android::hardware::automotive::vehicle
+
+    IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp) MUST BE EXACTLY:
+       #include "VehicleHalService{Domain}.h"
+
+       namespace android::hardware::automotive::vehicle {
+       using namespace aidl::android::hardware::automotive::vehicle;
+
+       std::vector<VehiclePropConfig> VehicleHalService{Domain}::getAllPropertyConfigs() const {
+           return {
+               /*__PROPERTY_ENTRIES_PLACEHOLDER__*/
+           };
+       }
+       StatusCode VehicleHalService{Domain}::getValues(
+               std::shared_ptr<const GetValuesCallback> callback,
+               const std::vector<GetValueRequest>&) const { (*callback)({}); return StatusCode::OK; }
+       StatusCode VehicleHalService{Domain}::setValues(
+               std::shared_ptr<const SetValuesCallback> callback,
+               const std::vector<SetValueRequest>&) { (*callback)({}); return StatusCode::OK; }
+       DumpResult VehicleHalService{Domain}::dump(const std::vector<std::string>&) { return {}; }
+       StatusCode VehicleHalService{Domain}::checkHealth() { return StatusCode::OK; }
+       void VehicleHalService{Domain}::registerOnPropertyChangeEvent(
+               std::unique_ptr<const PropertyChangeCallback>) {}
+       void VehicleHalService{Domain}::registerOnPropertySetErrorEvent(
+               std::unique_ptr<const PropertySetErrorCallback>) {}
+
+       } // namespace android::hardware::automotive::vehicle
+
+    CRITICAL: the literal text `/*__PROPERTY_ENTRIES_PLACEHOLDER__*/`
+    MUST appear EXACTLY ONCE, inside the `return { ... };` block of
+    getAllPropertyConfigs(), and NOWHERE else. Do not add any actual
+    property entries yourself — they are added separately.
+
+    NEVER output markdown fences, no extra explanation.
+
+    FORBIDDEN:
+    - VssVehicleHardware — wrong class name
+    - Missing #pragma once in header
+    - Missing namespace wrapper in both .h and .cpp
+    - Missing #include "VehicleHalService{Domain}.h" in .cpp
+    - Omitting or duplicating the /*__PROPERTY_ENTRIES_PLACEHOLDER__*/ marker
+    - IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
+    - hidl_interface, @2.0, HIDL_FETCH_*, Return<>, .valueType
+    """
+    domain: str = dspy.InputField(desc="HAL domain name (e.g. HVAC, ADAS, BODY)")
+    property_count: str = dspy.InputField(desc="Total number of properties this domain has (for context only — entries are generated separately)")
+    aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples")
+
+    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, include VehicleProperty{Domain}.h")
+    cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp with the /*__PROPERTY_ENTRIES_PLACEHOLDER__*/ marker inside getAllPropertyConfigs()")
+    reasoning: str = dspy.OutputField(desc="Brief reasoning about class name used")
+
+
+class CppPropertyEntriesSignature(dspy.Signature):
+    """Generate ONLY the VehiclePropConfig initializer-list entries for a
+    CHUNK of VSS properties — used for domains with more properties than
+    fit in one LLM call (see CHUNK_SIZE in agents/rag_dspy_cpp_agent.py).
+
+    Output EXACTLY one initializer entry per property, in order, and
+    NOTHING else — no method signature, no class, no namespace, no
+    return statement, no markdown fences, no explanation.
+
+    Each entry MUST look exactly like this (one per property, comma-terminated):
+       {.prop = static_cast<int32_t>(VehicleProperty{Domain}::PROPERTY_NAME),
+        .access = VehiclePropertyAccess::READ},
+
+    Use VehiclePropertyAccess::READ, ::WRITE, or ::READ_WRITE based on the
+    property's access mode given in `properties`. Use enum constant names
+    EXACTLY as they appear in the AIDL enum block in `properties` — do not
+    invent or modify names.
+
+    FORBIDDEN:
+    - Markdown code fences (``` or ```cpp)
+    - Any text before the first { or after the last },
+    - Placeholder/fake property names
+    - Raw hex prop IDs instead of the enum constant cast
+    """
+    domain: str = dspy.InputField(desc="HAL domain name (e.g. HVAC, ADAS, BODY)")
+    properties: str = dspy.InputField(desc="THIS CHUNK ONLY: list of VSS properties with name, type, access, and AIDL enum")
+    aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples")
+
+    entries: str = dspy.OutputField(desc="One or more VehiclePropConfig initializer-list entries, nothing else")
+
 class CppVehicleAssertions(dspy.Module):
     """Validates + auto-repairs the structural contract for domain HAL C++ output.
 
@@ -308,16 +407,38 @@ class CppVehicleAssertions(dspy.Module):
             return impl
         return f'#include "{own_header}"\n' + impl
 
-    def _ensure_aidl_include(self, impl: str, domain: str) -> str:
+    def _ensure_aidl_include(self, code: str, domain: str) -> str:
         aidl_path = self._aidl_header_path(domain)
-        if f"#include <{aidl_path}>" in impl:
-            return impl
+        if f"#include <{aidl_path}>" in code:
+            return code
         own_header = self._header_file_name(domain)
         marker = f'#include "{own_header}"'
         new_include = f"#include <{aidl_path}>\n"
-        if marker in impl:
-            return impl.replace(marker, marker + "\n" + new_include, 1)
-        return new_include + impl
+
+        if marker in code:
+            # impl files: anchor right after the self-include, which is
+            # itself always the very first line of a contract-correct
+            # .cpp — keeps AIDL include alongside the other includes.
+            return code.replace(marker, marker + "\n" + new_include, 1)
+
+        # header files (no self-include marker): insert after the LAST
+        # contiguous line in the existing #include/#pragma block, never
+        # at the absolute top — inserting at line 0 would land this
+        # include before #pragma once and before whatever line defines
+        # int32_t (e.g. <cstdint> pulled in transitively via
+        # IVehicleHardware.h), breaking the AIDL stub's own `: int32_t`
+        # enum backing type.
+        lines = code.splitlines()
+        last_directive_idx = -1
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped == "":
+                last_directive_idx = i
+            else:
+                break
+        insert_at = last_directive_idx + 1
+        new_lines = lines[:insert_at] + [new_include.rstrip("\n")] + lines[insert_at:]
+        return "\n".join(new_lines) + ("\n" if code.endswith("\n") else "")
 
     def _ensure_namespace_wrapper(self, code: str) -> str:
         if self._NS_OPEN in code and self._NS_CLOSE in code:
@@ -343,6 +464,27 @@ class CppVehicleAssertions(dspy.Module):
         )
         return wrapped
 
+    def _ensure_aidl_using_directive(self, code: str) -> str:
+        """Insert `using namespace aidl::...;` immediately after an
+        EXISTING `namespace android::hardware::automotive::vehicle {`
+        if it's not already present somewhere in the file.
+
+        This is the companion fix to _ensure_namespace_wrapper(), which
+        deliberately does nothing when _NS_OPEN is already present
+        (correct behavior — it shouldn't try to re-wrap an
+        already-correctly-bracketed file). But "namespace present" and
+        "namespace contains the AIDL using-directive" are independent
+        facts: real generated code has been seen with a properly opened
+        and closed namespace block that simply never adds the
+        using-directive inside it, leaving every `VehicleProperty{Domain}`
+        reference unresolved at compile time (clang's own suggested fix
+        is exactly this using-directive — see the "did you mean
+        'aidl::android::hardware::automotive::vehicle::X'" diagnostic).
+        """
+        if self._NS_OPEN not in code or self._NS_USING in code:
+            return code
+        return code.replace(self._NS_OPEN, f"{self._NS_OPEN}\n{self._NS_USING}", 1)
+
     def forward(self, pred):
         header = getattr(pred, "cpp_header", "") or ""
         impl = getattr(pred, "cpp_impl", "") or ""
@@ -366,6 +508,21 @@ class CppVehicleAssertions(dspy.Module):
             violations.append("Missing namespace wrapper in header")
         if impl and self._NS_OPEN not in impl:
             violations.append("Missing namespace wrapper in cpp_impl")
+        # Namespace wrapper present but missing the AIDL using-directive
+        # inside it: _ensure_namespace_wrapper() below only fires when
+        # _NS_OPEN is absent entirely, so a file that already has
+        # `namespace android::hardware::automotive::vehicle { ... }`
+        # but never adds `using namespace aidl::...;` inside it slips
+        # past both checks above. The symptom is a real compile error
+        # ("use of undeclared identifier 'VehicleProperty{Domain}'; did
+        # you mean 'aidl::.../VehicleProperty{Domain}'") since the
+        # AIDL-namespaced enum is then only reachable via its fully
+        # qualified name, not bare `VehicleProperty{Domain}::X` as the
+        # generated code (correctly) writes it.
+        if impl and self._NS_OPEN in impl and self._NS_USING not in impl:
+            violations.append("Namespace wrapper present in cpp_impl but missing 'using namespace aidl::...' inside it")
+        if header and self._NS_OPEN in header and self._NS_USING not in header:
+            violations.append("Namespace wrapper present in header but missing 'using namespace aidl::...' inside it")
         if domain and impl and f"VehicleProperty{domain.strip().capitalize()}" in impl:
             aidl_path = self._aidl_header_path(domain)
             if f"#include <{aidl_path}>" not in impl:
@@ -400,7 +557,17 @@ class CppVehicleAssertions(dspy.Module):
         if self.auto_fix and domain:
             if header:
                 header = self._ensure_pragma_once(header)
+                needs_aidl_include = (
+                    f"VehicleProperty{domain.strip().capitalize()}" in header
+                    or "aidl::android::hardware::automotive::vehicle" in header
+                    or self._NS_OPEN not in header
+                    # ^ wrapper below will inject 'using namespace aidl::...'
+                    #   even if the header body never otherwise mentions AIDL
+                )
+                if needs_aidl_include:
+                    header = self._ensure_aidl_include(header, domain)
                 header = self._ensure_namespace_wrapper(header)
+                header = self._ensure_aidl_using_directive(header)
             if impl:
                 impl = self._ensure_self_include(impl, domain)
                 if f"VehicleProperty{domain.strip().capitalize()}" in impl:
@@ -408,6 +575,7 @@ class CppVehicleAssertions(dspy.Module):
                 if hallucinated:
                     impl = self._strip_hallucinated_property_blocks(impl, domain, hallucinated)
                 impl = self._ensure_namespace_wrapper(impl)
+                impl = self._ensure_aidl_using_directive(impl)
 
             pred.cpp_header = header
             pred.cpp_impl = impl
@@ -422,7 +590,7 @@ class SELinuxSignature(dspy.Signature):
     STRICT RULES — NO EXCEPTIONS:
     - Output ONLY the raw .te policy content.
     - NEVER use markdown fences (no ```te, no ```, no code blocks)
-    - Do NOT add any extra text, explanations, or leading \'{\'
+    - Do NOT add any extra text, explanations, or leading '{'
     - Start directly with valid SELinux statements (type, allow, init_daemon_domain, etc.)
     - This is ANDROID 14 AIDL — NOT HIDL. Never use any HIDL macros.
 

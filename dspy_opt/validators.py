@@ -264,33 +264,213 @@ _CPP_VHAL_STUBS = """\
 #include <optional>
 
 namespace android::hardware::automotive::vehicle {
-    struct VehiclePropValue { int32_t prop = 0; int32_t areaId = 0; };
-    struct VehiclePropConfig { int32_t prop = 0; };
-    struct GetValueRequest  { VehiclePropValue value; };
-    struct SetValueRequest  { VehiclePropValue value; };
-    struct StatusCode       { static constexpr int OK = 0; };
-    class  IVehicleHardware {
+    struct VehiclePropValue {
+        int32_t prop = 0;
+        int32_t areaId = 0;
+        struct {
+            std::vector<int32_t> int32Values;
+            std::vector<float>   floatValues;
+            std::vector<bool>    boolValues;
+            std::vector<uint8_t> byteValues;
+            std::string          stringValue;
+        } value;
+    };
+    struct VehiclePropConfig {
+        int32_t prop = 0;
+        int access = 0;
+        int changeMode = 0;
+        float minSampleRate = 0.0f;
+        float maxSampleRate = 0.0f;
+        struct AreaCfg { int32_t areaId = 0; };
+        std::vector<AreaCfg> areaConfigs;
+    };
+    struct GetValueRequest    { int64_t requestId = 0; VehiclePropValue prop; };
+    struct SetValueRequest    { int64_t requestId = 0; VehiclePropValue value; };
+    struct GetValueResult     { int64_t requestId = 0; int status = 0; VehiclePropValue prop; };
+    struct SetValueResult     { int64_t requestId = 0; int status = 0; };
+    struct SetValueErrorEvent { int64_t requestId = 0; int32_t propId = 0; int errorCode = 0; };
+    struct SubscribeOptions   { int32_t propId = 0; std::vector<int32_t> areaIds; float sampleRate = 0; };
+    struct DumpResult         { bool callerShouldDumpState = false; std::string buffer; };
+    struct StatusCode {
+        static constexpr int OK = 0;
+        static constexpr int INVALID_ARG = 1;
+        static constexpr int NOT_AVAILABLE = 2;
+        int v = 0;
+        constexpr StatusCode() = default;
+        constexpr StatusCode(int x) : v(x) {}
+        constexpr operator int() const { return v; }
+    };
+
+    // Plain (unscoped) enums so they implicitly convert to the int-typed
+    // VehiclePropConfig.access/changeMode fields above, matching how real
+    // AOSP's @Backing(type="int") VehiclePropertyAccess/ChangeMode behave
+    // when assigned via designated initializers.
+    enum VehiclePropertyAccess     { NONE = 0, READ = 1, WRITE = 2, READ_WRITE = 3 };
+    enum VehiclePropertyChangeMode { STATIC = 0, ON_CHANGE = 1, CONTINUOUS = 2 };
+
+    using GetValuesCallback         = std::function<void(std::vector<GetValueResult>)>;
+    using SetValuesCallback         = std::function<void(std::vector<SetValueResult>)>;
+    using PropertyChangeCallback    = std::function<void(std::vector<VehiclePropValue>)>;
+    using PropertySetErrorCallback  = std::function<void(std::vector<SetValueErrorEvent>)>;
+
+    class IVehicleHardware {
     public:
         virtual ~IVehicleHardware() = default;
         virtual std::vector<VehiclePropConfig> getAllPropertyConfigs() const = 0;
+        virtual StatusCode getValues(std::shared_ptr<const GetValuesCallback> callback,
+                                      const std::vector<GetValueRequest>& requests) const = 0;
+        virtual StatusCode setValues(std::shared_ptr<const SetValuesCallback> callback,
+                                      const std::vector<SetValueRequest>& requests) = 0;
+        virtual StatusCode updateSampleRate(int32_t cookie, int32_t propId, float sampleRate) { return StatusCode::OK; }
+        virtual StatusCode subscribe(const SubscribeOptions& options) { return StatusCode::OK; }
+        virtual StatusCode unsubscribe(int32_t cookie, int32_t propId) { return StatusCode::OK; }
+        virtual DumpResult dump(const std::vector<std::string>& options) { return {}; }
+        virtual StatusCode checkHealth() { return StatusCode::OK; }
+        virtual void registerOnPropertyChangeEvent(std::unique_ptr<const PropertyChangeCallback> callback) {}
+        virtual void registerOnPropertySetErrorEvent(std::unique_ptr<const PropertySetErrorCallback> callback) {}
     };
 }
 using namespace android::hardware::automotive::vehicle;
 // ────────────────────────────────────────────────────────────────────────────
 """
 
+# Number of lines in _CPP_VHAL_STUBS — computed once at import time so the
+# stub-line filter below stays correct even if the stub block is edited,
+# instead of a hardcoded magic number that silently drifts out of sync.
+_CPP_VHAL_STUBS_LINE_COUNT = _CPP_VHAL_STUBS.count("\n") + 1
+
+# Generic placeholder AIDL enum used when validate_cpp() detects a
+# `#include <aidl/.../VehicleProperty{Domain}.h>` for a domain it has no
+# real generated content for (validate_cpp only receives a `code: str`,
+# not which domain/AIDL-file context it came from). This intentionally
+# does NOT try to guess real property names — it only needs to make the
+# *type* `VehicleProperty{Domain}` exist so static_cast<int32_t>(...)
+# expressions involving ANY identifier compile syntactically. A real
+# "does this name actually exist" check is a separate, stronger
+# concern handled by CppVehicleAssertions' AIDL cross-check in
+# dspy_opt/hal_signatures.py, not by this syntax-only validator.
+_USED_AIDL_CONSTANT_RE_TEMPLATE = r'VehicleProperty{domain}::(\w+)'
+
+
+def _build_aidl_enum_stub(code: str, domain: str) -> str:
+    """Build a VehicleProperty{domain} enum stub containing every
+    constant name `code` actually references (via
+    VehicleProperty{domain}::NAME), each given a distinct placeholder
+    value. This guarantees the stub always satisfies whatever names
+    the real generated code uses — unlike a single fixed placeholder
+    constant, which only worked when the code happened to reference
+    exactly one (made-up) name.
+
+    This is NOT a check for whether those names are real AIDL property
+    names (that's CppVehicleAssertions' job, which has the actual
+    generated .aidl content to cross-check against) — it only needs to
+    make `static_cast<int32_t>(VehicleProperty{domain}::X)` compile
+    syntactically for whatever X appears in the code being validated.
+    """
+    usage_re = re.compile(_USED_AIDL_CONSTANT_RE_TEMPLATE.format(domain=re.escape(domain)))
+    names = sorted(set(usage_re.findall(code)))
+    if not names:
+        names = ["_VALIDATOR_PLACEHOLDER_DO_NOT_USE"]
+    body = "\n".join(f"    {name} = {i}," for i, name in enumerate(names))
+    return (
+        "#pragma once\n"
+        "#include <cstdint>\n"
+        f"namespace aidl::android::hardware::automotive::vehicle {{\n"
+        f"enum class VehicleProperty{domain} : int32_t {{\n"
+        f"{body}\n"
+        "};\n"
+        "}\n"
+    )
+
+
+_CLASS_DECL_RE = re.compile(
+    r'class\s+\w+\s*:\s*public\s+IVehicleHardware\s*\{'
+)
+
+
+def _reorder_class_decl_first(code: str) -> str:
+    """gen_hal_minimal_c4.py / multi_main_c4_feedback.py's retry engine
+    concatenates files as `impl_text + "\n" + header_text + ...`
+    (cpp_impl first, .h second) when building the combined string to
+    validate — but C++ requires the class DEFINITION (from the .h) to
+    appear before any `ClassName::method(...)` out-of-line definitions
+    (from the .cpp) that reference it. Left as-is, every single
+    validate_cpp() call on real generated output fails with "use of
+    undeclared identifier 'VehicleHalService{Domain}'" regardless of
+    whether the code itself is correct — a validator-side ordering bug,
+    not a code-quality issue.
+
+    This splits `code` on `#pragma once` boundaries (the natural file
+    boundary every generated .h starts with) and moves whichever chunk
+    contains the `class X : public IVehicleHardware {` definition to
+    the front, preserving the relative order of all other chunks.
+    If there's only one chunk (no `#pragma once` boundary found, e.g.
+    validate_cpp() is being called on an isolated snippet rather than
+    a header+impl combo), this is a no-op.
+    """
+    parts = re.split(r"(?=^#pragma once)", code, flags=re.MULTILINE)
+    parts = [p for p in parts if p.strip()]
+    if len(parts) <= 1:
+        return code
+
+    class_decl_idx = None
+    for i, part in enumerate(parts):
+        if _CLASS_DECL_RE.search(part):
+            class_decl_idx = i
+            break
+
+    if class_decl_idx is None or class_decl_idx == 0:
+        return code  # already first, or no class def found — leave as-is
+
+    reordered = [parts[class_decl_idx]] + parts[:class_decl_idx] + parts[class_decl_idx + 1:]
+    return "\n".join(reordered)
+
+
+_SELF_INCLUDE_RE = re.compile(r'#include\s*"([^"]+\.h)"')
+_AIDL_INCLUDE_RE = re.compile(
+    r'#include\s*<aidl/android/hardware/automotive/vehicle/(VehicleProperty(\w+))\.h>'
+)
+
+
 def validate_cpp(code: str) -> ValidatorResult:
     """
     Validate C++ VHAL code using clang++ --syntax-only.
 
     Injects minimal AOSP VHAL stubs so clang can check syntax without
-    a full AOSP checkout.  --syntax-only skips linking entirely so no
+    a full AOSP checkout. --syntax-only skips linking entirely so no
     Android libraries or NDK sysroot are needed.
 
-    What this catches:  missing semicolons, bad declarations, type
+    Beyond the inline _CPP_VHAL_STUBS prelude (IVehicleHardware,
+    VehicleHalTypes, etc. — injected as raw text ahead of `code`),
+    this also resolves two classes of #include that the prelude alone
+    cannot satisfy, because their exact filename is generated content
+    not known until this code is scanned:
+
+      1. Self-include: `#include "VehicleHalService{Domain}.h"` — the
+         generated .h is already concatenated into `code` by the
+         caller (gen_hal_minimal_c4.py / multi_main_c4_feedback.py
+         pass header + impl + main_service as one combined string), so
+         re-resolving the include via the filesystem would duplicate
+         the class definition. An EMPTY stand-in file is created for
+         it instead, so the #include line is a no-op and the real
+         class definition (already present later in `code`) is the
+         only one the compiler sees.
+
+      2. AIDL enum include: `#include <aidl/.../VehicleProperty{Domain}.h>`
+         — the real enum lives in a sibling file this validator never
+         sees. A generic placeholder enum is generated so the *type*
+         resolves and any `static_cast<int32_t>(VehicleProperty{Domain}::X)`
+         expression is syntactically valid, regardless of which
+         property name X is. (Whether X is a REAL property name is
+         checked separately and more accurately by
+         CppVehicleAssertions' AIDL cross-check, which has access to
+         the actual generated .aidl content — this validator does not.)
+
+    What this catches: missing semicolons, bad declarations, type
       mismatches, incorrect template usage, malformed class definitions.
-    What it does NOT catch:  missing VHAL method implementations,
-      wrong property enum values, link-time errors.
+    What it does NOT catch: missing VHAL method implementations,
+      wrong/hallucinated property enum values (see CppVehicleAssertions
+      instead), link-time errors.
     """
     tool = "clang++ -fsyntax-only"
     if not code.strip():
@@ -300,28 +480,71 @@ def validate_cpp(code: str) -> ValidatorResult:
     if not clang:
         return _cpp_regex_fallback(code)
 
-    combined = _CPP_VHAL_STUBS + "\n" + code
-
-    fd, tmp = tempfile.mkstemp(suffix=".cpp")
+    tmpdir = tempfile.mkdtemp(prefix="cpp_validate_")
     try:
-        os.write(fd, combined.encode())
-        os.close(fd)
+        # ── Resolve the two core AOSP angle-includes every generated file
+        # has (#include <IVehicleHardware.h> / <VehicleHalTypes.h>) by
+        # writing _CPP_VHAL_STUBS out as a REAL file clang's #include
+        # resolves to via -I, rather than prepending it as raw text.
+        # Prepending as text only works when the real code does NOT
+        # also `#include <IVehicleHardware.h>` itself — but every
+        # contract-correct generated header DOES include it, so the
+        # text-prepend approach left that angle-include unresolved and
+        # clang stopped at "fatal error: file not found" before ever
+        # reaching the real code below it.
+        with open(os.path.join(tmpdir, "IVehicleHardware.h"), "w") as f:
+            f.write(_CPP_VHAL_STUBS)
+        with open(os.path.join(tmpdir, "VehicleHalTypes.h"), "w") as f:
+            f.write("#pragma once\n#include <IVehicleHardware.h>\n")
+
+        # gen_hal_minimal_c4.py / multi_main_c4_feedback.py's retry
+        # engine concatenates impl text BEFORE header text — reorder so
+        # the class definition (from the header chunk) appears before
+        # any ClassName::method(...) out-of-line definitions that
+        # reference it, which C++ requires regardless of caller order.
+        code = _reorder_class_decl_first(code)
+
+        # ── Resolve self-includes: empty stand-in, real def comes from `code` ──
+        for m in _SELF_INCLUDE_RE.finditer(code):
+            header_name = m.group(1)
+            stub_path = os.path.join(tmpdir, header_name)
+            if not os.path.exists(stub_path):
+                with open(stub_path, "w") as f:
+                    f.write("#pragma once\n// validator stand-in: real definition is concatenated below in the same file\n")
+
+        # ── Resolve AIDL enum includes: stub containing every name `code` actually uses ──
+        aidl_dir = os.path.join(tmpdir, "aidl", "android", "hardware", "automotive", "vehicle")
+        seen_domains = set()
+        for m in _AIDL_INCLUDE_RE.finditer(code):
+            enum_filename, domain = m.group(1), m.group(2)
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+            os.makedirs(aidl_dir, exist_ok=True)
+            with open(os.path.join(aidl_dir, f"{enum_filename}.h"), "w") as f:
+                f.write(_build_aidl_enum_stub(code, domain))
+
+        tmp = os.path.join(tmpdir, "combined.cpp")
+        with open(tmp, "w") as f:
+            f.write(code)
+
         rc, _, stderr = _run([
             clang, "-fsyntax-only", "-x", "c++", "-std=c++17",
+            "-I", tmpdir,
             "-Wno-unknown-pragmas", "-Wno-unused-variable",
-            "-Wno-unused-function", "-Wno-error",
+            "-Wno-unused-function", "-Wno-error", "-Wno-pragma-once-outside-header",
             tmp,
         ])
     finally:
-        os.unlink(tmp)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
-    # Filter error lines that are from the stub prelude (line 1-25)
+    # Filter error lines that are from the stub prelude
     real_errors = []
     for line in stderr.splitlines():
         if "error:" not in line.lower():
             continue
         m = re.search(r":(\d+):", line)
-        if m and int(m.group(1)) <= 25:
+        if m and int(m.group(1)) <= _CPP_VHAL_STUBS_LINE_COUNT:
             continue    # skip stub lines
         if "Stubs injected" in line:
             continue
