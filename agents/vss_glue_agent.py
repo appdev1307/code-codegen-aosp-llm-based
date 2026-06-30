@@ -360,6 +360,7 @@ def _generate_init_rc() -> str:
     group vehicle_network system inet
     capabilities BLOCK_SUSPEND
     ioprio be 4
+    seclabel u:r:hal_vehicle_vss:s0
 """
 
 
