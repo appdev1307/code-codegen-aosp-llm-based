@@ -10,12 +10,11 @@ from dspy_opt.hal_signatures import (
 )
 
 # Properties per chunk for the chunked generation path (skeleton +
-# per-chunk property entries). Derived from REAL token measurements,
-# not guessed: the truncated BODY output observed in production
+# per-chunk property entries). Starting point derived from REAL token
+# measurements: the truncated BODY output observed in production
 # (73 entries before cutoff, ~4302 tokens under max_tokens=4096)
-# measures out to ~59 tokens/entry. A naive 4096/59 ≈ 69-entry ceiling
-# looks safe, but two things eat into that budget before any entries
-# are written:
+# measures out to ~59 tokens/entry. Two things eat into the
+# max_tokens=4096 budget before any entries are even written:
 #   1. ChainOfThought always generates a "reasoning" field BEFORE the
 #      actual output (~100-200 tokens typical), which is NOT part of
 #      the entries themselves but still counts against max_tokens.
@@ -26,14 +25,20 @@ from dspy_opt.hal_signatures import (
 #      ISDECREASEENGAGED), so 59 tok/entry is an AVERAGE, not a
 #      worst-case bound, and a chunk landing on a run of long names
 #      can blow past it.
-# 40 entries × ~59 tok/entry ≈ 2360 tok for the entries themselves,
-# leaving ~1700 tok of headroom for reasoning + above-average name
-# lengths — roughly the 60% margin that held up against this same
-# data when accounting for reasoning overhead. This is still a
-# heuristic, not a hard guarantee for any LM/prompt combination; if
-# truncation is ever observed again at this CHUNK_SIZE, lower it
-# further rather than assuming it's a one-off.
-CHUNK_SIZE = 40
+#
+# 40 already measured out to ~39% headroom after accounting for both
+# of the above (no truncation has been observed at 40 in practice).
+# Lowered to 30 anyway as a PREVENTIVE margin before a full pipeline
+# run, not in response to an observed failure: 30 entries × ~59
+# tok/entry ≈ 1770 tok for entries, leaving ~2180 tok (~53%) of
+# headroom — the extra safety costs only ~1 additional LLM call per
+# large domain (e.g. CABIN's 168 properties goes from 5 chunks to 6)
+# against a full Colab run that takes tens of minutes, so the
+# trade-off favors caution here. If this still proves insufficient in
+# a real run, lower it further — this is a heuristic tuned against one
+# real truncation case, not a hard guarantee for any LM/prompt
+# combination.
+CHUNK_SIZE = 30
 
 _PLACEHOLDER = "/*__PROPERTY_ENTRIES_PLACEHOLDER__*/"
 
