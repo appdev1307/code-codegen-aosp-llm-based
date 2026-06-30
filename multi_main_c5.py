@@ -84,11 +84,78 @@ def encode_prop_id(raw_index: int, vss_type: str) -> int:
     The VSS type is folded into the ID's type field, which is where VHAL and
     CarPropertyManager read the value type from — it is not stored anywhere
     else in VehiclePropConfig, so it must live in the ID.
+
+    FALLBACK ONLY — see _load_real_aidl_property_ids() below. This
+    function recomputes IDs from a global counter that does NOT match
+    the per-domain-base scheme C3/C4's AIDL/CPP agents actually use
+    when generating VehiclePropertyAdas.aidl etc. (rag_dspy_aidl_agent.py,
+    DOMAIN_BASE-keyed). If the real .aidl files from the C4 run are
+    available, load_vss_properties() reads the exact IDs from them
+    instead of calling this — that's the only way VTS test property
+    IDs are guaranteed to match the IDs the deployed VssVehicleHardware
+    service actually registers. This function only runs when no .aidl
+    output can be found (e.g. C5 run against a spec without a prior
+    C3/C4 AIDL generation step).
     """
     if raw_index & 0xF0000000:                 # already a full ID — leave alone
         return raw_index
     type_bits = VSS_TYPE_BITS.get(vss_type, 0x00400000)   # default INT32
     return VSS_GROUP | VSS_AREA | type_bits | (raw_index & 0xFFFF)
+
+
+# ── Real AIDL property ID loader ──────────────────────────────────
+# Reads the ACTUAL generated VehicleProperty{Domain}.aidl files from
+# the C4 run, the same way RAGDSPyArchitectAgent._get_aidl_content()
+# does for the CPP sub-agent. This guarantees the property IDs C5's
+# VTS tests call are byte-for-byte identical to the IDs the deployed
+# VssVehicleHardware service registers — encode_prop_id()'s
+# independently-derived global-counter scheme is not guaranteed to
+# match the AIDL agent's per-domain-base scheme (and in practice does
+# not, for any domain past the first one in MODULE_PLAN.json's order).
+_AIDL_CONST_RE = re.compile(
+    r"^\s*(\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+)\s*,",
+    re.MULTILINE,
+)
+
+_AIDL_DIR_REL = (
+    "hardware/interfaces/automotive/vehicle/aidl/"
+    "android/hardware/automotive/vehicle"
+)
+
+
+def _load_real_aidl_property_ids(c4_output_dir: Path) -> dict:
+    """Scan c4_output_dir for VehicleProperty{Domain}.aidl files and
+    return {property_name: int_id} parsed straight from the enum
+    constants — the real, final IDs the AIDL/CPP agents generated and
+    that the deployed service will register.
+
+    Returns an empty dict if the AIDL directory or no .aidl files are
+    found, signalling the caller to fall back to encode_prop_id().
+    """
+    aidl_dir = c4_output_dir / _AIDL_DIR_REL
+    if not aidl_dir.is_dir():
+        return {}
+
+    real_ids: dict = {}
+    aidl_files = sorted(aidl_dir.glob("VehicleProperty*.aidl"))
+    for f in aidl_files:
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            print(f"  [C5] Warning: could not read {f}: {e}")
+            continue
+        for m in _AIDL_CONST_RE.finditer(content):
+            name, raw_val = m.group(1), m.group(2)
+            try:
+                int_id = int(raw_val, 16) if raw_val.lower().startswith("0x") else int(raw_val)
+            except ValueError:
+                continue
+            real_ids[name] = int_id
+
+    if real_ids:
+        print(f"  [C5] Loaded {len(real_ids)} real property IDs from "
+              f"{len(aidl_files)} generated .aidl file(s) in {aidl_dir}")
+    return real_ids
 
 # ── LLM client (reused from C1-C4) ───────────────────────────────
 def _call_llm(prompt: str, timeout: int = 240) -> str:
@@ -198,14 +265,20 @@ def load_vss_properties() -> dict:
         print(f"  [C5] Unknown MODULE_PLAN format")
         return {}
 
+    # Prefer the REAL property IDs from C4's generated .aidl files —
+    # these are the exact IDs the deployed VssVehicleHardware service
+    # registers. Only properties NOT found there (e.g. a name mismatch,
+    # or this C5 run targets a spec that never went through C3/C4 AIDL
+    # generation) fall back to the locally-recomputed encode_prop_id()
+    # scheme, which is NOT guaranteed to match the real service.
+    real_aidl_ids = _load_real_aidl_property_ids(C4_OUTPUT_DIR)
+
     # Build domain map from modules_iter
     domain_map = {}
-    # Global monotonic index so every property gets a unique low-16-bit field.
-    # Deriving the index from per-domain `base + idx` caused collisions: once the
-    # type bits are OR'd in, two properties sharing the same type AND the same low
-    # index produce identical IDs, and VHAL drops duplicate configs wholesale.
-    # A single running counter (0x1000, 0x1001, ...) is unique across all domains.
+    # Global monotonic index — fallback path ONLY (see encode_prop_id
+    # docstring). Real IDs from real_aidl_ids always take priority.
     global_idx = 0x1000
+    fallback_count = 0
     for domain, prop_names in modules_iter:
         if not domain:
             continue
@@ -214,20 +287,40 @@ def load_vss_properties() -> dict:
         if not prop_names:
             continue
 
-        base  = DOMAIN_BASE.get(domain, 0x8000)
         props = []
         for idx, name in enumerate(prop_names):
             meta    = prop_meta.get(name, {})
             typ     = meta.get("type", "INT32")
             access  = meta.get("access", "READ")
-            # Always assign from the global counter. The AOSP-dump values in
-            prop_id = encode_prop_id(global_idx, typ)
-            global_idx += 1
+
+            if name in real_aidl_ids:
+                prop_id = real_aidl_ids[name]
+            else:
+                # No real ID found for this property — fall back to the
+                # locally-recomputed scheme so generation can still
+                # proceed, but this ID will NOT match a deployed
+                # service that was built from the real .aidl files.
+                prop_id = encode_prop_id(global_idx, typ)
+                global_idx += 1
+                fallback_count += 1
+
             desc    = name.replace("VEHICLE_CHILDREN_", "").replace("_CHILDREN_", ".")[:50]
             props.append((name, prop_id, typ, access, desc))
         if props:
             domain_map[domain] = props
             print(f"  [C5] {domain.upper():15s}: {len(props):4d} properties")
+
+    if real_aidl_ids and fallback_count:
+        print(f"  [C5] WARNING: {fallback_count} propert"
+              f"{'y' if fallback_count == 1 else 'ies'} had no match in "
+              f"the generated .aidl files — used the fallback ID scheme "
+              f"for {'it' if fallback_count == 1 else 'them'} (will NOT "
+              f"match the deployed service).")
+    elif not real_aidl_ids:
+        print("  [C5] WARNING: no generated .aidl files found under "
+              f"{C4_OUTPUT_DIR / _AIDL_DIR_REL} — all property IDs use "
+              "the fallback scheme. Run C3/C4 first, or these VTS tests "
+              "will call IDs that do not match the deployed service.")
 
     total = sum(len(v) for v in domain_map.values())
     print(f"  [C5] Total: {total} properties across {len(domain_map)} domains")
