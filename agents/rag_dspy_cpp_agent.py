@@ -1,7 +1,64 @@
 # agents/rag_dspy_cpp_agent.py
+import re
 import dspy
 from rag.aosp_retriever import AOSPRetriever
-from dspy_opt.hal_signatures import ModernCppVehicleHardwareSignature, CppVehicleAssertions
+from dspy_opt.hal_signatures import (
+    ModernCppVehicleHardwareSignature,
+    CppSkeletonSignature,
+    CppPropertyEntriesSignature,
+    CppVehicleAssertions,
+)
+
+# Properties per chunk for the chunked generation path (skeleton +
+# per-chunk property entries). Derived from REAL token measurements,
+# not guessed: the truncated BODY output observed in production
+# (73 entries before cutoff, ~4302 tokens under max_tokens=4096)
+# measures out to ~59 tokens/entry. A naive 4096/59 ≈ 69-entry ceiling
+# looks safe, but two things eat into that budget before any entries
+# are written:
+#   1. ChainOfThought always generates a "reasoning" field BEFORE the
+#      actual output (~100-200 tokens typical), which is NOT part of
+#      the entries themselves but still counts against max_tokens.
+#   2. Property name length varies a lot — some VSS names run well
+#      past 100 characters (e.g.
+#      VEHICLE_CHILDREN_CABIN_CHILDREN_SEAT_CHILDREN_ROW2_CHILDREN_
+#      DRIVERSIDE_CHILDREN_SWITCH_CHILDREN_MASSAGE_CHILDREN_
+#      ISDECREASEENGAGED), so 59 tok/entry is an AVERAGE, not a
+#      worst-case bound, and a chunk landing on a run of long names
+#      can blow past it.
+# 40 entries × ~59 tok/entry ≈ 2360 tok for the entries themselves,
+# leaving ~1700 tok of headroom for reasoning + above-average name
+# lengths — roughly the 60% margin that held up against this same
+# data when accounting for reasoning overhead. This is still a
+# heuristic, not a hard guarantee for any LM/prompt combination; if
+# truncation is ever observed again at this CHUNK_SIZE, lower it
+# further rather than assuming it's a one-off.
+CHUNK_SIZE = 40
+
+_PLACEHOLDER = "/*__PROPERTY_ENTRIES_PLACEHOLDER__*/"
+
+_MD_FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?|```$", re.MULTILINE)
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """LLMs occasionally wrap code output in markdown fences (```cpp ...
+    ```) despite the contract explicitly forbidding it. Strip any
+    leading/trailing fence so a single instance of this drift doesn't
+    leave invalid C++ (a literal backtick fence) in the generated file.
+    Only strips fences at the very start/end of the string, not
+    backticks that might legitimately appear inside a string literal
+    or comment mid-file.
+    """
+    if not text:
+        return text
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # Drop the opening fence line (``` or ```cpp etc.)
+        first_newline = stripped.find("\n")
+        stripped = stripped[first_newline + 1:] if first_newline != -1 else ""
+    if stripped.rstrip().endswith("```"):
+        stripped = stripped.rstrip()[:-3]
+    return stripped.strip() + "\n"
 
 # 4 vehicle-anchored queries — surface DefaultVehicleHal/FakeVehicleHardware
 # above generic biometrics/bluetooth/sensors HALs in the corpus
@@ -26,7 +83,7 @@ CRITICAL INCLUDES — ALWAYS ADD THESE AT THE TOP OF HEADER FILE:
 #include <vector>
 #include <memory>
 #include <android/log.h>
-#include "android/hardware/automotive/vehicle/VehicleProperty{Domain}.h"
+#include <aidl/android/hardware/automotive/vehicle/VehicleProperty{Domain}.h>
 
 NAMESPACE (VERY IMPORTANT - ALWAYS DO THIS):
 - In .h file:
@@ -122,6 +179,7 @@ FORBIDDEN:
   #include <aidl/android/hardware/automotive/vehicle/DefaultVehicleHal.h> — wrong path, use <DefaultVehicleHal.h>
   HIDL_FETCH_* | Return<> | BnVehicle | BnIVehicle | .valueType | sync getValues
   aidlvhal:: prefix — use namespace directly via using namespace
+NEVER wrap output in markdown code fences (``` or ```cpp) — emit raw C++ only.
 Start every .h file with the includes above. Do not omit them.
 """
 
@@ -131,7 +189,16 @@ class RagDspyCppAgent:
         self.retriever  = retriever or AOSPRetriever(db_path=rag_db_path)
         self.top_k      = rag_top_k
         self.predictor  = dspy.ChainOfThought(ModernCppVehicleHardwareSignature)
+        self.skeleton_predictor = dspy.ChainOfThought(CppSkeletonSignature)
+        self.entries_predictor  = dspy.ChainOfThought(CppPropertyEntriesSignature)
         self.assertions = CppVehicleAssertions(strict=False)
+
+    def _retrieved_context(self) -> str:
+        retrieved = self.retriever.retrieve_multi(_QUERIES, agent_type="cpp",
+                                                   top_k=self.top_k)
+        return "\n\n".join(
+            doc.get("text", doc.get("page_content", "")) for doc in retrieved
+        )
 
     def generate(
         self,
@@ -139,12 +206,7 @@ class RagDspyCppAgent:
         properties:    str,
         extra_context: str = "",
     ) -> dict:
-        # Always retrieve with all 4 vehicle-anchored queries
-        retrieved     = self.retriever.retrieve_multi(_QUERIES, agent_type="cpp",
-                                                      top_k=self.top_k)
-        retrieved_text = "\n\n".join(
-            doc.get("text", doc.get("page_content", "")) for doc in retrieved
-        )
+        retrieved_text = self._retrieved_context()
 
         # Always combine: contract + RAG + any repair/extra context
         # Never use "or" — repair must have BOTH violation feedback AND RAG grounding
@@ -157,6 +219,8 @@ class RagDspyCppAgent:
             properties   = properties,
             aosp_context = aosp_context,
         )
+        result.cpp_header = _strip_markdown_fences(getattr(result, "cpp_header", "") or "")
+        result.cpp_impl = _strip_markdown_fences(getattr(result, "cpp_impl", "") or "")
         result = self.assertions(result)
 
         return {
@@ -166,6 +230,117 @@ class RagDspyCppAgent:
             "android_bp":   getattr(result, "android_bp",   "") or "",
             "reasoning":    getattr(result, "reasoning",    "") or "",
             "violations":   getattr(result, "violations",   []),
+        }
+
+    def _build_chunk_properties_text(self, domain: str, chunk: list, aidl_block: str = "") -> str:
+        """Build a compact per-chunk property spec, same format
+        ModuleSpec.to_llm_spec() uses, so CppPropertyEntriesSignature
+        sees the same shape of input as the unchunked path — plus the
+        real AIDL enum block so CppVehicleAssertions' hallucination
+        cross-check (applied after merging, see generate_chunked) has
+        ground truth to check entries against.
+        """
+        lines = [f"HAL Domain: {domain}", f"Properties in this chunk: {len(chunk)}", ""]
+        for prop in chunk:
+            name   = getattr(prop, "id", "UNKNOWN")
+            typ    = getattr(prop, "type", "UNKNOWN")
+            access = getattr(prop, "access", "READ_WRITE")
+            lines += [f"- Name: {name}", f"  Type: {typ}", f"  Access: {access}", ""]
+        text = "\n".join(lines)
+        if aidl_block:
+            text += "\n" + aidl_block
+        return text
+
+    def generate_chunked(
+        self,
+        domain:        str,
+        prop_list:     list,
+        aidl_block:    str = "",
+        extra_context: str = "",
+        chunk_size:    int = CHUNK_SIZE,
+    ) -> dict:
+        """Chunked counterpart to generate(), for domains with more
+        properties than reliably fit in one LLM call without hitting
+        max_tokens truncation (see CHUNK_SIZE above). Two passes:
+
+          1. Skeleton: full header + every method except the body of
+             getAllPropertyConfigs(), which contains a placeholder
+             marker instead of real entries. This call's size is
+             independent of property count, so it never truncates.
+
+          2. Entries: for each chunk of `prop_list`, ask the LM for
+             ONLY that chunk's initializer-list entries (no method
+             wrapper, no class, no namespace) — small, bounded output
+             per call regardless of total domain size.
+
+        The chunks are concatenated and spliced into the skeleton's
+        placeholder, then run through the same CppVehicleAssertions
+        pass generate() uses, so the final result has identical
+        structural guarantees (pragma once, self-include, namespace,
+        AIDL include, hallucination cross-check) regardless of which
+        path produced it.
+        """
+        retrieved_text = self._retrieved_context()
+        aosp_context = _CONTRACT + "\n" + retrieved_text
+        if extra_context:
+            aosp_context = extra_context + "\n" + aosp_context
+
+        skeleton = self.skeleton_predictor(
+            domain         = domain,
+            property_count = str(len(prop_list)),
+            aosp_context   = aosp_context,
+        )
+        header = _strip_markdown_fences(getattr(skeleton, "cpp_header", "") or "")
+        impl   = _strip_markdown_fences(getattr(skeleton, "cpp_impl", "") or "")
+
+        all_entries = []
+        for i in range(0, len(prop_list), chunk_size):
+            chunk = prop_list[i:i + chunk_size]
+            chunk_properties_text = self._build_chunk_properties_text(domain, chunk, aidl_block)
+            entries_result = self.entries_predictor(
+                domain       = domain,
+                properties   = chunk_properties_text,
+                aosp_context = aosp_context,
+            )
+            chunk_entries = _strip_markdown_fences(getattr(entries_result, "entries", "") or "")
+            all_entries.append(chunk_entries.strip())
+
+        merged_entries = "\n".join(all_entries)
+
+        if _PLACEHOLDER in impl:
+            impl = impl.replace(_PLACEHOLDER, merged_entries, 1)
+        else:
+            # Skeleton dropped the placeholder despite instructions —
+            # fall back to inserting entries right after the opening
+            # `return {` of getAllPropertyConfigs() so generation can
+            # still proceed rather than silently losing all entries.
+            return_brace_re = re.compile(
+                r"(getAllPropertyConfigs\(\)\s*const\s*\{\s*return\s*\{)"
+            )
+            if return_brace_re.search(impl):
+                impl = return_brace_re.sub(r"\1\n" + merged_entries, impl, count=1)
+            else:
+                impl += f"\n// WARNING: could not locate insertion point — entries appended raw:\n{merged_entries}\n"
+
+        class _PredLike:
+            def __init__(self, **kw):
+                for k, v in kw.items():
+                    setattr(self, k, v)
+
+        pred = _PredLike(
+            domain=domain, cpp_header=header, cpp_impl=impl,
+            main_service="", properties=aidl_block,
+        )
+        result = self.assertions(pred)
+
+        return {
+            "header":       result.cpp_header,
+            "impl":         result.cpp_impl,
+            "main_service": "",
+            "android_bp":   "",
+            "reasoning":    f"Chunked generation: {len(prop_list)} properties in "
+                            f"{(len(prop_list) + chunk_size - 1) // chunk_size} chunk(s)",
+            "violations":   result.violations,
         }
 
     def _generate(self, domain: str, properties: str, aosp_context: str = "", **kwargs) -> str:
@@ -198,7 +373,30 @@ class RAGDSPyCppAgent:
         self.inner = RagDspyCppAgent(**kwargs)
 
     def run(self, module_spec) -> dict:
-        """Called by architect — returns dict with header + impl."""
+        """Called by architect — returns dict with header + impl.
+
+        Domains with more properties than CHUNK_SIZE use the chunked
+        path (generate_chunked) to avoid max_tokens truncation of
+        getAllPropertyConfigs() — see CHUNK_SIZE docstring above for
+        why this exists (BODY=84 and POWERTRAIN=120 properties were
+        observed truncating mid-token under the single-shot path).
+        """
+        prop_list = getattr(module_spec, "properties", None) or []
+        if len(prop_list) > CHUNK_SIZE:
+            # Extract just the AIDL enum block (if the caller already
+            # embedded one via to_llm_spec(), e.g. gen_hal_minimal_c4.py's
+            # _PatchedSpec) so each chunk call and the final
+            # hallucination cross-check have real ground truth.
+            full_spec_text = module_spec.to_llm_spec()
+            aidl_marker = "=== Generated AIDL enum"
+            idx = full_spec_text.find(aidl_marker)
+            aidl_block = full_spec_text[idx:] if idx != -1 else ""
+            return self.inner.generate_chunked(
+                domain     = module_spec.domain,
+                prop_list  = prop_list,
+                aidl_block = aidl_block,
+            )
+
         out = self.inner.generate(
             domain     = module_spec.domain,
             properties = module_spec.to_llm_spec(),
