@@ -589,6 +589,9 @@ rm -rf out
 # Update API (new .aidl files require an API bump)
 m android.hardware.automotive.vehicle-update-api
 
+# if there are cyclic reset, run the below again
+m -j$(nproc)
+
 # 1. Clean the AIDL interface module
 rm -rf out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/android.hardware.automotive.vehicle-V3-ndk-source
 m clean android.hardware.automotive.vehicle@V3-vss-service
@@ -601,8 +604,7 @@ mmm hardware/interfaces/automotive/vehicle/aidl -j$(nproc)
 m -j$(nproc) android.hardware.automotive.vehicle-V3-ndk
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 
-# if there are cyclic reset, run the below again
-m -j$(nproc) 2>&1 | tee ~/build_c4.log
+
 
 touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.cpp
 touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.h
