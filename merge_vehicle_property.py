@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Merge custom VehicleProperty*.aidl - Final Version
-Giữ header + import, không xóa file
+Tự fix import + copy sang aidl_property
 """
 
 import os
@@ -50,11 +50,11 @@ if not os.path.exists(main_file):
         print("❌ Không tìm thấy file gốc!")
         sys.exit(1)
 
-# Đọc file gốc
+# Đọc file
 with open(main_file, "r", encoding="utf-8") as f:
     content = f.read()
 
-# Đảm bảo có đầy đủ import
+# Fix import nếu thiếu
 if "VehicleArea" not in content or "VehiclePropertyGroup" not in content:
     header = """package android.hardware.automotive.vehicle;
 
@@ -62,7 +62,6 @@ import android.hardware.automotive.vehicle.VehicleArea;
 import android.hardware.automotive.vehicle.VehiclePropertyGroup;
 import android.hardware.automotive.vehicle.VehiclePropertyType;
 """
-    # Giữ comment license nếu có
     if content.startswith("/*"):
         license_end = content.find("*/") + 2
         content = content[:license_end] + "\n\n" + header + content[license_end:]
@@ -110,6 +109,8 @@ aidl_property_file = os.path.join(aidl_property_dir, "VehicleProperty.aidl")
 if os.path.exists(aidl_property_dir):
     shutil.copy2(main_file, aidl_property_file)
     print(f"📋 Đã copy sang aidl_property: {aidl_property_file}")
+else:
+    print("⚠️ Không tìm thấy thư mục aidl_property")
 
 print(f"\n✅ Merge hoàn tất! ({total_added} properties)")
 print("Done.")
