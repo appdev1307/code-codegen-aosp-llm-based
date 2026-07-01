@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Merge custom VehicleProperty*.aidl - Không xóa file custom
+Giữ nguyên full header + import
 """
 
 import os
@@ -39,7 +40,7 @@ main_file = os.path.join(AIDL_DIR, "VehicleProperty.aidl")
 
 print(f"🔄 Đang merge {len(custom_files)} file custom vào {main_file}\n")
 
-# Nếu chưa có file gốc thì copy từ source
+# Copy file gốc nếu chưa có
 if not os.path.exists(main_file):
     source_main = "/home/nguyenngoctam1307/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl"
     if os.path.exists(source_main):
@@ -49,10 +50,14 @@ if not os.path.exists(main_file):
         print("❌ Không tìm thấy file gốc!")
         sys.exit(1)
 
+# Đọc file gốc (giữ nguyên header + import)
 with open(main_file, "r", encoding="utf-8") as f:
     content = f.read()
 
-content = content.rstrip("}\n ") + "\n\n"
+# Tìm vị trí đóng enum và chèn custom properties
+if content.strip().endswith("}"):
+    content = content.rstrip("}\n ") + "\n\n"
+
 content += "    // ==================================================\n"
 content += "    // Vendor / Custom Properties\n"
 content += "    // ==================================================\n\n"
@@ -63,20 +68,26 @@ property_pattern = re.compile(r'^\s*[A-Za-z0-9_]+\s*=')
 for filepath in custom_files:
     filename = os.path.basename(filepath)
     print(f"📄 Đang merge: {filename}")
+    
     count = 0
     inside = False
+    
     with open(filepath, encoding="utf-8") as src:
         for line in src:
             s = line.strip()
             if s.startswith("enum "):
                 inside = True
                 continue
-            if not inside or s in ("{", "}", "};", ""):
+            if not inside:
                 continue
+            if s in ("{", "}", "};", ""):
+                continue
+            
             content += line
             if property_pattern.match(line):
                 count += 1
                 total_added += 1
+    
     content += "\n"
     print(f"   → Đã thêm {count} properties")
 
