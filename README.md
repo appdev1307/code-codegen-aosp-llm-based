@@ -596,6 +596,7 @@ clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto --force
 
 python3 ~/merge_vehicle_property.py ~/output_c4_minimal/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
+rm ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl
 
 #cp \
 #hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl \
@@ -616,17 +617,13 @@ m clean android.hardware.automotive.vehicle@V3-vss-service
 
 # 2. Rebuild the AIDL interface (this generates the headers)
 m hardware/interfaces/automotive/vehicle/aidl -j$(nproc)
-m android.hardware.automotive.vehicle.property-update-api
-m android.hardware.automotive.vehicle-V3-ndk-source -j$(nproc)
+m -j$(nproc) android.hardware.automotive.vehicle-V3-ndk
 
 # 3. Build service
-m -j$(nproc) android.hardware.automotive.vehicle-V3-ndk
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 
-
-
-touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.cpp
-touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.h
+#touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.cpp
+#touch ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleHardware.h
 
 rm -f out/target/product/vsoc_x86_64_only/
 m -j$(nproc) init_bootimage vendor_bootimage bootimage
