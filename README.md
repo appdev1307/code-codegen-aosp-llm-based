@@ -609,9 +609,6 @@ rm -rf out
 m android.hardware.automotive.vehicle-update-api
 m android.hardware.automotive.vehicle.property-update-api
 
-# if there are cyclic reset, run the below again
-m -j$(nproc)
-
 # 2. Rebuild the AIDL interface (this generates the headers)
 m hardware/interfaces/automotive/vehicle/aidl -j$(nproc)
 
@@ -626,12 +623,16 @@ cd ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/
 
 m -j$(nproc) android.hardware.automotive.vehicle-V3-ndk
 
+
 grep "VEHICLE_CHILDREN" out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-V3-ndk-source/gen/include/aidl/android/hardware/automotive/vehicle/VehicleProperty.h | head -3
 
 # 3. Build service
 # action: frozen  to true in hardware/interfaces/automotive/vehicle/aidl/Android.bp
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 m android.hardware.automotive.vehicle.property-V3-ndk
+
+# if there are cyclic reset, run the below again
+m -j$(nproc)
 
 rm -f out/target/product/vsoc_x86_64_only/
 m -j$(nproc) init_bootimage vendor_bootimage bootimage
