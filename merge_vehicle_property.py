@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Merge custom VehicleProperty*.aidl - Không xóa file custom
-Giữ nguyên full header + import
+Merge custom VehicleProperty*.aidl - Final Version
+Giữ header + import, không xóa file
 """
 
 import os
@@ -45,19 +45,32 @@ if not os.path.exists(main_file):
     source_main = "/home/nguyenngoctam1307/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl"
     if os.path.exists(source_main):
         shutil.copy2(source_main, main_file)
-        print("📋 Đã copy VehicleProperty.aidl gốc từ source.")
+        print("📋 Đã copy file gốc từ source.")
     else:
         print("❌ Không tìm thấy file gốc!")
         sys.exit(1)
 
-# Đọc file gốc (giữ nguyên header + import)
+# Đọc file gốc
 with open(main_file, "r", encoding="utf-8") as f:
     content = f.read()
 
-# Tìm vị trí đóng enum và chèn custom properties
-if content.strip().endswith("}"):
-    content = content.rstrip("}\n ") + "\n\n"
+# Đảm bảo có đầy đủ import
+if "VehicleArea" not in content or "VehiclePropertyGroup" not in content:
+    header = """package android.hardware.automotive.vehicle;
 
+import android.hardware.automotive.vehicle.VehicleArea;
+import android.hardware.automotive.vehicle.VehiclePropertyGroup;
+import android.hardware.automotive.vehicle.VehiclePropertyType;
+"""
+    # Giữ comment license nếu có
+    if content.startswith("/*"):
+        license_end = content.find("*/") + 2
+        content = content[:license_end] + "\n\n" + header + content[license_end:]
+    else:
+        content = header + content
+
+# Thêm custom properties
+content = content.rstrip("}\n ") + "\n\n"
 content += "    // ==================================================\n"
 content += "    // Vendor / Custom Properties\n"
 content += "    // ==================================================\n\n"
@@ -68,26 +81,20 @@ property_pattern = re.compile(r'^\s*[A-Za-z0-9_]+\s*=')
 for filepath in custom_files:
     filename = os.path.basename(filepath)
     print(f"📄 Đang merge: {filename}")
-    
     count = 0
     inside = False
-    
     with open(filepath, encoding="utf-8") as src:
         for line in src:
             s = line.strip()
             if s.startswith("enum "):
                 inside = True
                 continue
-            if not inside:
+            if not inside or s in ("{", "}", "};", ""):
                 continue
-            if s in ("{", "}", "};", ""):
-                continue
-            
             content += line
             if property_pattern.match(line):
                 count += 1
                 total_added += 1
-    
     content += "\n"
     print(f"   → Đã thêm {count} properties")
 
@@ -105,4 +112,4 @@ if os.path.exists(aidl_property_dir):
     print(f"📋 Đã copy sang aidl_property: {aidl_property_file}")
 
 print(f"\n✅ Merge hoàn tất! ({total_added} properties)")
-print("Done. (Không xóa file custom)")
+print("Done.")
