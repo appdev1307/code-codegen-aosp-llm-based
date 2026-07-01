@@ -5,6 +5,10 @@ Merge custom VehicleProperty*.aidl into VehicleProperty.aidl
 
 Usage:
     python3 merge_vehicle_property.py <aidl_directory>
+
+Note:
+cd ~/aosp-14-auto
+git restore hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl    
 """
 
 import os
