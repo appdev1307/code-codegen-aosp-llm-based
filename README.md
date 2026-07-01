@@ -592,7 +592,7 @@ restore_aosp
 clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto --force
 
-python3 ~/merge_vehicle_property.py ~/output_c4_minimal/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle
+python3 ~/merge_vehicle_property.py ~/output_c4_minimal/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
 
 cp \
 hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl \
