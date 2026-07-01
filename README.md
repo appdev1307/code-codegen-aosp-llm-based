@@ -536,9 +536,12 @@ restore_aosp() {
          -name "*.bak.*" -delete 2>/dev/null || true
 
     # 6. Restore VehicleProperty
-    cd hardware/interfaces/automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/
-    git checkout VehicleProperty.aidl
-    cd ~/aosp-14-auto 
+    rm -rf hardware/interfaces/automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl
+    rm -rf hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl
+    cd ~/aosp-14-auto/hardware/interfaces
+    git checkout HEAD -- automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl
+    cd ~/aosp-14-auto
+
 
     echo "✓ AOSP tree restored (emulator VHAL is the default again)"
 }
