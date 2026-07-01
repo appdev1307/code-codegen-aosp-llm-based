@@ -605,6 +605,7 @@ rm ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/android/hardware/a
 rm -rf out
 
 # Update API (new .aidl files require an API bump)
+# update current view
 m android.hardware.automotive.vehicle-update-api
 m android.hardware.automotive.vehicle.property-update-api
 
@@ -617,13 +618,20 @@ m hardware/interfaces/automotive/vehicle/aidl -j$(nproc)
 # copy files from current to V3 frozen
 cp hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/current/android/hardware/automotive/vehicle/VehicleProperty.aidl \
    hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/3/android/hardware/automotive/vehicle/VehicleProperty.aidl
-# Update frozen  to true in hardware/interfaces/automotive/vehicle/aidl_property/Android.bp  
+# action: Update frozen  to true in hardware/interfaces/automotive/vehicle/aidl_property/Android.bp  
+
+# action: update harsh
+cd ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/3
+{ find ./ -name "*.aidl" -print0 | LC_ALL=C sort -z | xargs -0 sha1sum && echo 2; } | sha1sum | cut -d " " -f 1 | tee .hash
+
 m -j$(nproc) android.hardware.automotive.vehicle-V3-ndk
 
 grep "VEHICLE_CHILDREN" out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-V3-ndk-source/gen/include/aidl/android/hardware/automotive/vehicle/VehicleProperty.h | head -3
 
 # 3. Build service
+# action: frozen  to true in hardware/interfaces/automotive/vehicle/aidl/Android.bp
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
+m android.hardware.automotive.vehicle.property-V3-ndk
 
 rm -f out/target/product/vsoc_x86_64_only/
 m -j$(nproc) init_bootimage vendor_bootimage bootimage
