@@ -480,7 +480,6 @@ gcloud storage cp gs://aosp-thesis-temp/output_c4_minimal.zip ~/
 curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/apply_aosp14_fixes.sh
 chmod +x ~/apply_aosp14_fixes.sh
 
-
 curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/merge_vehicle_property.py
 chmod +x ~/merge_vehicle_property.py
 
@@ -536,7 +535,7 @@ restore_aosp() {
     find hardware/interfaces/automotive/vehicle/aidl/impl/ \
          -name "*.bak.*" -delete 2>/dev/null || true
 
-    # 6. Restore
+    # 6. Restore VehicleProperty
     cd hardware/interfaces/automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/
     git checkout VehicleProperty.aidl
     cd ~/aosp-14-auto 
