@@ -98,7 +98,7 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        #pragma once
        #include <IVehicleHardware.h>
        #include <VehicleHalTypes.h>
-       #include <aidl/android/hardware/automotive/vehicle/VehicleProperty{Domain}.h>
+       #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
        #include <vector>
        #include <memory>
 
@@ -130,7 +130,7 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
 
        std::vector<VehiclePropConfig> VehicleHalService{Domain}::getAllPropertyConfigs() const {
            return {
-               {.prop = static_cast<int32_t>(VehicleProperty{Domain}::VEHICLE_CHILDREN_...),
+               {.prop = static_cast<int32_t>(VehicleProperty::VEHICLE_CHILDREN_...),
                 .access = VehiclePropertyAccess::READ},
            };
        }
@@ -150,7 +150,7 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        } // namespace android::hardware::automotive::vehicle
 
     getAllPropertyConfigs() MUST use enum constant names from AIDL enum in properties field:
-       {.prop = static_cast<int32_t>(VehiclePropertyAdas::VEHICLE_CHILDREN_ADAS_...),
+       {.prop = static_cast<int32_t>(VehicleProperty::VEHICLE_CHILDREN_ADAS_...),
         .access = VehiclePropertyAccess::READ_WRITE}
 
     NEVER output markdown fences, no extra explanation.
@@ -169,7 +169,7 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
     properties: str = dspy.InputField(desc="List of VSS properties with name, type, access, and AIDL enum")
     aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples")
 
-    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, include VehicleProperty{Domain}.h")
+    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, include VehicleProperty.h")
     cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp — MUST include own .h, namespace wrapper, enum names in getAllPropertyConfigs()")
     reasoning: str = dspy.OutputField(desc="Brief reasoning about class name and prop IDs used")
 
@@ -188,7 +188,7 @@ class CppSkeletonSignature(dspy.Signature):
        #pragma once
        #include <IVehicleHardware.h>
        #include <VehicleHalTypes.h>
-       #include <aidl/android/hardware/automotive/vehicle/VehicleProperty{Domain}.h>
+       #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
        #include <vector>
        #include <memory>
 
@@ -258,7 +258,7 @@ class CppSkeletonSignature(dspy.Signature):
     property_count: str = dspy.InputField(desc="Total number of properties this domain has (for context only — entries are generated separately)")
     aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples")
 
-    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, include VehicleProperty{Domain}.h")
+    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, include VehicleProperty.h")
     cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp with the /*__PROPERTY_ENTRIES_PLACEHOLDER__*/ marker inside getAllPropertyConfigs()")
     reasoning: str = dspy.OutputField(desc="Brief reasoning about class name used")
 
@@ -273,7 +273,7 @@ class CppPropertyEntriesSignature(dspy.Signature):
     return statement, no markdown fences, no explanation.
 
     Each entry MUST look exactly like this (one per property, comma-terminated):
-       {.prop = static_cast<int32_t>(VehicleProperty{Domain}::PROPERTY_NAME),
+       {.prop = static_cast<int32_t>(VehicleProperty::PROPERTY_NAME),
         .access = VehiclePropertyAccess::READ},
 
     Use VehiclePropertyAccess::READ, ::WRITE, or ::READ_WRITE based on the
@@ -303,8 +303,8 @@ class CppVehicleAssertions(dspy.Module):
       2. cpp_impl missing '#include "VehicleHalService{Domain}.h"'
       3. cpp_header / cpp_impl missing the
          'namespace android::hardware::automotive::vehicle { ... }' wrapper
-      4. cpp_impl missing the domain's AIDL enum header
-         (#include <aidl/.../VehicleProperty{Domain}.h>)
+      4. cpp_impl missing the unified AIDL enum header
+         (#include <aidl/.../VehicleProperty.h>)
     """
 
     _NS_OPEN = "namespace android::hardware::automotive::vehicle {"
@@ -326,10 +326,9 @@ class CppVehicleAssertions(dspy.Module):
 
     @staticmethod
     def _aidl_header_path(domain: str) -> str:
-        return (
-            "aidl/android/hardware/automotive/vehicle/VehicleProperty"
-            f"{domain.strip().capitalize()}.h"
-        )
+        # All custom VSS properties are merged into the single VehicleProperty.aidl
+        # in aidl_property/ on the build system — per-domain headers do NOT exist.
+        return "aidl/android/hardware/automotive/vehicle/VehicleProperty.h"
 
     # ── Cross-check against the REAL generated AIDL enum ────────────
     # This is the architecture contract: CPP must only reference
@@ -339,8 +338,7 @@ class CppVehicleAssertions(dspy.Module):
     # RAGDSPyArchitectAgent._get_aidl_content()). Without this check,
     # the LLM can "hallucinate" a plausible-looking enum constant name
     # that compiles in its own head but does not exist in the real
-    # enum, producing "no member named X in enum
-    # VehicleProperty{Domain}" at AOSP compile time — the single
+    # enum, producing "no member named X in VehicleProperty enum" at AOSP compile time — the single
     # biggest remaining source of C++ build failures once the
     # structural defects (pragma once, includes, namespace) are fixed.
 
@@ -363,13 +361,15 @@ class CppVehicleAssertions(dspy.Module):
         return {m.group(1) for m in self._AIDL_CONST_RE.finditer(aidl_section)}
 
     def _extract_used_constants(self, impl: str, domain: str) -> set:
-        """Pull every VehicleProperty{Domain}::NAME reference used in
-        cpp_impl via static_cast<int32_t>(VehicleProperty{Domain}::NAME)
-        or any other VehicleProperty{Domain}:: usage."""
-        if not impl or not domain:
+        """Pull every VehicleProperty::NAME reference used in cpp_impl
+        via static_cast<int32_t>(VehicleProperty::NAME) or any other
+        VehicleProperty:: usage. After the aidl_property merge, all
+        properties live in the unified VehicleProperty enum regardless
+        of domain — per-domain VehiclePropertyAdas:: etc. no longer exist.
+        """
+        if not impl:
             return set()
-        enum_name = f"VehicleProperty{domain.strip().capitalize()}"
-        pattern = re.compile(rf"{re.escape(enum_name)}::(\w+)")
+        pattern = re.compile(r"VehicleProperty::(\w+)")
         return {m.group(1) for m in pattern.finditer(impl)}
 
     def _strip_hallucinated_property_blocks(self, impl: str, domain: str,
@@ -377,19 +377,17 @@ class CppVehicleAssertions(dspy.Module):
         """Remove getAllPropertyConfigs() entries that reference a
         hallucinated (non-existent) enum constant, rather than letting
         a single bad name fail the whole file's compilation. Matches
-        the common '{.prop = static_cast<int32_t>(VehicleProperty{Domain}::NAME), ...}'
+        the common '{.prop = static_cast<int32_t>(VehicleProperty::NAME), ...}'
         block pattern and deletes just that one initializer entry.
+        After the aidl_property merge, all properties use VehicleProperty::
+        (not per-domain VehiclePropertyAdas:: etc.).
         """
         if not impl or not hallucinated:
             return impl
-        enum_name = f"VehicleProperty{domain.strip().capitalize()}"
         for name in hallucinated:
-            # Remove a single brace-delimited initializer entry that
-            # references this constant, including a trailing comma if
-            # present. Non-greedy match bounded to one `{...}` block.
             block_pattern = re.compile(
-                r"\{\s*\.prop\s*=\s*static_cast<int32_t>\(" +
-                re.escape(enum_name) + r"::" + re.escape(name) +
+                r"\{\s*\.prop\s*=\s*static_cast<int32_t>\(VehicleProperty::" +
+                re.escape(name) +
                 r"\)[^{}]*\}\s*,?",
                 re.DOTALL,
             )

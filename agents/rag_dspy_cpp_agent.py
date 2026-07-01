@@ -88,7 +88,13 @@ CRITICAL INCLUDES — ALWAYS ADD THESE AT THE TOP OF HEADER FILE:
 #include <vector>
 #include <memory>
 #include <android/log.h>
-#include <aidl/android/hardware/automotive/vehicle/VehicleProperty{Domain}.h>
+#include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
+
+NOTE ON INCLUDES: Use the UNIFIED VehicleProperty.h — NOT per-domain headers.
+All custom VSS properties (ADAS, BODY, CABIN, etc.) are merged into the single
+aidl_property/VehicleProperty.aidl on the build system, so they all live in the
+VehicleProperty enum in VehicleProperty.h. Per-domain headers like
+VehiclePropertyAdas.h or VehiclePropertyBody.h do NOT exist at build time.
 
 NAMESPACE (VERY IMPORTANT - ALWAYS DO THIS):
 - In .h file:
@@ -121,17 +127,17 @@ CLASS NAMING CONVENTION:
   Domain INFOTAINMENT → class VehicleHalServiceInfotainment : public IVehicleHardware
   Domain POWERTRAIN → class VehicleHalServicePowertrain : public IVehicleHardware
 PROP IDs:
-  Use enum constant names from the generated AIDL headers.
-  ALWAYS include the domain header at the top of BOTH .h and .cpp files:
-  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.h> // for ADAS
-  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyBody.h> // for BODY
-  etc.
-  Then use enum names with static_cast:
-  {.prop = static_cast<int32_t>(VehiclePropertyAdas::VEHICLE_CHILDREN_ADAS_CHILDREN_EBA_CHILDREN_ISENABLED),
+  Use enum constant names from the UNIFIED VehicleProperty enum.
+  ALWAYS add this single include at the top of BOTH .h and .cpp files:
+  #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
+  Then use VehicleProperty:: enum prefix with static_cast:
+  {.prop = static_cast<int32_t>(VehicleProperty::VEHICLE_CHILDREN_ADAS_CHILDREN_EBA_CHILDREN_ISENABLED),
    .access = VehiclePropertyAccess::READ_WRITE}
   The enum names come from the AIDL enum provided in the properties section.
   Do NOT use raw hex values like 0x1000 — those are 16-bit raw values, not valid VHAL prop IDs.
   Do NOT use placeholder IDs like 0x12345678.
+  Do NOT use per-domain enum prefixes like VehiclePropertyAdas:: or VehiclePropertyBody::.
+  ALL properties across ALL domains use VehicleProperty:: prefix.
 HEADER FILE (VehicleHalService{Domain}.h):
   Declare class VehicleHalService{Domain} : public IVehicleHardware
   with getAllPropertyConfigs(), getValues(), setValues() etc.
@@ -145,7 +151,7 @@ IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp):
  
   std::vector<VehiclePropConfig> VehicleHalService{Domain}::getAllPropertyConfigs() const {
       return {
-          {.prop = static_cast<int32_t>(VehicleProperty{Domain}::VEHICLE_CHILDREN_...), ...},
+          {.prop = static_cast<int32_t>(VehicleProperty::VEHICLE_CHILDREN_...), ...},
       };
   }
   // ... other method implementations
@@ -182,6 +188,9 @@ FORBIDDEN:
   #include <binder/AServiceManager.h> — wrong, use <android/binder_manager.h>
   #include <aidl/android/hardware/automotive/vehicle/IVehicleHardware.h> — wrong path, use <IVehicleHardware.h>
   #include <aidl/android/hardware/automotive/vehicle/DefaultVehicleHal.h> — wrong path, use <DefaultVehicleHal.h>
+  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyAdas.h> — does NOT exist, use VehicleProperty.h
+  #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyBody.h> — does NOT exist, use VehicleProperty.h
+  VehiclePropertyAdas:: | VehiclePropertyBody:: | VehiclePropertyCabin:: — use VehicleProperty:: instead
   HIDL_FETCH_* | Return<> | BnVehicle | BnIVehicle | .valueType | sync getValues
   aidlvhal:: prefix — use namespace directly via using namespace
 NEVER wrap output in markdown code fences (``` or ```cpp) — emit raw C++ only.
