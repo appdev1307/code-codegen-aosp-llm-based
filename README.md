@@ -588,11 +588,15 @@ restore_aosp
 clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto --force
 python3 ~/merge_vehicle_property.py hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle
+cp \
+hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl \
+hardware/interfaces/automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl
 
 rm -rf out
 
 # Update API (new .aidl files require an API bump)
 m android.hardware.automotive.vehicle-update-api
+m android.hardware.automotive.vehicle.property-update-api
 
 # if there are cyclic reset, run the below again
 m -j$(nproc)
@@ -602,10 +606,11 @@ rm -rf out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl/andr
 m clean android.hardware.automotive.vehicle@V3-vss-service
 
 # 2. Rebuild the AIDL interface (this generates the headers)
+m hardware/interfaces/automotive/vehicle/aidl -j$(nproc)
+m android.hardware.automotive.vehicle.property-update-api
 m android.hardware.automotive.vehicle-V3-ndk-source -j$(nproc)
 
 # 3. Build service
-mmm hardware/interfaces/automotive/vehicle/aidl -j$(nproc)
 m -j$(nproc) android.hardware.automotive.vehicle-V3-ndk
 m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 
