@@ -594,9 +594,9 @@ clean_verify
 
 python3 ~/merge_vehicle_property.py ~/output_c4_minimal/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
 
-cp \
-hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl \
-hardware/interfaces/automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl
+#cp \
+#hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl \
+#hardware/interfaces/automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl
 
 rm -rf out
 
