@@ -480,6 +480,10 @@ gcloud storage cp gs://aosp-thesis-temp/output_c4_minimal.zip ~/
 curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/apply_aosp14_fixes.sh
 chmod +x ~/apply_aosp14_fixes.sh
 
+
+curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/merge_vehicle_property.py
+chmod +x ~/merge_vehicle_property.py
+
 unzip ~/output_c4_feedback.zip -d ~/output_c4
 unzip ~/output_c5.zip -d ~/output_c5
 unzip ~/output_c4_minimal.zip -d ~/output_c4_minimal
@@ -583,6 +587,7 @@ clean_verify
 restore_aosp
 clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto --force
+python3 ~/merge_vehicle_property.py hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle
 
 rm -rf out
 

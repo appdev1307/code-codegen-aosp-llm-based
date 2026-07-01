@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Merge VehicleProperty*.aidl -> VehicleProperty.aidl
-Compatible with Android 14
+Merge custom VehicleProperty*.aidl into VehicleProperty.aidl
+(Android 14)
 
 Usage:
     python3 merge_vehicle_property.py <aidl_directory>
@@ -9,6 +9,8 @@ Usage:
 
 import os
 import glob
+import shutil
+import re
 import sys
 
 if len(sys.argv) != 2:
@@ -21,30 +23,46 @@ if not os.path.isdir(AIDL_DIR):
     print(f"Directory not found: {AIDL_DIR}")
     sys.exit(1)
 
-# ---------------------------------------------------------------------
-# Collect input files
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Files NOT to merge (Android built-in enums)
+# ------------------------------------------------------------------
 
-files = sorted(glob.glob(os.path.join(AIDL_DIR, "VehicleProperty*.aidl")))
+EXCLUDE = {
+    "VehicleProperty.aidl",
+    "VehiclePropertyAccess.aidl",
+    "VehiclePropertyStatus.aidl",
+    "VehiclePropertyChangeMode.aidl",
+}
 
-# Skip output file if already exists
 files = [
-    f for f in files
-    if os.path.basename(f) != "VehicleProperty.aidl"
+    f for f in sorted(glob.glob(os.path.join(AIDL_DIR, "VehicleProperty*.aidl")))
+    if os.path.basename(f) not in EXCLUDE
 ]
 
 if not files:
-    print("No VehicleProperty*.aidl files found.")
+    print("No custom VehicleProperty*.aidl files found.")
     sys.exit(1)
 
 output = os.path.join(AIDL_DIR, "VehicleProperty.aidl")
 
-print(f"Merging {len(files)} files...")
-print()
+# ------------------------------------------------------------------
+# Backup old file
+# ------------------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# Write output
-# ---------------------------------------------------------------------
+if os.path.exists(output):
+    backup = output + ".bak"
+    shutil.copy2(output, backup)
+    print(f"Backup created: {backup}")
+
+    os.remove(output)
+    print("Old VehicleProperty.aidl removed.")
+
+print()
+print(f"Merging {len(files)} files...\n")
+
+property_pattern = re.compile(r'^\s*[A-Za-z0-9_]+\s*=')
+
+total = 0
 
 with open(output, "w", encoding="utf-8") as out:
 
@@ -55,8 +73,6 @@ with open(output, "w", encoding="utf-8") as out:
 enum VehicleProperty {
 
 """)
-
-    total = 0
 
     for filepath in files:
 
@@ -69,45 +85,42 @@ enum VehicleProperty {
         out.write(f"    // {group}\n")
         out.write(f"    // ==================================================\n")
 
-        inside_enum = False
+        inside = False
         count = 0
 
         with open(filepath, "r", encoding="utf-8") as src:
 
             for line in src:
 
-                stripped = line.strip()
+                s = line.strip()
 
-                # Start enum
-                if stripped.startswith("enum "):
-                    inside_enum = True
+                if s.startswith("enum "):
+                    inside = True
                     continue
 
-                if not inside_enum:
+                if not inside:
                     continue
 
-                # Skip braces
-                if stripped in ("{", "}", "};"):
+                if s in ("{", "}", "};"):
                     continue
 
-                # Skip blank lines
-                if stripped == "":
+                if s == "":
                     continue
 
                 out.write(line)
 
-                # Count property lines only
-                if "=" in stripped and stripped.endswith(","):
+                if property_pattern.match(line):
                     count += 1
                     total += 1
 
         out.write("\n")
 
+        print(f"      {count} properties")
+
     out.write("}\n")
 
-print()
-print("======================================")
-print(f"Output : {output}")
-print(f"Files  : {len(files)}")
-print(f"Entries: {total}")
+print("\n======================================")
+print(f"Output     : {output}")
+print(f"Files      : {len(files)}")
+print(f"Properties : {total}")
 print("Done.")
