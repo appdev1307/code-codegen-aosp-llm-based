@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Merge custom VehicleProperty*.aidl into VehicleProperty.aidl
-Android 14
-
-Usage:
-    python3 merge_vehicle_property.py <aidl_directory>
+Merge custom VehicleProperty*.aidl an toàn + copy sang aidl_property
+**KHÔNG xóa** file custom
 """
+
 import os
 import glob
 import re
@@ -14,7 +12,6 @@ import shutil
 
 if len(sys.argv) != 2:
     print("Usage: python3 merge_vehicle_property_safe.py <aidl_directory>")
-    print("Example: python3 merge_vehicle_property_safe.py hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle")
     sys.exit(1)
 
 AIDL_DIR = sys.argv[1]
@@ -36,7 +33,7 @@ custom_files = [
 ]
 
 if not custom_files:
-    print("ℹ️ Không tìm thấy file custom VehicleProperty*.aidl nào.")
+    print("ℹ️ Không tìm thấy file custom.")
     sys.exit(0)
 
 main_file = os.path.join(AIDL_DIR, "VehicleProperty.aidl")
@@ -89,13 +86,7 @@ content += "}\n"
 with open(main_file, "w", encoding="utf-8") as f:
     f.write(content)
 
-# Xóa file custom
-print("\n🗑️ Xóa file custom...")
-for f in custom_files:
-    os.remove(f)
-    print(f"   - {os.path.basename(f)}")
-
-print(f"\n✅ Merge hoàn tất! Tổng {total_added} properties.")
+print(f"\n✅ Merge hoàn tất! Tổng {total_added} properties custom.")
 
 # Copy sang aidl_property
 aidl_property_dir = AIDL_DIR.replace("/aidl/", "/aidl_property/")
@@ -103,8 +94,8 @@ aidl_property_file = os.path.join(aidl_property_dir, "VehicleProperty.aidl")
 
 if os.path.exists(aidl_property_dir):
     shutil.copy2(main_file, aidl_property_file)
-    print(f"📋 Đã copy sang: {aidl_property_file}")
+    print(f"📋 Đã copy sang aidl_property: {aidl_property_file}")
 else:
     print("⚠️ Không tìm thấy thư mục aidl_property")
 
-print("Done.")
+print("Done. (Không xóa bất kỳ file custom nào)")
