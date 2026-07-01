@@ -53,9 +53,18 @@ C3/C4 generate a from-scratch `IVehicleHardware` implementation that wraps insid
 | C2 Adaptive | `multi_main_adaptive.py` | Thompson Sampling prompt selection | 0.803 |
 | C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | 0.796 * |
 | C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop | pending * |
+| C4 Minimal | `gen_hal_minimal_c4.py` | Lightweight C4 (AIDL+CPP+SELinux only) | aidl=1.050, cpp=1.000, selinux=1.000 |
 
 \* Scores from current re-run with fixed pipeline (cpp metric, architect 4-file output, build agent V3-ndk).
-| C5 VTS+HMI | `multi_main_c5.py` | VTS test generation + HMI app; scored separately | — |
+| C5 VTS+HMI | `multi_main_c5.py` | VTS test + HMI app; reads from C4/C4-minimal output | — |
+
+**Key pipeline fixes applied across C3/C4/C4-minimal:**
+- 32-bit AAOS property ID encoding (`_aaos_encode()` in AIDL agent)
+- CPP chunked generation (`CHUNK_SIZE=30`) — prevents `max_tokens` truncation for large domains (Body=84, Cabin=168, Powertrain=120 properties)
+- Markdown fence stripping — LLM occasionally wraps output in ` ```cpp ``` ` despite contract
+- `validate_cpp()` resolves `#include <IVehicleHardware.h>` via filesystem instead of raw text prepend — eliminates spurious `score=0.730` on all domains
+- `_score_and_log()` in C3/C4 combines `.h + .cpp` before clang++ validate — eliminates false `"use of undeclared identifier"` in final scoring
+- `VssVehicleHardware.cpp` uses unified `#include <aidl/.../VehicleProperty.h>` (compatible with merged `aidl_property/VehicleProperty.aidl` on GCP VM)
 
 ```
         C1 (baseline LLM)
@@ -236,14 +245,21 @@ else:
     print(f"✓ C3 cpp passed AIDL V3 check ({len(cpp_files)} file(s))")
 PYCHECK
 
+# ── C4 Minimal (alternative to full C4) ────────────────────────
+# Faster: generates only AIDL + CPP + SELinux (no architect, no full feedback loop)
+# Output: output_c4_minimal/  — valid input for C5 and apply_aosp14_fixes.sh
+python gen_hal_minimal_c4.py
+
 # ── C4: Feedback Loop ──────────────────────────────────────────
 python multi_main_c4_feedback.py
 cp -r output_c4_feedback/ output_c4_feedback_backup/
 
 # ── C5: VTS + HMI Generation ───────────────────────────────────
-# Reads C4 output automatically — no GCS download needed.
-# Generates VTS test source + HMI app on Colab.
+# Reads C4 or C4-minimal output automatically.
+# C4_OUTPUT_DIR auto-detects: output_c4_feedback/ → output_c4_minimal/
 python multi_main_c5.py
+# Or specify explicitly:
+# python multi_main_c5.py --c4-dir output_c4_minimal
 # Outputs:
 #   output_c5/vts/VtsHalAutomotiveVehicleVss.cpp
 #   output_c5/vts/Android.bp
@@ -508,14 +524,13 @@ lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 restore_aosp() {
     cd ~/aosp-14-auto
 
-    # 1. Remove generated AIDL files (not tracked by git)
+    # 1. Remove generated custom AIDL files (not tracked by git)
     rm -f hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty{Adas,Body,Cabin,Chassis,Hvac,Infotainment,Powertrain}.aidl
 
     # 2. Remove generated VSS impl directory
     rm -rf hardware/interfaces/automotive/vehicle/aidl/impl/vss/
 
-    # 3. Remove SELinux files added by apply_aosp14_fixes.sh [3/5]
-    #    SEPOL_DEST = $AOSP_ROOT/system/sepolicy/vendor  (not cuttlefish/shared/sepolicy)
+    # 3. Remove SELinux files added by apply script
     rm -f system/sepolicy/vendor/hal_vehicle_vss.te \
           system/sepolicy/vendor/vehicle_hal_*.te \
           system/sepolicy/vendor/file_contexts_vss
@@ -530,18 +545,25 @@ restore_aosp() {
         fi
     done
 
-    # 5. Remove stale .bak files left by apply_aosp14_fixes.sh
+    # 5. Remove stale .bak files
     rm -f device/google/cuttlefish/shared/auto/device_vendor.mk.bak*
     find hardware/interfaces/automotive/vehicle/aidl/impl/ \
          -name "*.bak.*" -delete 2>/dev/null || true
 
-    # 6. Restore VehicleProperty
-    rm -rf hardware/interfaces/automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl
-    rm -rf hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl
+    # 6. Restore aidl_property files modified by merge step
+    #    (apply_aosp14_fixes.sh [2] modifies VehicleProperty.aidl in aidl_property/,
+    #     copies to aidl_property/aidl_api/3/ and current/, and updates .hash)
     cd ~/aosp-14-auto/hardware/interfaces
-    git checkout HEAD -- automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl
+    git checkout HEAD -- \
+        automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl \
+        automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/3/android/hardware/automotive/vehicle/VehicleProperty.aidl \
+        automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/current/android/hardware/automotive/vehicle/VehicleProperty.aidl \
+        2>/dev/null || true
+    # Restore .hash (if it was tracked; if not, the build will recompute it)
+    git checkout HEAD -- \
+        automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/3/.hash \
+        2>/dev/null || true
     cd ~/aosp-14-auto
-
 
     echo "✓ AOSP tree restored (emulator VHAL is the default again)"
 }
@@ -572,105 +594,47 @@ clean_verify() {
 
 ### Step 6 — Apply Generated Files and Full Build
 
-`apply_aosp14_fixes.sh` handles integration as **copy-only** — it moves the pipeline's
-generated artifacts into the AOSP tree and does not author any of them. The C3/C4 agents
-(and VssGlueAgent) must have already produced `aidl/impl/vss/Android.bp`; Soong then
-auto-discovers it without manual registration. If that `Android.bp` is missing from the
-pipeline output, the script copies nothing for it and the VSS module will not build.
+`apply_aosp14_fixes.sh` handles the complete integration in one script — copy AIDL/C++/glue artifacts, merge custom properties into `aidl_property/VehicleProperty.aidl`, update the frozen API hash (version 3), configure SELinux, and point Cuttlefish at the VSS service.
 
 ```bash
 cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-# Apply ALL tree changes: copy AIDL/C++/glue, write device-tree SELinux,
-# point LOCAL_VHAL_PRODUCT_PACKAGE at VSS, apply one-time AOSP 14 fixes.
-# (This replaces the old update_vss_selinux.sh — that helper is no longer needed.)
+# 1. Clean previous run
 restore_aosp
 clean_verify
-~/apply_aosp14_fixes.sh ~/output_c4 ~/aosp-14-auto --force
 
-# or minimal
-restore_aosp
-clean_verify
-~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto --force
+# 2. Apply all fixes (copy + merge + hash update + SELinux + VHAL swap)
+#    The script now handles what previously required running merge_vehicle_property.py
+#    and updating .hash manually — all automated inside [2] step.
+~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto
 
-python3 ~/merge_vehicle_property.py ~/output_c4_minimal/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/
-rm ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl
-
-#cp \
-#hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/VehicleProperty.aidl \
-#hardware/interfaces/automotive/vehicle/aidl_property/android/hardware/automotive/vehicle/VehicleProperty.aidl
-
-rm -rf out
-
-# Update API (new .aidl files require an API bump)
-# update current view
-m android.hardware.automotive.vehicle-update-api
-m android.hardware.automotive.vehicle.property-update-api
-
-# 2. Rebuild the AIDL interface (this generates the headers)
-m hardware/interfaces/automotive/vehicle/aidl -j$(nproc)
-
-# copy files from current to V3 frozen
-cp hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/current/android/hardware/automotive/vehicle/VehicleProperty.aidl \
-   hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/3/android/hardware/automotive/vehicle/VehicleProperty.aidl
-# action: Update frozen  to true in hardware/interfaces/automotive/vehicle/aidl_property/Android.bp  
-
-# action: update harsh
-cd ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/3
-{ find ./ -name "*.aidl" -print0 | LC_ALL=C sort -z | xargs -0 sha1sum && echo 2; } | sha1sum | cut -d " " -f 1 | tee .hash
-
-m -j$(nproc) android.hardware.automotive.vehicle-V3-ndk
-
-
-grep "VEHICLE_CHILDREN" out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-V3-ndk-source/gen/include/aidl/android/hardware/automotive/vehicle/VehicleProperty.h | head -3
-
-# 3. Build service
-# action: frozen  to true in hardware/interfaces/automotive/vehicle/aidl/Android.bp
-m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
+# 3. Build NDK library (required for VehicleProperty.h with custom properties)
 m android.hardware.automotive.vehicle.property-V3-ndk
 
-# if there are cyclic reset, run the below again
-m -j$(nproc)
+# 4. Verify custom properties are in the generated header
+grep "VEHICLE_CHILDREN" out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-V3-ndk-source/gen/include/aidl/android/hardware/automotive/vehicle/VehicleProperty.h | head -3
 
-rm -f out/target/product/vsoc_x86_64_only/
-m -j$(nproc) init_bootimage vendor_bootimage bootimage
+# 5. Full build
+m -j$(nproc) vendorimage vbmetaimage superimage 2>&1 | tee ~/build_vss.log
 
-# Confirm super is newer than vendor and actually rewritten
-ls -la --time-style=full-iso $ANDROID_PRODUCT_OUT/super.img $ANDROID_PRODUCT_OUT/vendor.img $ANDROID_PRODUCT_OUT/init_bootimage.img
-
-# Offline-verify the binary is really inside the image (saves a boot)
+# Offline verify binary is in the image
 simg2img $ANDROID_PRODUCT_OUT/super.img /tmp/super.raw
 rm -rf /tmp/sc && mkdir -p /tmp/sc
-lpunpack --partition=vendor_a /tmp/super.raw /tmp/sc/   # note: vendor_a, A/B suffix
-grep -a -c 'vehicle@V3-vss-service'  /tmp/sc/vendor_a.img   # must be > 0
-grep -a -c 'vehicle@V3-emulator-service' /tmp/sc/vendor_a.img   # should be 0 after the swap
+lpunpack --partition=vendor_a /tmp/super.raw /tmp/sc/
+grep -a -c 'vehicle@V3-vss-service'    /tmp/sc/vendor_a.img   # must be > 0
+grep -a -c 'vehicle@V3-emulator-service' /tmp/sc/vendor_a.img # should be 0
 ```
 
-> **`apply_aosp14_fixes.sh` patches the tree but does NOT build or launch.** It is
-> copy/patch-only and idempotent, so it's safe to re-run. The build triple and
-> `launch_cvd` above are deliberately separate manual steps — you control when the
-> ~minutes-long build and the VM teardown happen.
-
-`apply_aosp14_fixes.sh` does 6 things (all idempotent, copy/patch-only — no build):
-1. Copy AIDL files → `aidl/android/hardware/automotive/vehicle/`
-2. Copy C++ + glue artifacts → `aidl/impl/vss/` **as-is** (`*.cpp *.h *.bp *.xml *.rc`).
-   The script does **not** generate `Android.bp` — VssGlueAgent (in the pipeline) emits it,
-   and the script only copies it. If the pipeline did not produce `Android.bp`, none is
-   created and the module will not build.
-3. Write SELinux `hal_vehicle_vss.te` + `file_contexts` label into the **Cuttlefish device
-   tree** (`device/google/cuttlefish/shared/sepolicy/vendor/`), and **remove any stale
-   core-tree copy** in `system/sepolicy/vendor/` that would cause `Duplicate declaration`.
-4. Point `LOCAL_VHAL_PRODUCT_PACKAGE` at the VSS service in
-   `device/google/cuttlefish/shared/auto/device_vendor.mk` (this is how Cuttlefish selects
-   its VHAL — not `PRODUCT_PACKAGES`).
-5. One-time AOSP fixes:
-   - Remove conflicting `vintf_fragments` from `vhal/Android.bp` (avoids `IVehicle/default@3` conflict with Cuttlefish emulator service)
-   - Remove stale `vhal-default-service.xml` from `out/` if present
-   - Unfreeze AIDL interface → then `m android.hardware.automotive.vehicle-update-api` (kept unfrozen — sufficient for research use)
-   - Add `android.hardware.automotive.vehicle@4` to `fcm_exclude.cpp` (required for types-only AIDL package)
-6. Disable broken test modules (`sv_2d/3d_session_tests`, `continuous_native_tests`) in `device.mk`.
+> **What `apply_aosp14_fixes.sh` does (all idempotent):**
+> 1. `[1]` Copy custom `VehicleProperty*.aidl` → `aidl/` (removes stale `VehicleProperty.aidl` if present)
+> 2. `[2]` Merge custom properties into `aidl_property/VehicleProperty.aidl`, copy to `current/` and `3/`, recompute `.hash` for frozen version 3
+> 3. `[3]` Copy C++, headers, and VssGlueAgent artifacts → `aidl/impl/vss/`
+> 4. `[4]` Copy SELinux `.te` policies and `file_contexts` labels
+> 5. `[5]` One-time AOSP fixes: remove conflicting `vintf_fragments`, add FCM exclude, set `aidl/Android.bp` `frozen: true`
+> 6. `[6]` Generate `VssProperties.json` runtime config
+> 7. `[7]` Inject `LOCAL_VHAL_PRODUCT_PACKAGE` in Cuttlefish device tree
 
 > **Single source of SELinux policy.** This script now owns the VSS policy entirely and
 > writes it **only** into the Cuttlefish device tree. The old `update_vss_selinux.sh` helper
@@ -962,22 +926,27 @@ code-codegen-aosp-llm-based/
 ├── multi_main_adaptive.py         # C2: Adaptive pipeline
 ├── multi_main_rag_dspy.py         # C3: RAG+DSPy pipeline
 ├── multi_main_c4_feedback.py      # C4: Feedback loop pipeline
-├── multi_main_c5.py               # C5: VTS + HMI generation
+├── gen_hal_minimal_c4.py          # C4-Minimal: lightweight AIDL+CPP+SELinux only
+├── multi_main_c5.py               # C5: VTS + HMI generation (reads C4/C4-minimal)
 ├── agents/
 │   ├── rag_dspy_mixin.py          # RAG+DSPy shared logic
 │   ├── rag_dspy_architect_agent.py
-│   ├── rag_dspy_aidl_agent.py
-│   ├── rag_dspy_cpp_agent.py      # Two classes: RAGDSPyCppAgent (mixin)
-│   │                              #              + RagDspyCppAgent (standalone)
+│   ├── rag_dspy_aidl_agent.py     # 32-bit AAOS ID encoding, chunked generation (CHUNK_SIZE=60)
+│   ├── rag_dspy_cpp_agent.py      # Chunked generation (CHUNK_SIZE=30), markdown-fence strip
+│   │                              # CppSkeletonSignature + CppPropertyEntriesSignature
+│   ├── vss_glue_agent.py          # Generates VssVehicleHardware + Android.bp + SELinux + manifest
+│   │                              # Uses unified VehicleProperty.h (not per-domain headers)
 │   ├── rag_dspy_selinux_agent.py
 │   ├── rag_dspy_backend_agent.py
 │   └── ...
 ├── dspy_opt/
 │   ├── optimizer.py               # MIPROv2 runner (requires optuna)
-│   ├── hal_signatures.py          # DSPy Signatures — ModernCppVehicleHardwareSignature
-│   │                              # uses domain/properties/aosp_context inputs + cpp_impl output
+│   ├── hal_signatures.py          # DSPy Signatures — CppSkeletonSignature,
+│   │                              # CppPropertyEntriesSignature, CppVehicleAssertions
+│   │                              # (auto-fix: pragma once, namespace, AIDL include, hallucination check)
 │   ├── metrics.py
-│   ├── validators.py
+│   ├── validators.py              # validate_cpp() with include-path resolution,
+│   │                              # _reorder_class_decl_first, _build_aidl_enum_stub
 │   └── saved/                     # Optimised programs (delete cpp_program/ after signature change)
 ├── rag/
 │   ├── aosp_indexer.py            # AOSP → ChromaDB (HIDL excluded by path)
@@ -986,29 +955,22 @@ code-codegen-aosp-llm-based/
 ├── dataset/
 │   └── vss.json                   # Vehicle Signal Specification (1571 signals)
 ├── aosp_source/                   # AOSP shallow clones for RAG indexing
-│   ├── hardware/                  # hardware/interfaces at android-14.0.0_r75
-│   ├── sepolicy/
-│   └── car/
 ├── experiments/results/
-│   ├── matched_analysis.md
-│   ├── comparison.json
-│   └── final_analysis.md
-├── apply_aosp14_fixes.sh          # Automated AOSP 14 integration fixes
+├── apply_aosp14_fixes.sh          # Full AOSP integration: copy + merge + hash + SELinux + VHAL swap
+├── merge_vehicle_property.py      # Standalone: merge custom enums into aidl_property/VehicleProperty.aidl
 ├── apply_chroma_fix.py            # ChromaDB singleton patch
 ├── output/                        # C1 output
 ├── output_adaptive/               # C2 output
-├── output_rag_dspy/               # C3 output (includes VssVehicleHardware source)
+├── output_rag_dspy/               # C3 output
 ├── output_c4_feedback/            # C4 output (primary input for C5)
+├── output_c4_minimal/             # C4-Minimal output (also valid input for C5)
 └── output_c5/                     # C5 output
     ├── vts/
-    │   ├── VtsHalAutomotiveVehicleVss.cpp  # Custom VSS VTS tests (500 properties)
+    │   ├── VtsHalAutomotiveVehicleVss.cpp
     │   ├── Android.bp
     │   └── VtsHalAutomotiveVehicleVss.xml
-    ├── hmi_app/                            # HMI app with real CarPropertyManager IDs
-    │   ├── AndroidManifest.xml
-    │   ├── Android.bp
-    │   └── src/main/
-    └── c5_results.json                     # vts_score + hmi_score
+    ├── hmi_app/
+    └── c5_results.json
 ```
 
 ## License

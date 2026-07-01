@@ -579,7 +579,14 @@ _FILE_PATTERNS = {
 
 def _score_and_log(agent_type: str, fpath: Path) -> float:
     try:
-        code  = fpath.read_text(encoding="utf-8", errors="ignore")
+        code = fpath.read_text(encoding="utf-8", errors="ignore")
+        # For .cpp files, prepend the matching .h so clang++ sees the class
+        # declaration before the out-of-line method definitions — mirrors how
+        # the retry engine passes extra_files=[header] to validate_and_retry_file().
+        if agent_type == "cpp" and fpath.suffix == ".cpp":
+            header_path = fpath.with_suffix(".h")
+            if header_path.exists():
+                code = code + "\n" + header_path.read_text(encoding="utf-8", errors="ignore")
         score = score_file(agent_type, code)
         result = validate(agent_type, code)
         status = "✓" if result.ok else "✗"
