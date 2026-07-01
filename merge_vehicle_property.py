@@ -6,21 +6,21 @@ Android 14
 Usage:
     python3 merge_vehicle_property.py <aidl_directory>
 """
-
 import os
 import glob
 import re
 import sys
+import shutil
 
 if len(sys.argv) != 2:
-    print("Usage:")
-    print("python3 merge_vehicle_property.py <aidl_directory>")
+    print("Usage: python3 merge_vehicle_property_safe.py <aidl_directory>")
+    print("Example: python3 merge_vehicle_property_safe.py hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle")
     sys.exit(1)
 
 AIDL_DIR = sys.argv[1]
 
 if not os.path.isdir(AIDL_DIR):
-    print("Directory not found:", AIDL_DIR)
+    print("❌ Directory not found:", AIDL_DIR)
     sys.exit(1)
 
 EXCLUDE = {
@@ -30,90 +30,81 @@ EXCLUDE = {
     "VehiclePropertyChangeMode.aidl",
 }
 
-files = [
+custom_files = [
     f for f in sorted(glob.glob(os.path.join(AIDL_DIR, "VehicleProperty*.aidl")))
     if os.path.basename(f) not in EXCLUDE
 ]
 
-if not files:
-    print("No custom VehicleProperty*.aidl found.")
+if not custom_files:
+    print("ℹ️ Không tìm thấy file custom VehicleProperty*.aidl nào.")
+    sys.exit(0)
+
+main_file = os.path.join(AIDL_DIR, "VehicleProperty.aidl")
+
+print(f"🔄 Đang merge {len(custom_files)} file custom vào {main_file}\n")
+
+with open(main_file, "r", encoding="utf-8") as f:
+    content = f.read()
+
+if not content.strip().endswith("}"):
+    print("❌ File VehicleProperty.aidl không hợp lệ.")
     sys.exit(1)
 
-output = os.path.join(AIDL_DIR, "VehicleProperty.aidl")
+content = content.rstrip("}\n ") + "\n\n"
+content += "    // ==================================================\n"
+content += "    // Vendor / Custom Properties\n"
+content += "    // ==================================================\n\n"
 
-# Remove old merged file
-if os.path.exists(output):
-    os.remove(output)
-
+total_added = 0
 property_pattern = re.compile(r'^\s*[A-Za-z0-9_]+\s*=')
 
-total = 0
+for filepath in custom_files:
+    filename = os.path.basename(filepath)
+    print(f"📄 Đang merge: {filename}")
+    
+    count = 0
+    inside = False
+    
+    with open(filepath, encoding="utf-8") as src:
+        for line in src:
+            s = line.strip()
+            if s.startswith("enum "):
+                inside = True
+                continue
+            if not inside:
+                continue
+            if s in ("{", "}", "};", ""):
+                continue
+            
+            content += line
+            if property_pattern.match(line):
+                count += 1
+                total_added += 1
+    
+    content += "\n"
+    print(f"   → Đã thêm {count} properties")
 
-print(f"Merging {len(files)} files...\n")
+content += "}\n"
 
-with open(output, "w", encoding="utf-8") as out:
+with open(main_file, "w", encoding="utf-8") as f:
+    f.write(content)
 
-    out.write("""package android.hardware.automotive.vehicle;
-
-@VintfStability
-@Backing(type="int")
-enum VehicleProperty {
-
-""")
-
-    for filepath in files:
-
-        filename = os.path.basename(filepath)
-        group = filename.replace("VehicleProperty", "").replace(".aidl", "")
-
-        print(" -", filename)
-
-        out.write(f"    // ==================================================\n")
-        out.write(f"    // {group}\n")
-        out.write(f"    // ==================================================\n")
-
-        inside = False
-        count = 0
-
-        with open(filepath, encoding="utf-8") as src:
-
-            for line in src:
-
-                s = line.strip()
-
-                if s.startswith("enum "):
-                    inside = True
-                    continue
-
-                if not inside:
-                    continue
-
-                if s in ("{", "}", "};", ""):
-                    continue
-
-                out.write(line)
-
-                if property_pattern.match(line):
-                    count += 1
-                    total += 1
-
-        out.write("\n")
-
-        print(f"   -> {count} properties")
-
-out.write
-
-with open(output, "a", encoding="utf-8") as out:
-    out.write("}\n")
-
-print("\nRemoving intermediate files...")
-
-for f in files:
-    print(" -", os.path.basename(f))
+# Xóa file custom
+print("\n🗑️ Xóa file custom...")
+for f in custom_files:
     os.remove(f)
+    print(f"   - {os.path.basename(f)}")
 
-print("\n====================================")
-print("Output :", output)
-print("Files  :", len(files))
-print("Props  :", total)
+print(f"\n✅ Merge hoàn tất! Tổng {total_added} properties.")
+
+# Copy sang aidl_property
+aidl_property_dir = AIDL_DIR.replace("/aidl/", "/aidl_property/")
+aidl_property_file = os.path.join(aidl_property_dir, "VehicleProperty.aidl")
+
+if os.path.exists(aidl_property_dir):
+    shutil.copy2(main_file, aidl_property_file)
+    print(f"📋 Đã copy sang: {aidl_property_file}")
+else:
+    print("⚠️ Không tìm thấy thư mục aidl_property")
+
 print("Done.")
