@@ -288,28 +288,14 @@ int main() {{
 }}
 """
 
-
 def _generate_android_bp(impl_dir: Optional[str] = None, domains: list[str] = None) -> str:
-    """Generate Android.bp for the VSS VHAL static lib + service binary.
-
-    IMPORTANT: this file is written to
-      hardware/interfaces/automotive/vehicle/aidl/impl/vss/Android.bp
-    while the domain VehicleHalService{Domain}.cpp/.h files live at
-      hardware/interfaces/automotive/vehicle/impl/
-    i.e. THREE directories up and then into impl/ — NOT a sibling dir.
-    Soong resolves `srcs` relative to the Android.bp's own directory, so
-    every domain source must be prefixed with that relative path, and
-    `local_include_dirs` must point there too so
-    `#include "VehicleHalService{Domain}.h"` resolves.
-    """
+    """Generate Android.bp — files are now in the same directory (vss/)"""
     _domains = domains if domains else DOMAINS
-    # Path from aidl/impl/vss/ (where this Android.bp lives) to impl/
-    # (where the domain .cpp/.h files actually are).
-    _DOMAIN_REL_DIR = "../../../impl"
-
+    
     domain_srcs = "\n        ".join(
-        f'"{_DOMAIN_REL_DIR}/VehicleHalService{d.capitalize()}.cpp",' for d in _domains
+        f'"VehicleHalService{d.capitalize()}.cpp",' for d in _domains
     )
+    
     return f"""package {{
     default_applicable_licenses: ["Android-Apache-2.0"],
 }}
@@ -322,7 +308,7 @@ cc_library_static {{
         "VssVehicleHardware.cpp",
         {domain_srcs}
     ],
-    local_include_dirs: ["{_DOMAIN_REL_DIR}"],
+    local_include_dirs: ["."],
     header_libs: ["IVehicleHardware", "VehicleHalUtilHeaders"],
     static_libs: ["android.hardware.automotive.vehicle-V3-ndk"],
     export_include_dirs: ["."],
