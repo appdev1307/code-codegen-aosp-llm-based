@@ -157,9 +157,27 @@ def _score_and_log(agent_type: str, fpath: Path) -> float:
     """
     Score one file using the three-tier metric and log the validator result.
     Returns the blended score (struct + syntax + coverage).
+
+    For CPP impl files (.cpp), the corresponding header (.h) is combined
+    first so clang++ sees the class declaration before the out-of-line
+    method definitions — mirroring gen_hal_minimal_c4.py's _retry_agent
+    which passes extra_files=[header, main_service] to validate().
+    Without this, validate_cpp() receives the impl in isolation and
+    clang reports "use of undeclared identifier 'VehicleHalService{X}'"
+    on every method definition, producing syntax=0.730 regardless of
+    code quality.
     """
     try:
-        code   = fpath.read_text(encoding="utf-8", errors="ignore")
+        code = fpath.read_text(encoding="utf-8", errors="ignore")
+
+        # For .cpp files, prepend the matching .h so the class declaration
+        # is visible to clang during syntax-only validation.
+        if agent_type == "cpp" and fpath.suffix == ".cpp":
+            header_path = fpath.with_suffix(".h")
+            if header_path.exists():
+                header_code = header_path.read_text(encoding="utf-8", errors="ignore")
+                code = code + "\n" + header_code
+
         score  = score_file(agent_type, code)
         result = validate(agent_type, code)
         status = "✓" if result.ok else "✗"
