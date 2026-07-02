@@ -184,12 +184,25 @@ scores = {"aidl": [], "cpp": [], "selinux": []}
 t_total = time.time()
 
 def _get_aidl_content(domain: str) -> str:
-    """Read generated AIDL enum to inject exact prop IDs into CPP prompt."""
-    import glob as _glob
+    """Read generated AIDL enum to inject exact prop IDs into CPP prompt.
+    Rewrites the per-domain enum name (e.g. VehiclePropertyAdas) to
+    VehicleProperty so the LLM generates VehicleProperty::PROP_NAME —
+    the correct prefix after all domains are merged into the single
+    aidl_property/VehicleProperty.aidl on the build system.
+    """
+    import glob as _glob, re as _re
     files = _glob.glob(str(AIDL_OUT / f"VehicleProperty{domain.capitalize()}.aidl"))
-    if files:
-        return "\n=== Generated AIDL enum (use these exact prop IDs) ===\n" + open(files[0], errors="ignore").read()
-    return ""
+    if not files:
+        return ""
+    raw = open(files[0], errors="ignore").read()
+    # Rewrite "enum VehiclePropertyAdas {" → "enum VehicleProperty {"
+    raw = _re.sub(r"\benum\s+VehicleProperty\w+\s*\{", "enum VehicleProperty {", raw)
+    return (
+        "\n=== Generated AIDL enum (use these exact prop IDs) ===\n"
+        "// NOTE: All VSS properties are merged into VehicleProperty in VehicleProperty.h\n"
+        "// Use VehicleProperty::PROP_NAME — NOT VehiclePropertyAdas:: or other per-domain prefixes\n"
+        + raw
+    )
 
 for domain, signal_ids in module_signal_map.items():
     print(f"\n{'='*54}")
