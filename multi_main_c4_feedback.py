@@ -645,7 +645,11 @@ def _generate_one_module(
 
     # ── Step 1: Run architect identically to C3 ───────────────────
     try:
-        agent = RAGDSPyArchitectAgent(**AGENT_CFG, output_root=str(OUTPUT_DIR))
+        agent = RAGDSPyArchitectAgent(
+            **AGENT_CFG,
+            output_root=str(OUTPUT_DIR),
+            enable_chunk_retry=True,   # C4: chunk retry is a C4 contribution
+        )
         agent.run(module_spec)
     except Exception as e:
         print(f" [C4 MODULE {domain}] → architect.run() FAILED: {e}")

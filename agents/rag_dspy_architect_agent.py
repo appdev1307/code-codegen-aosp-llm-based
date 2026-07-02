@@ -67,10 +67,11 @@ class RAGDSPyArchitectAgent:
 
     def __init__(
         self,
-        dspy_programs_dir: str = "dspy_opt/saved",
-        rag_top_k:         int = 3,
-        rag_db_path:       str = "rag/chroma_db",
-        output_root:       str = "output_rag_dspy",
+        dspy_programs_dir:  str  = "dspy_opt/saved",
+        rag_top_k:          int  = 3,
+        rag_db_path:        str  = "rag/chroma_db",
+        output_root:        str  = "output_rag_dspy",
+        enable_chunk_retry: bool = False,
     ):
         # Config for HAL agents — they only take these 3 params
         self._cfg_base = dict(
@@ -78,7 +79,8 @@ class RAGDSPyArchitectAgent:
             rag_top_k=rag_top_k,
             rag_db_path=rag_db_path,
         )
-        self._output_root = Path(output_root)
+        self._output_root       = Path(output_root)
+        self._enable_chunk_retry = enable_chunk_retry
 
     # ─────────────────────────────────────────────────────────────
     # File writing helpers
@@ -314,14 +316,37 @@ class RAGDSPyArchitectAgent:
                 + raw
             )
 
+        # Lightweight spec wrapper that injects the generated AIDL enum
+        # content into to_llm_spec() so a.run() → generate_chunked()
+        # has real property names for both chunking and hallucination
+        # cross-check — identical to gen_hal_minimal_c4.py's _PatchedSpec.
+        class _AIDLPatchedSpec:
+            def __init__(self, spec, aidl_suffix: str):
+                self._spec   = spec
+                self._suffix = aidl_suffix
+            def __getattr__(self, name):
+                return getattr(self._spec, name)
+            def to_llm_spec(self) -> str:
+                return self._spec.to_llm_spec() + self._suffix
+
+        patched_spec = _AIDLPatchedSpec(
+            module_spec,
+            _get_aidl_content(module_spec.domain),
+        )
+
         sub_agents = [
             ("AIDL",    RAGDSPyAIDLAgent,    lambda a: a.run(module_spec),
              lambda d, c: self._write_aidl(d, c)),
             ("CPP",     RAGDSPyCppAgent,
-             lambda a: a.inner.generate(
+             # C4/C4-minimal: use a.run() → generate_chunked() with retry
+             # C3: use a.inner.generate() — single-shot, no chunking,
+             #     preserving original C3 design (chunking is a C4 contribution)
+             (lambda a: a.run(patched_spec))
+             if self._enable_chunk_retry else
+             (lambda a: a.inner.generate(
                  domain     = module_spec.domain,
                  properties = module_spec.to_llm_spec() + _get_aidl_content(module_spec.domain),
-             ),
+             )),
              lambda d, c: self._write_cpp(d, c)),
             ("SELinux", RAGDSPySELinuxAgent, lambda a: a.run(module_spec),
              lambda d, c: self._write_selinux(d, c)),
@@ -332,7 +357,13 @@ class RAGDSPyArchitectAgent:
         for name, AgentClass, runner, writer in sub_agents:
             t0 = time.time()
             try:
-                agent   = AgentClass(**self._cfg_base)
+                if AgentClass is RAGDSPyCppAgent:
+                    agent = AgentClass(
+                        enable_chunk_retry=self._enable_chunk_retry,
+                        **self._cfg_base,
+                    )
+                else:
+                    agent = AgentClass(**self._cfg_base)
                 output  = runner(agent)
                 elapsed = time.time() - t0
                 results[name] = output or ""
