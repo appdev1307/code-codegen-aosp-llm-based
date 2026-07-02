@@ -601,29 +601,32 @@ cd ~/aosp-14-auto
 source build/envsetup.sh
 lunch aosp_cf_x86_64_auto-trunk_staging-userdebug
 
-# 1. Clean previous run
+cd ~/aosp-14-auto
 restore_aosp
 clean_verify
 
-# 2. Apply all fixes (copy + merge + hash update + SELinux + VHAL swap)
-#    The script now handles what previously required running merge_vehicle_property.py
-#    and updating .hash manually — all automated inside [2] step.
+# [1] Apply fixes (merge aidl_property, copy files, SELinux, VHAL swap)
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto
 
-# 3. Build NDK library (required for VehicleProperty.h with custom properties)
-rm -f out/soong/build.aosp_cf_x86_64_auto.ninja
-rm -f out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-api/has_development
-
+# [2] Update API dumps (current/) — này sẽ set frozen: false
 m android.hardware.automotive.vehicle-update-api
 m android.hardware.automotive.vehicle.property-update-api
 
-m android.hardware.automotive.vehicle.property-V3-ndk
-m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
+# [3] Fix frozen: false → true SAU update-api (vì update-api revert nó)
+sed -i 's/frozen: false/frozen: true/' ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl_property/Android.bp
 
-# 4. Verify custom properties are in the generated header
+# [4] Update hash cho version 3
+cd ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/3
+{ find ./ -name "*.aidl" -print0 | LC_ALL=C sort -z | xargs -0 sha1sum && echo 2; } | sha1sum | cut -d " " -f 1 | tee .hash
+
+# [5] Build NDK (dùng frozen snapshot version 3)
+cd ~/aosp-14-auto
+m android.hardware.automotive.vehicle.property-V3-ndk
+
+# [6] Verify custom properties are in the generated header
 grep "VEHICLE_CHILDREN" out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-V3-ndk-source/gen/include/aidl/android/hardware/automotive/vehicle/VehicleProperty.h | head -3
 
-# 5. Full build
+# [7] Full build
 m -j$(nproc)
 rm -f out/target/product/vsoc_x86_64_only/
 m -j$(nproc) init_bootimage vendor_bootimage bootimage
