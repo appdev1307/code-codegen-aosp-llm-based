@@ -568,7 +568,14 @@ class CppVehicleAssertions(dspy.Module):
                 header = self._ensure_aidl_using_directive(header)
             if impl:
                 impl = self._ensure_self_include(impl, domain)
-                if f"VehicleProperty{domain.strip().capitalize()}" in impl:
+                # Trigger on both per-domain name (old path) AND unified
+                # VehicleProperty:: (new path after aidl_property merge).
+                # Without this, .cpp files using VehicleProperty::NAME
+                # correctly get the enum from the transitively-included
+                # header but lack the explicit include — fragile and
+                # violates the self-contained include contract.
+                if (f"VehicleProperty{domain.strip().capitalize()}" in impl
+                        or "VehicleProperty::" in impl):
                     impl = self._ensure_aidl_include(impl, domain)
                 if hallucinated:
                     impl = self._strip_hallucinated_property_blocks(impl, domain, hallucinated)
