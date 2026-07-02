@@ -233,6 +233,10 @@ if [ -d "$VSS_GLUE_SRC" ]; then
         fname="$(basename "$f")"
         if [[ "$fname" == *.te ]]; then
             cp "$f" "$SEPOL_DEST/" && ok "Glue SELinux: $fname"
+        elif [[ "$fname" == "Android.bp" ]]; then
+            # Android.bp is rewritten below — skip the pipeline's copy
+            # which still uses ../../../impl paths that Soong rejects
+            true
         else
             cp "$f" "$VSS_DIR/" && ok "Glue: $fname"
         fi
@@ -241,6 +245,65 @@ if [ -d "$VSS_GLUE_SRC" ]; then
 fi
 
 [ $COUNT -eq 0 ] && warn "No VehicleHalService files found"
+
+# Rewrite Android.bp with flat srcs paths (no ../ references).
+# Soong rejects srcs entries that escape the module directory via ../
+# so all VehicleHalService*.cpp must live alongside Android.bp in vss/.
+# The domain files were already copied there above.
+DOMAINS_FOUND=$(ls "$VSS_DIR"/VehicleHalService*.cpp 2>/dev/null | \
+    xargs -I{} basename {} .cpp | sort)
+
+if [ -n "$DOMAINS_FOUND" ]; then
+    DOMAIN_SRCS=""
+    for f in $(ls "$VSS_DIR"/VehicleHalService*.cpp 2>/dev/null | sort); do
+        DOMAIN_SRCS="${DOMAIN_SRCS}        \"$(basename "$f")\",\n"
+    done
+
+    cat > "$VSS_DIR/Android.bp" << BPEOF
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_library_static {
+    name: "VssVehicleHardware",
+    vendor: true,
+    defaults: ["VehicleHalDefaults"],
+    srcs: [
+        "VssVehicleHardware.cpp",
+$(printf "$DOMAIN_SRCS")
+    ],
+    header_libs: ["IVehicleHardware", "VehicleHalUtilHeaders"],
+    static_libs: ["android.hardware.automotive.vehicle-V3-ndk"],
+    export_include_dirs: ["."],
+}
+
+cc_binary {
+    name: "android.hardware.automotive.vehicle@V3-vss-service",
+    vendor: true,
+    defaults: ["VehicleHalDefaults"],
+    relative_install_path: "hw",
+    srcs: ["VssVehicleService.cpp"],
+    init_rc: ["android.hardware.automotive.vehicle@V3-vss-service.rc"],
+    vintf_fragments: ["manifest_vss.xml"],
+    static_libs: [
+        "VssVehicleHardware",
+        "DefaultVehicleHal",
+        "VehicleHalUtils",
+        "android.hardware.automotive.vehicle-V3-ndk",
+    ],
+    shared_libs: [
+        "libbinder_ndk",
+        "libbase",
+        "liblog",
+        "libutils",
+    ],
+    header_libs: ["IVehicleHardware"],
+}
+BPEOF
+    ok "Android.bp rewritten with flat srcs paths (no ../)"
+else
+    warn "No VehicleHalService*.cpp found in $VSS_DIR — Android.bp not rewritten"
+fi
 
 # ═══════════════════════════════════════════════════════════════
 # [4] Copy SELinux policies
