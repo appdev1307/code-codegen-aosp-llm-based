@@ -204,6 +204,19 @@ if [ -f "$AIDL_INTERFACE_BP" ]; then
     fi
 fi
 
+# Fix aidl_property/Android.bp: frozen: false → frozen: true
+# After merge, current/ and 3/ are identical — build system rejects
+# frozen: false when there is no diff between current and last frozen version.
+AIDL_PROPERTY_BP="$AOSP_ROOT/hardware/interfaces/automotive/vehicle/aidl_property/Android.bp"
+if [ -f "$AIDL_PROPERTY_BP" ]; then
+    if grep -q "frozen: false" "$AIDL_PROPERTY_BP"; then
+        sed -i 's/frozen: false/frozen: true/' "$AIDL_PROPERTY_BP"
+        ok "aidl_property/Android.bp: frozen: false → frozen: true"
+    else
+        ok "aidl_property/Android.bp: frozen already true"
+    fi
+fi
+
 # ═══════════════════════════════════════════════════════════════
 # [3] Copy C++ + VssGlueAgent artifacts
 # ═══════════════════════════════════════════════════════════════
