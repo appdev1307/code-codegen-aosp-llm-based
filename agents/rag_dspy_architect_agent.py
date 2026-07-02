@@ -283,14 +283,36 @@ class RAGDSPyArchitectAgent:
         print(f"  [RAG+DSPy ARCHITECT] Output → {self._output_root.resolve()}")
         t_start = time.time()
 
-        # Read generated AIDL enum to inject exact prop IDs into CPP agent
+        # Read generated AIDL enum to inject exact prop names into CPP agent.
+        # All custom VSS properties are merged into the single aidl_property/
+        # VehicleProperty.aidl on the build system — per-domain headers like
+        # VehiclePropertyAdas.h no longer exist. The LLM must use:
+        #   VehicleProperty::PROP_NAME  (unified enum, NOT VehiclePropertyAdas::)
+        # We still read the per-domain .aidl file to get the exact property
+        # names, but we rewrite the enum declaration to say VehicleProperty
+        # so the LLM learns the correct prefix to use in static_cast<>.
         def _get_aidl_content(domain: str) -> str:
             import glob as _glob
             aidl_dir = str(self._output_root / "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle")
             files = _glob.glob(f"{aidl_dir}/VehicleProperty{domain.capitalize()}.aidl")
-            if files:
-                return "\n=== Generated AIDL enum (use these exact prop IDs) ===\n" + open(files[0], errors="ignore").read()
-            return ""
+            if not files:
+                return ""
+            raw = open(files[0], errors="ignore").read()
+            # Rewrite "enum VehiclePropertyAdas {" → "enum VehicleProperty {"
+            # so the LLM sees the correct enum name that exists in VehicleProperty.h
+            # after the aidl_property merge. The property constant names are identical.
+            import re as _re
+            raw = _re.sub(
+                r"\benum\s+VehicleProperty\w+\s*\{",
+                "enum VehicleProperty {",
+                raw,
+            )
+            return (
+                "\n=== Generated AIDL enum (use these exact prop IDs) ===\n"
+                "// NOTE: All VSS properties are merged into VehicleProperty in VehicleProperty.h\n"
+                "// Use VehicleProperty::PROP_NAME — NOT VehiclePropertyAdas:: or other per-domain prefixes\n"
+                + raw
+            )
 
         sub_agents = [
             ("AIDL",    RAGDSPyAIDLAgent,    lambda a: a.run(module_spec),
