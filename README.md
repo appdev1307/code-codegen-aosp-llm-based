@@ -605,30 +605,36 @@ cd ~/aosp-14-auto
 restore_aosp
 clean_verify
 
-# [1] Apply fixes (merge aidl_property, copy files, SELinux, VHAL swap)
+# [1] Apply fixes
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto
 
-# [2] Update API dumps (current/) — này sẽ set frozen: false
+# [2] Update API dumps
 m android.hardware.automotive.vehicle-update-api
 m android.hardware.automotive.vehicle.property-update-api
 
-# [3] Fix frozen: false → true SAU update-api (vì update-api revert nó)
+# [3] Fix frozen: false → true sau update-api
 sed -i 's/frozen: false/frozen: true/' ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl_property/Android.bp
 
-# [4] Update hash cho version 3
+# [4] Update hash version 3
 cd ~/aosp-14-auto/hardware/interfaces/automotive/vehicle/aidl_property/aidl_api/android.hardware.automotive.vehicle.property/3
 { find ./ -name "*.aidl" -print0 | LC_ALL=C sort -z | xargs -0 sha1sum && echo 2; } | sha1sum | cut -d " " -f 1 | tee .hash
-
-# [5] Build NDK (dùng frozen snapshot version 3)
 cd ~/aosp-14-auto
+
+# [5] Fix EmuMetadataGenerator — PHẢI trước khi build NDK
+sed -i 's/            Javadoc doc = maybeComment.get().asJavadocComment().parse();/            if (!maybeComment.get().isJavadocComment()) {\n                System.out.println("skipping non-javadoc property: " + propertyName);\n                continue;\n            }\n            Javadoc doc = maybeComment.get().asJavadocComment().parse();/' \
+  hardware/interfaces/automotive/vehicle/tools/generate_emu_metadata/src/com/android/car/tool/EmuMetadataGenerator.java
+
+# [6] Build NDK
 m android.hardware.automotive.vehicle.property-V3-ndk
 
-# [6] Verify custom properties are in the generated header
+# [7] Verify custom properties trong VehicleProperty.h
 grep "VEHICLE_CHILDREN" out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-V3-ndk-source/gen/include/aidl/android/hardware/automotive/vehicle/VehicleProperty.h | head -3
 
-# [7] Full build
+# [8] Build VSS service
+m android.hardware.automotive.vehicle@V3-vss-service
+
+# [9] Full build
 m -j$(nproc)
-rm -f out/target/product/vsoc_x86_64_only/
 m -j$(nproc) init_bootimage vendor_bootimage bootimage
 m -j$(nproc) vendorimage vbmetaimage superimage
 
