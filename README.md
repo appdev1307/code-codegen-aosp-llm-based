@@ -635,7 +635,7 @@ m android.hardware.automotive.vehicle@V3-vss-service
 
 # [9] Full build
 m -j$(nproc)
-m -j$(nproc) init_bootimage vendor_bootimage bootimage
+m -j$(nproc) initbootimage bootimage
 m -j$(nproc) vendorimage vbmetaimage superimage
 
 # Offline verify binary is in the image
@@ -829,7 +829,7 @@ adb remount
 adb sync
 
 # NDK part
-adb push out/target/product/vsoc_x86_64_only/system/lib64/android.hardware.automotive.vehicle-V3-ndk.so /system/lib64/
+adb push out/target/product/vsoc_x86_64_only/symbols/vendor/lib64/android.hardware.automotive.vehicle-V3-ndk.so /vendor/lib64/
 # SDK park
 adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
 
