@@ -40,6 +40,9 @@ from dspy_opt.hal_signatures import (
 # combination.
 CHUNK_SIZE = 30
 
+# Maximum retry attempts per chunk when enable_chunk_retry=True.
+# Only used by C4/C4-minimal callers — C3 passes enable_chunk_retry=False.
+MAX_CHUNK_RETRIES = 2
 _PLACEHOLDER = "/*__PROPERTY_ENTRIES_PLACEHOLDER__*/"
 
 _MD_FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?|```$", re.MULTILINE)
@@ -272,6 +275,7 @@ class RagDspyCppAgent:
         aidl_block:    str = "",
         extra_context: str = "",
         chunk_size:    int = CHUNK_SIZE,
+        enable_chunk_retry: bool = False,
     ) -> dict:
         """Chunked counterpart to generate(), for domains with more
         properties than reliably fit in one LLM call without hitting
@@ -293,6 +297,12 @@ class RagDspyCppAgent:
         structural guarantees (pragma once, self-include, namespace,
         AIDL include, hallucination cross-check) regardless of which
         path produced it.
+
+        enable_chunk_retry: if True, retry chunks that produce fewer
+        entries than expected. MUST be False for C3 (RAG+DSPy without
+        feedback) — retry is a C4 contribution and enabling it in C3
+        would blur the ablation boundary. Set True only from C4/C4-minimal
+        callers.
         """
         retrieved_text = self._retrieved_context()
         aosp_context = _CONTRACT + "\n" + retrieved_text
@@ -310,13 +320,65 @@ class RagDspyCppAgent:
         all_entries = []
         for i in range(0, len(prop_list), chunk_size):
             chunk = prop_list[i:i + chunk_size]
+            chunk_num = i // chunk_size + 1
+            total_chunks = (len(prop_list) + chunk_size - 1) // chunk_size
             chunk_properties_text = self._build_chunk_properties_text(domain, chunk, aidl_block)
-            entries_result = self.entries_predictor(
-                domain       = domain,
-                properties   = chunk_properties_text,
-                aosp_context = aosp_context,
-            )
-            chunk_entries = _strip_markdown_fences(getattr(entries_result, "entries", "") or "")
+
+            chunk_entries = ""
+            if enable_chunk_retry:
+                for attempt in range(1, MAX_CHUNK_RETRIES + 2):
+                    entries_result = self.entries_predictor(
+                        domain       = domain,
+                        properties   = chunk_properties_text,
+                        aosp_context = aosp_context,
+                    )
+                    raw = _strip_markdown_fences(getattr(entries_result, "entries", "") or "")
+                    generated_count = raw.count("static_cast<int32_t>")
+                    expected_count  = len(chunk)
+
+                    if generated_count >= expected_count:
+                        chunk_entries = raw
+                        if attempt > 1:
+                            print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
+                                  f"✓ retry {attempt-1} recovered {generated_count}/{expected_count} entries")
+                        break
+
+                    if attempt <= MAX_CHUNK_RETRIES:
+                        import re as _re
+                        generated_names = set(_re.findall(r"VehicleProperty::(\w+)", raw))
+                        expected_names  = {
+                            (getattr(p, "name", None) or getattr(p, "signal_name", None) or str(p))
+                            for p in chunk
+                        }
+                        missing_names = sorted(expected_names - generated_names)
+                        missing_hint  = "\n".join(f"  - {n}" for n in missing_names[:10])
+                        retry_context = (
+                            f"=== RETRY: chunk {chunk_num}/{total_chunks} — "
+                            f"MISSING {expected_count - generated_count} "
+                            f"of {expected_count} entries ===\n"
+                            f"You produced {generated_count} entries but MUST produce "
+                            f"EXACTLY {expected_count}. These names appear to be missing:\n"
+                            f"{missing_hint}\n"
+                            f"Output ALL {expected_count} entries — do not skip any.\n"
+                            f"=== END RETRY ==="
+                        )
+                        chunk_properties_text = retry_context + "\n\n" + chunk_properties_text
+                        print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
+                              f"⚠ attempt {attempt}: {generated_count}/{expected_count} entries — retrying...")
+                    else:
+                        print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
+                              f"✗ gave up after {MAX_CHUNK_RETRIES} retries: "
+                              f"{generated_count}/{expected_count} entries")
+                        chunk_entries = raw
+            else:
+                # C3 path: no retry — single shot per chunk, by design.
+                entries_result = self.entries_predictor(
+                    domain       = domain,
+                    properties   = chunk_properties_text,
+                    aosp_context = aosp_context,
+                )
+                chunk_entries = _strip_markdown_fences(getattr(entries_result, "entries", "") or "")
+
             all_entries.append(chunk_entries.strip())
 
         merged_entries = "\n".join(all_entries)
@@ -381,10 +443,19 @@ class RagDspyCppAgent:
 
 
 class RAGDSPyCppAgent:
-    """Thin wrapper for RAGDSPyArchitectAgent and C4 retry engine compatibility."""
+    """Thin wrapper for RAGDSPyArchitectAgent and C4 retry engine compatibility.
 
-    def __init__(self, **kwargs):
+    enable_chunk_retry controls whether chunk-level retry is active:
+    - False (default): C3 behaviour — single shot per chunk, no retry.
+      Retry is a C4 contribution; enabling it in C3 would blur the
+      ablation boundary between the two conditions.
+    - True: C4/C4-minimal behaviour — retry chunks that produce fewer
+      entries than expected, up to MAX_CHUNK_RETRIES attempts.
+    """
+
+    def __init__(self, enable_chunk_retry: bool = False, **kwargs):
         self.inner = RagDspyCppAgent(**kwargs)
+        self.enable_chunk_retry = enable_chunk_retry
 
     def run(self, module_spec) -> dict:
         """Called by architect — returns dict with header + impl.
@@ -397,18 +468,15 @@ class RAGDSPyCppAgent:
         """
         prop_list = getattr(module_spec, "properties", None) or []
         if len(prop_list) > CHUNK_SIZE:
-            # Extract just the AIDL enum block (if the caller already
-            # embedded one via to_llm_spec(), e.g. gen_hal_minimal_c4.py's
-            # _PatchedSpec) so each chunk call and the final
-            # hallucination cross-check have real ground truth.
             full_spec_text = module_spec.to_llm_spec()
             aidl_marker = "=== Generated AIDL enum"
             idx = full_spec_text.find(aidl_marker)
             aidl_block = full_spec_text[idx:] if idx != -1 else ""
             return self.inner.generate_chunked(
-                domain     = module_spec.domain,
-                prop_list  = prop_list,
-                aidl_block = aidl_block,
+                domain             = module_spec.domain,
+                prop_list          = prop_list,
+                aidl_block         = aidl_block,
+                enable_chunk_retry = self.enable_chunk_retry,
             )
 
         out = self.inner.generate(

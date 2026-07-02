@@ -151,7 +151,7 @@ print("  Minimal HAL: AIDL + CPP + SELinux (RAG+DSPy+Retry)")
 print("══════════════════════════════════════════════════════")
 
 aidl_agent    = RAGDSPyAIDLAgent(**AGENT_CFG)
-cpp_agent     = RAGDSPyCppAgent(**AGENT_CFG)
+cpp_agent     = RAGDSPyCppAgent(enable_chunk_retry=True, **AGENT_CFG)
 selinux_agent = RAGDSPySELinuxAgent(**AGENT_CFG)
 
 # ── Load spec (same as C4 — from labeled signals cache) ───
