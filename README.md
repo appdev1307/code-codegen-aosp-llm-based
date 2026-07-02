@@ -611,12 +611,14 @@ clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto
 
 # 3. Build NDK library (required for VehicleProperty.h with custom properties)
+rm -f out/soong/build.aosp_cf_x86_64_auto.ninja
+rm -f out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-api/has_development
+
 m android.hardware.automotive.vehicle-update-api
 m android.hardware.automotive.vehicle.property-update-api
 
-m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 m android.hardware.automotive.vehicle.property-V3-ndk
-
+m -j$(nproc) android.hardware.automotive.vehicle@V3-vss-service
 
 # 4. Verify custom properties are in the generated header
 grep "VEHICLE_CHILDREN" out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-V3-ndk-source/gen/include/aidl/android/hardware/automotive/vehicle/VehicleProperty.h | head -3
