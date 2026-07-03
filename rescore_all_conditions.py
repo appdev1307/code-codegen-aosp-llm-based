@@ -382,8 +382,8 @@ def _syntax_xml(content: str) -> float:
 def score_coverage(content: str, agent_type: str) -> float:
     cl = content.lower()
     if agent_type == "aidl":
-        terms = ["vehiclepropvalue", "vehiclepropertytype", "status", "prop",
-                 "timestamp", "areaid", "value", "int32values", "floatvalues"]
+        terms = ["prop", "read", "write", "global", "0x",
+                 "vehicle", "backing", "vintstability", "enum", "int32values"]
     elif agent_type == "cpp":
         terms = ["getallpropertyconfigs", "getvalues", "setvalues", "vehiclepropconfig",
                  "vehiclepropvalue", "statuscode", "aidl", "onpropertyevent",
