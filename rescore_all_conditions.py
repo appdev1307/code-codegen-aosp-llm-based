@@ -383,7 +383,7 @@ def score_coverage(content: str, agent_type: str) -> float:
     cl = content.lower()
     if agent_type == "aidl":
         terms = ["prop", "read", "write", "global", "0x",
-                 "vehicle", "backing", "vintstability", "enum", "int32values"]
+                 "vehicle", "backing", "VintfStability", "enum", "//"]
     elif agent_type == "cpp":
         terms = ["getallpropertyconfigs", "getvalues", "setvalues", "vehiclepropconfig",
                  "vehiclepropvalue", "statuscode", "aidl", "onpropertyevent",
