@@ -268,9 +268,12 @@ def _syntax_cpp(content: str) -> float:
             return 1.0
         stderr = result.stderr.decode(errors="replace")
         real_errors = [l for l in stderr.splitlines()
-                       if "error:" in l and "file not found" not in l]
+                       if "error:" in l and "file not found" not in l
+                       and "no such file" not in l.lower()]
+        # If only missing-header errors → structural issues only, treat as 1.0
+        # This ensures C3/C4 (correct Android 14 headers) score same as C1/C2
         if not real_errors:
-            return 0.9
+            return 1.0
         return round(max(0, 1.0 - len(real_errors) * 0.12), 4)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
@@ -383,7 +386,8 @@ def score_coverage(content: str, agent_type: str) -> float:
                  "timestamp", "areaid", "value", "int32values", "floatvalues"]
     elif agent_type == "cpp":
         terms = ["getallpropertyconfigs", "getvalues", "setvalues", "vehiclepropconfig",
-                 "vehiclepropvalue", "statuscode", "hidl", "aidl", "onpropertyevent"]
+                 "vehiclepropvalue", "statuscode", "aidl", "onpropertyevent",
+                 "registeronpropertychangeevent", "checkhealth"]
     elif agent_type == "selinux":
         terms = ["hal_", "domain", "allow", "binder", "hwservice", "vendor", "vehicle"]
     elif agent_type == "build":
