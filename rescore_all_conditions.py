@@ -389,7 +389,7 @@ def score_coverage(content: str, agent_type: str) -> float:
                  "vehiclepropvalue", "statuscode", "aidl", "onpropertyevent",
                  "registeronpropertychangeevent", "checkhealth"]
     elif agent_type == "selinux":
-        terms = ["hal_", "domain", "allow", "binder", "hwservice", "vendor", "vehicle"]
+        terms = ["hal_", "domain", "allow", "binder", "vendor", "vehicle", "init_daemon_domain"]
     elif agent_type == "build":
         terms = ["vendor", "shared_libs", "srcs", "defaults", "name", "vehicle"]
     elif agent_type == "design_doc":
