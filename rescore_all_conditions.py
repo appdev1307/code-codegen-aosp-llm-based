@@ -92,6 +92,13 @@ def classify_file(filepath: Path, output_root: Path) -> Optional[str]:
         return "selinux"
 
     if suffix == ".cpp":
+        # Exclude main()-only entry point files from scoring — they wire up
+        # the binder service and intentionally lack getAllPropertyConfigs()
+        # etc., so applying the same coverage terms unfairly penalizes them.
+        if filepath.name.endswith("Service.cpp") and "VssVehicleService" in filepath.name:
+            return None
+        if filepath.name in ("main.cpp", "Service.cpp") or filepath.name.endswith("VehicleService.cpp"):
+            return None
         return "cpp"
 
     if name == "Android.bp" or suffix == ".bp":
