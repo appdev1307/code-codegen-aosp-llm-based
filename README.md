@@ -843,7 +843,10 @@ sleep 5
 
 # Verify và run VTS
 adb shell ps -AZ | grep vss-service
-atest VtsHalAutomotiveVehicleVss -- --log-level=VERBOSE --log-level-display=VERBOSE
+adb shell logcat -c
+atest VtsHalAutomotiveVehicleVss 2>/dev/null &
+sleep 5
+adb shell logcat -d | grep -i "vss\|vehicle\|prop" | tail -30
 ```
 
 ### Step 8 — Build VTS, Deploy VssVehicleHardware, Run Tests
@@ -868,7 +871,7 @@ sed -i 's/automotive.vehicle-V[0-9]*-ndk/automotive.vehicle-V3-ndk/' \
     test/vts/vss_vehicle/Android.bp
 
 # Build VTS
-mmm test/vts/vss_vehicle 2>&1 | tail -5
+mmm test/vts/vss_vehicle 
 
 # Verify binary built
 find out/target/product/vsoc_x86_64_only -name "VtsHalAutomotiveVehicleVss" 2>/dev/null
