@@ -38,7 +38,8 @@ RAG_TOP_K         = 8
 MAX_RETRIES       = 3
 
 # Input paths
-C4_OUTPUT_DIR     = Path("output_c4_feedback")   # C4 YAML spec + MODULE_PLAN.json
+import os as _os
+C4_OUTPUT_DIR     = Path(_os.environ.get("C4_INPUT", "output_c4_feedback"))  # C4 YAML spec + MODULE_PLAN.json
 VTS_REL           = "test/vts/vss_vehicle"
 
 # Vehicle HAL AIDL interface version the VTS links against. MUST match the
@@ -366,26 +367,8 @@ TEST(VssPropertyIdTest, AllIdsWellFormed) {{
   }}
 }}
 
-// ── Test 5: getValues() returns dummy value for all VSS props ─────
+// ── Test 5: all VSS props have valid configs (readable check) ────
 TEST_F(VssVhalTest, VssPropertiesReadable) {{
-  std::mutex mtx;
-  std::condition_variable cv;
-  std::vector<GetValueResult> all_results;
-  bool done = false;
-
-  GetValueRequests requests;
-  int64_t req_id = 1;
-  for (int32_t propId : kVssPropertyIds) {{
-    GetValueRequest req;
-    req.requestId = req_id++;
-    req.prop.prop = propId;
-    req.prop.areaId = 0;
-    requests.payloads.push_back(req);
-  }}
-
-  auto callback = ndk::SharedRefBase::make<IVehicleCallback>();
-  // Use VssVehicleHardware directly via getPropConfigs as proxy for readability
-  // (async getValues requires full IVehicleCallback impl — out of scope for VTS)
   VehiclePropConfigs configs;
   auto status = vehicle->getPropConfigs(kVssPropertyIds, &configs);
   ASSERT_TRUE(status.isOk()) << "getPropConfigs failed for readable check";
@@ -397,14 +380,11 @@ TEST_F(VssVhalTest, VssPropertiesReadable) {{
   std::cout << "✓ " << count << " VSS properties readable (via getPropConfigs)" << std::endl;
 }}
 
-// ── Test 6: setValues() dummy write for READ_WRITE props ──────────
+// ── Test 6: READ_WRITE props exist (writable check) ───────────────
 TEST_F(VssVhalTest, VssPropertiesWritable) {{
-  // Validate that service accepts SetValueRequests without crashing.
-  // Uses getPropConfigs to check access mode, then calls setValues async.
   VehiclePropConfigs configs;
   auto status = vehicle->getPropConfigs(kVssPropertyIds, &configs);
   ASSERT_TRUE(status.isOk());
-
   int rw_count = 0;
   for (const auto& cfg : configs.payloads) {{
     if (cfg.access == VehiclePropertyAccess::READ_WRITE ||
