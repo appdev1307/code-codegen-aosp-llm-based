@@ -126,11 +126,6 @@ def _generate_vss_hardware_cpp(props: list[dict], domains: list[str] = None,
     """VssVehicleHardware holds array of IVehicleHardware domain services.
     Class names are parsed from generated headers — LLM naming does not matter.
     Fallback: use AIDL-parsed prop IDs if domain services return empty.
-
-    Uses the unified VehicleProperty.h (merged from all domain enums into
-    aidl_property/VehicleProperty.aidl on GCP VM) instead of per-domain
-    VehiclePropertyAdas.h / VehiclePropertyBody.h etc., so this file compiles
-    correctly after merge_vehicle_property.py has been applied to AOSP.
     """
     init_lines = "\n    ".join(f"mPropIds.push_back({p['prop_id']});" for p in props)
 
@@ -149,8 +144,13 @@ def _generate_vss_hardware_cpp(props: list[dict], domains: list[str] = None,
     )
 
     # Direct instantiation and aggregate — class name agnostic
+    make_uniques = "\n    ".join(
+        f'{{ {cls} svc; auto c = svc.getAllPropertyConfigs(); configs.insert(configs.end(), c.begin(), c.end()); }}' 
+        for d, cls in domain_class_map.items()
+    )
+
     domain_configs = "\n    ".join(
-        f'{{ {cls} svc; auto c = svc.getAllPropertyConfigs(); configs.insert(configs.end(), c.begin(), c.end()); }}'
+        f'{{ {cls} svc; auto c = svc.getAllPropertyConfigs(); configs.insert(configs.end(), c.begin(), c.end()); }}' 
         for d, cls in domain_class_map.items()
     )
 
@@ -158,9 +158,6 @@ def _generate_vss_hardware_cpp(props: list[dict], domains: list[str] = None,
 // Aggregates domain VehicleHalService* implementations (each extends IVehicleHardware)
 #include "VssVehicleHardware.h"
 {domain_includes}
-// Unified property enum — generated from merged aidl_property/VehicleProperty.aidl
-// (all domain enums merged into VehicleProperty via merge_vehicle_property.py)
-#include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
 #include <android-base/logging.h>
 
 namespace android::hardware::automotive::vehicle {{
@@ -196,6 +193,22 @@ std::vector<VehiclePropConfig> VssVehicleHardware::getAllPropertyConfigs() const
     if (configs.empty() || has_invalid) {{
         configs.clear();
         for (int32_t id : mPropIds) configs.push_back(makeConfig(id));
+    }} else {{
+        // Deduplicate by prop ID — keep first occurrence
+        std::unordered_map<int32_t, VehiclePropConfig> seen;
+        for (const auto& cfg : configs) {{
+            seen.emplace(cfg.prop, cfg);
+        }}
+        // Restore order from mPropIds
+        configs.clear();
+        for (int32_t id : mPropIds) {{
+            auto it = seen.find(id);
+            if (it != seen.end()) {{
+                configs.push_back(it->second);
+            }} else {{
+                configs.push_back(makeConfig(id));
+            }}
+        }}
     }}
     LOG(INFO) << "[VSS] Registered " << configs.size() << " VSS properties";
     return configs;
@@ -293,25 +306,9 @@ int main() {{
 
 
 def _generate_android_bp(impl_dir: Optional[str] = None, domains: list[str] = None) -> str:
-    """Generate Android.bp for the VSS VHAL static lib + service binary.
-
-    IMPORTANT: this file is written to
-      hardware/interfaces/automotive/vehicle/aidl/impl/vss/Android.bp
-    while the domain VehicleHalService{Domain}.cpp/.h files live at
-      hardware/interfaces/automotive/vehicle/impl/
-    i.e. THREE directories up and then into impl/ — NOT a sibling dir.
-    Soong resolves `srcs` relative to the Android.bp's own directory, so
-    every domain source must be prefixed with that relative path, and
-    `local_include_dirs` must point there too so
-    `#include "VehicleHalService{Domain}.h"` resolves.
-    """
     _domains = domains if domains else DOMAINS
-    # Path from aidl/impl/vss/ (where this Android.bp lives) to impl/
-    # (where the domain .cpp/.h files actually are).
-    _DOMAIN_REL_DIR = "../../../impl"
-
     domain_srcs = "\n        ".join(
-        f'"{_DOMAIN_REL_DIR}/VehicleHalService{d.capitalize()}.cpp",' for d in _domains
+        f'"VehicleHalService{d.capitalize()}.cpp",' for d in _domains
     )
     return f"""package {{
     default_applicable_licenses: ["Android-Apache-2.0"],
@@ -325,9 +322,7 @@ cc_library_static {{
         "VssVehicleHardware.cpp",
         {domain_srcs}
     ],
-    local_include_dirs: ["{_DOMAIN_REL_DIR}"],
     header_libs: ["IVehicleHardware", "VehicleHalUtilHeaders"],
-    static_libs: ["android.hardware.automotive.vehicle-V3-ndk"],
     export_include_dirs: ["."],
 }}
 
@@ -363,7 +358,6 @@ def _generate_init_rc() -> str:
     group vehicle_network system inet
     capabilities BLOCK_SUSPEND
     ioprio be 4
-    seclabel u:r:hal_vehicle_vss:s0
 """
 
 

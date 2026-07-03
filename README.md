@@ -844,6 +844,11 @@ sleep 5
 # Verify và run VTS
 adb shell ps -AZ | grep vss-service
 adb shell logcat -c
+
+adb shell logcat -d | grep -i "vss-service\|V3-vss" | tail -10
+adb shell ls /data/tombstones/ | tail -5
+adb shell cat /data/tombstones/tombstone_00 | head -50
+
 atest VtsHalAutomotiveVehicleVss 2>/dev/null &
 sleep 5
 adb shell logcat -d | grep -i "vss\|vehicle\|prop" | tail -30
