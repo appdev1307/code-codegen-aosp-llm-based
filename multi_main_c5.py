@@ -396,6 +396,52 @@ TEST_F(VssVhalTest, VssPropertiesWritable) {{
             << " VSS properties are READ_WRITE" << std::endl;
   EXPECT_GE(rw_count, 0) << "VSS properties writable check passed";
 }}
+
+// ── Test 7: real set-then-get round trip ──────────────────────────
+// Exercises the actual HW-register file I/O backing (see CPP agent
+// contract) rather than just checking config metadata like Tests 5/6.
+// kVssPropertyIds[0] is guaranteed INT32-typed (type bits 0x00400000,
+// see encode_prop_id / VSS_TYPE_BITS above), so int32Values is safe here.
+TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
+  ASSERT_FALSE(kVssPropertyIds.empty());
+  const int32_t targetProp = kVssPropertyIds[0];
+  const int32_t testValue  = 42;
+
+  SetValueRequests setReqs;
+  SetValueRequest setReq;
+  setReq.requestId = 1;
+  setReq.value.prop = targetProp;
+  setReq.value.value.int32Values = {{testValue}};
+  setReqs.payloads = {{setReq}};
+
+  SetValueResults setResults;
+  auto setStatus = vehicle->setValues(setReqs, &setResults);
+  ASSERT_TRUE(setStatus.isOk()) << "setValues call failed";
+  ASSERT_FALSE(setResults.payloads.empty());
+  EXPECT_EQ(setResults.payloads[0].status, StatusCode::OK)
+      << "setValues did not report OK for prop 0x" << std::hex << targetProp;
+
+  GetValueRequests getReqs;
+  GetValueRequest getReq;
+  getReq.requestId = 2;
+  getReq.prop.prop = targetProp;
+  getReqs.payloads = {{getReq}};
+
+  GetValueResults getResults;
+  auto getStatus = vehicle->getValues(getReqs, &getResults);
+  ASSERT_TRUE(getStatus.isOk()) << "getValues call failed";
+  ASSERT_FALSE(getResults.payloads.empty());
+  ASSERT_EQ(getResults.payloads[0].status, StatusCode::OK);
+  ASSERT_FALSE(getResults.payloads[0].prop.value.int32Values.empty());
+  EXPECT_EQ(getResults.payloads[0].prop.value.int32Values[0], testValue)
+      << "Round trip mismatch: set " << testValue << " but read back "
+      << getResults.payloads[0].prop.value.int32Values[0]
+      << " — HW-register file I/O is not persisting the written value";
+
+  std::cout << "✓ Round trip OK: prop 0x" << std::hex << targetProp
+            << " set=" << std::dec << testValue << " get="
+            << getResults.payloads[0].prop.value.int32Values[0] << std::endl;
+}}
 """
 
 
