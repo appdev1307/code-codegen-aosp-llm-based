@@ -610,6 +610,7 @@ def validate_selinux(policy: str) -> ValidatorResult:
 
 
 def _selinux_regex_fallback(policy: str) -> ValidatorResult:
+    import re as _re
     tool, errors, score = "selinux-regex", [], 0.0
 
     # HIDL detection — fail immediately
@@ -621,24 +622,45 @@ def _selinux_regex_fallback(policy: str) -> ValidatorResult:
                                errors=[f"HIDL pattern found: {found_hidl[0]}"],
                                tool=tool)
 
-    # AIDL structural checks
-    if "type " in policy:                                          score += 0.20
-    else: errors.append("No type declarations")
+    # New contract: this fragment runs INSIDE the shared hal_vehicle_vss
+    # process (VssVehicleHardware aggregates every domain into one binary).
+    # It must NOT declare a new per-domain daemon — that domain would never
+    # actually run. init_daemon_domain/hal_server_domain here are dead
+    # policy for a process that doesn't exist.
+    declares_new_domain = bool(_re.search(r"type\s+\w+\s*,\s*domain\s*;", policy)) \
+        or "init_daemon_domain(" in policy or "hal_server_domain(" in policy
+    if declares_new_domain:
+        errors.append("Declares a new per-domain SELinux type/daemon — all "
+                       "rules must target the shared hal_vehicle_vss domain "
+                       "instead (see SELinuxSignature contract)")
+    else:
+        score += 0.35
 
-    if "domain" in policy:                                         score += 0.10
-    else: errors.append("No domain type")
+    # Every allow rule (if any) must target hal_vehicle_vss and be well-formed.
+    # A comment-only "no extra permissions needed" fragment is equally valid —
+    # it means this domain's C++ implementation does no real device/file I/O.
+    allow_lines = [l for l in policy.splitlines() if l.strip().startswith("allow ")]
+    if not allow_lines:
+        score += 0.35
+    else:
+        bad = [l for l in allow_lines
+               if not l.strip().startswith("allow hal_vehicle_vss ")
+               or not l.strip().rstrip("{").rstrip().endswith((";", "{"))]
+        if bad:
+            errors.append(f"{len(bad)} allow rule(s) not scoped to "
+                           f"hal_vehicle_vss or malformed")
+        else:
+            score += 0.35
 
-    if "init_daemon_domain" in policy:                             score += 0.20
-    else: errors.append("Missing init_daemon_domain")
+    if policy.count("{") == policy.count("}"):
+        score += 0.15
+    else:
+        errors.append("Unbalanced braces")
 
-    if "hal_server_domain" in policy:                              score += 0.20
-    else: errors.append("Missing hal_server_domain(x, hal_vehicle)")
-
-    if any(k in policy for k in ["binder_call", "binder_use"]):   score += 0.15
-    else: errors.append("Missing binder_call/binder_use")
-
-    if "vndbinder_device" in policy:                               score += 0.15
-    else: errors.append("Missing vndbinder_device allow rule")
+    if policy.strip():
+        score += 0.15
+    else:
+        errors.append("Empty policy content")
 
     ok = score >= 0.70 and len(errors) == 0
     return ValidatorResult(ok=ok, score=round(score, 3),

@@ -218,17 +218,29 @@ def metric_selinux(example, prediction, trace=None) -> float:
     """
     SELinux .te — checkpolicy (native Linux tool, full policy compile).
     syntax_valid weighted highest (0.65) because checkpolicy is authoritative.
+
+    New contract: this fragment must NOT declare a new per-domain daemon —
+    every domain runs inside the single shared hal_vehicle_vss process, so
+    rules must target that domain directly (or the fragment may be a
+    comment-only "no extra permissions needed" for domains with no real
+    device/file I/O).
     """
     policy = _get_output(prediction, "policy")
     if not policy:
         return 0.0
+    declares_new_domain = (
+        __import__("re").search(r"type\s+\w+\s*,\s*domain\s*;", policy) is not None
+        or "init_daemon_domain(" in policy or "hal_server_domain(" in policy
+    )
+    allow_lines = [l for l in policy.splitlines() if l.strip().startswith("allow ")]
+    allow_ok = (not allow_lines) or all(
+        l.strip().startswith("allow hal_vehicle_vss ") for l in allow_lines
+    )
     structural = _heuristic([
-        ("type "  in policy,                                                 0.20),
-        ("allow " in policy,                                                 0.30),
-        (any(k in policy for k in
-             ["hal_vehicle","vhal","hal_attribute"]),                         0.25),
-        (any(k in policy for k in
-             ["binder_call","binder_use","hal_server_domain","init_daemon_domain"]),  0.25),
+        (not declares_new_domain,                                            0.35),
+        (allow_ok,                                                           0.35),
+        (policy.count("{") == policy.count("}"),                             0.15),
+        (bool(policy.strip()),                                               0.15),
     ])
     syntax_res = validate("selinux", policy)
     coverage   = _type_coverage(example, policy)   # VSS names don't appear in .te files
