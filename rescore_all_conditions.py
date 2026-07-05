@@ -185,9 +185,13 @@ def score_structure(content: str, agent_type: str) -> float:
         hits = sum(1 for c in checks if c in content)
         return round(min(hits / 5, 1.0), 4)
     elif agent_type == "selinux":
-        checks = ["type ", "allow ", ";", "hal_", "domain"]
+        # New contract: allow-only rules against the shared hal_vehicle_vss
+        # domain (no per-domain daemon declaration — see hal_signatures.py).
+        # A well-commented empty policy (no extra HW access needed) is
+        # equally valid structurally.
+        checks = ["hal_vehicle_vss", ";", "#", "vss"]
         hits = sum(1 for c in checks if c in content)
-        return round(min(hits / 4, 1.0), 4)
+        return round(min(hits / 3, 1.0), 4)
     elif agent_type == "build":
         checks = ["name:", "srcs:", "vendor:", "shared_libs"]
         alt = ['"name"', '"srcs"', "cc_binary", "cc_library", "aidl_interface"]
@@ -396,7 +400,7 @@ def score_coverage(content: str, agent_type: str) -> float:
                  "vehiclepropvalue", "statuscode", "aidl", "onpropertyevent",
                  "registeronpropertychangeevent", "checkhealth"]
     elif agent_type == "selinux":
-        terms = ["hal_", "domain", "allow", "binder", "vendor", "vehicle", "init_daemon_domain"]
+        terms = ["hal_vehicle_vss", "allow", "vendor", "vehicle", ";", "#"]
     elif agent_type == "build":
         terms = ["vendor", "shared_libs", "srcs", "defaults", "name", "vehicle"]
     elif agent_type == "design_doc":

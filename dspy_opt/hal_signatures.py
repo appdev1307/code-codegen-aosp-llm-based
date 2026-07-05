@@ -590,34 +590,49 @@ class CppVehicleAssertions(dspy.Module):
 
 
 class SELinuxSignature(dspy.Signature):
-    """Generate a clean, valid SELinux Type Enforcement (.te) policy file for AOSP 14 VHAL service.
+    """Generate SELinux Type Enforcement (.te) policy fragments for a VSS
+    property domain running INSIDE the shared VssVehicleHardware service.
+
+    ARCHITECTURE NOTE — READ CAREFULLY:
+    All VSS domains (ADAS, Body, Cabin, ...) are compiled into ONE binary
+    and run as ONE process at runtime: the 'hal_vehicle_vss' domain,
+    already declared and initialised elsewhere (init_daemon_domain,
+    hal_server_domain, binder_use, exec_type — do NOT redeclare these).
+    There is no separate daemon per VSS domain — matching real AOSP
+    devices, which likewise expose exactly one Vehicle HAL process
+    (e.g. hal_vehicle_default), never one process per property group.
 
     STRICT RULES — NO EXCEPTIONS:
     - Output ONLY the raw .te policy content.
     - NEVER use markdown fences (no ```te, no ```, no code blocks)
     - Do NOT add any extra text, explanations, or leading '{'
-    - Start directly with valid SELinux statements (type, allow, init_daemon_domain, etc.)
     - This is ANDROID 14 AIDL — NOT HIDL. Never use any HIDL macros.
+
+    FORBIDDEN — do NOT declare a new domain for this VSS property group:
+    - type <anything>, domain;
+    - type <anything>_exec, exec_type, vendor_file_type, file_type;
+    - init_daemon_domain(...), hal_server_domain(...), binder_use(...)
+    - binder_call(...) — binder access is already granted to hal_vehicle_vss
 
     FORBIDDEN (HIDL — causes build failure on Android 14):
     - hal_attribute_hwservice, add_hwservice, find_hwservice
     - hwservice_manager, hwbinder_device, fwk_vehicle_hwservice
     - hwbinder_use, hidl_base_hwservice
 
-    REQUIRED (AOSP 14 AIDL pattern):
-    - Declare: type <server>, domain;
-    - Declare: type <server>_exec, exec_type, vendor_file_type, file_type;
-    - Use: init_daemon_domain(<server>)
-    - Use: binder_use(<server>)
-    - Use: binder_call(<server>, system_server) and binder_call(system_server, <server>)
-    - Use: hal_server_domain(<server>, hal_vehicle)
-    - Allow: <server> vndbinder_device:chr_file { read write open }
+    REQUIRED — every rule targets the single shared runtime domain:
+    - allow hal_vehicle_vss <target_type>:<class> { <perms> };
+    - Only emit rules for hardware/resource access this property group's
+      C++ implementation genuinely needs beyond generic binder IPC
+      (e.g. a real sensor/actuator device node or sysfs path). If the
+      implementation only returns static config and stubs getValues/
+      setValues, it needs NO additional rules — an empty policy (just a
+      comment explaining why) is the CORRECT output in that case.
     """
     domain: str = dspy.InputField(desc="HAL domain name")
     service_name: str = dspy.InputField(desc="Full VHAL service name, e.g. vendor.vss.adas")
     aosp_context: str = dspy.InputField(desc="Retrieved real AOSP 14 AIDL .te policy file examples")
 
-    policy: str = dspy.OutputField(desc="Complete clean SELinux .te policy content ONLY - no extra text or fences")
+    policy: str = dspy.OutputField(desc="allow-only .te fragment scoped to hal_vehicle_vss — no new domain/type declarations")
 
 
 class BuildFileSignature(dspy.Signature):
