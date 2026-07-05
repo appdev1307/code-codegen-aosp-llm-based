@@ -1205,7 +1205,8 @@ def main():
     try:
         vss_glue_dir = str(OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl/impl/vss")
         aidl_dir = str(OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle")
-        VssGlueAgent().run(output_dir=vss_glue_dir, aidl_dir=aidl_dir)
+        sepolicy_dir = str(OUTPUT_DIR / "sepolicy")
+        VssGlueAgent().run(output_dir=vss_glue_dir, aidl_dir=aidl_dir, sepolicy_dir=sepolicy_dir)
         print("  [C4 SUPPORT] VssGlue → OK")
         run_metrics.append({"stage": "vss_glue", "success": True})
     except Exception as e:

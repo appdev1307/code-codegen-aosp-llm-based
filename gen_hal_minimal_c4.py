@@ -298,7 +298,7 @@ print("  VssGlueAgent (full 32-bit prop IDs)")
 print(f"{'='*54}")
 try:
     agent = VssGlueAgent()
-    agent.run(str(VSS_OUT), aidl_dir=str(AIDL_OUT))
+    agent.run(str(VSS_OUT), aidl_dir=str(AIDL_OUT), sepolicy_dir=str(SE_OUT))
     import re
     cpp_content = (VSS_OUT / "VssVehicleHardware.cpp").read_text()
     raw_ids = re.findall(r'mPropIds\.push_back\((0x[0-9a-fA-F]+)\)', cpp_content)

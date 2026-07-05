@@ -361,8 +361,58 @@ def _generate_init_rc() -> str:
 """
 
 
-def _generate_vss_te() -> str:
-    return """type hal_vehicle_vss, domain;
+def _merge_domain_te_allow_rules(sepolicy_dir: str, active_domains: list) -> str:
+    """
+    Parse each domain's generated .te file (vehicle_hal_<domain>.te) and
+    extract its domain-specific 'allow' rules, rewriting the subject from
+    the per-domain type (e.g. 'adas') to the single aggregate runtime
+    domain 'hal_vehicle_vss'.
+
+    Mirrors how AIDL domain files are parsed and merged into mPropIds:
+    the domain .te files are real generated artifacts, but since
+    VssVehicleHardware runs as ONE process, only ONE SELinux domain is
+    ever actually exercised at runtime. Without this merge, the 7
+    per-domain types (adas, body, cabin, ...) are defined but never
+    referenced by any running process — orphaned policy.
+    """
+    import re as _re
+    merged_rules = []
+    # Rules already covered by the base hal_vehicle_vss template — skip these
+    base_seen = {
+        "allow hal_vehicle_vss vndbinder_device:chr_file { read write open };",
+        "allow hal_vehicle_vss self:process { fork sigchld };",
+        "allow hal_vehicle_vss vendor_configs_file:dir search;",
+        "allow hal_vehicle_vss vendor_configs_file:file { read getattr open };",
+    }
+    seen = set(base_seen)
+
+    for domain in active_domains:
+        te_path = os.path.join(sepolicy_dir, f"vehicle_hal_{domain}.te")
+        if not os.path.exists(te_path):
+            continue
+        content = open(te_path, errors="ignore").read()
+
+        # Match "allow <domain_type> <target>:<class> { ... };" or single-perm form
+        for m in _re.finditer(
+            r"^allow\s+(\w+)\s+([\w_]+:[\w_]+\s*(?:\{[^}]*\}|\w+))\s*;",
+            content, _re.MULTILINE,
+        ):
+            subject, rest = m.group(1), m.group(2)
+            rule = f"allow hal_vehicle_vss {rest};"
+            if rule not in seen:
+                seen.add(rule)
+                merged_rules.append(rule)
+
+    if not merged_rules:
+        return ""
+    return (
+        "\n# --- domain-specific allow rules merged from per-domain .te files ---\n"
+        + "\n".join(merged_rules) + "\n"
+    )
+
+
+def _generate_vss_te(extra_rules: str = "") -> str:
+    base = """type hal_vehicle_vss, domain;
 type hal_vehicle_vss_exec, exec_type, vendor_file_type, file_type;
 init_daemon_domain(hal_vehicle_vss)
 hal_server_domain(hal_vehicle_vss, hal_vehicle)
@@ -374,6 +424,7 @@ allow hal_vehicle_vss self:process { fork sigchld };
 allow hal_vehicle_vss vendor_configs_file:dir search;
 allow hal_vehicle_vss vendor_configs_file:file { read getattr open };
 """
+    return base + extra_rules
 
 
 def _generate_manifest() -> str:
@@ -388,7 +439,8 @@ def _generate_manifest() -> str:
 
 
 class VssGlueAgent:
-    def run(self, output_dir: str, aidl_dir: Optional[str] = None) -> dict[str, str]:
+    def run(self, output_dir: str, aidl_dir: Optional[str] = None,
+            sepolicy_dir: Optional[str] = None) -> dict[str, str]:
         os.makedirs(output_dir, exist_ok=True)
 
         props = _parse_aidl_properties(aidl_dir) if aidl_dir and os.path.isdir(aidl_dir) else []
@@ -413,6 +465,10 @@ class VssGlueAgent:
                 if os.path.exists(h_path):
                     domain_headers[d] = open(h_path, errors="ignore").read()
 
+        extra_te_rules = ""
+        if sepolicy_dir and os.path.isdir(sepolicy_dir):
+            extra_te_rules = _merge_domain_te_allow_rules(sepolicy_dir, active_domains)
+
         artifacts = {
             "VssVehicleHardware.h":   _generate_vss_hardware_h(),
             "VssVehicleHardware.cpp": _generate_vss_hardware_cpp(props, active_domains, domain_headers),
@@ -420,7 +476,7 @@ class VssGlueAgent:
             "Android.bp":             _generate_android_bp(domains=active_domains),
             f"{BINARY_NAME}.rc":      _generate_init_rc(),
             "manifest_vss.xml":       _generate_manifest(),
-            "vehicle_hal_vss.te":     _generate_vss_te(),
+            "vehicle_hal_vss.te":     _generate_vss_te(extra_te_rules),
         }
 
         for filename, file_content in artifacts.items():
