@@ -388,6 +388,8 @@ def _merge_domain_te_allow_rules(sepolicy_dir: str, active_domains: list) -> str
         "allow hal_vehicle_vss self:process { fork sigchld };",
         "allow hal_vehicle_vss vendor_configs_file:dir search;",
         "allow hal_vehicle_vss vendor_configs_file:file { read getattr open };",
+        "allow hal_vehicle_vss vss_hw_data_file:dir { search add_name write create };",
+        "allow hal_vehicle_vss vss_hw_data_file:file { create read write open getattr unlink };",
     }
     seen = set(base_seen)
 
