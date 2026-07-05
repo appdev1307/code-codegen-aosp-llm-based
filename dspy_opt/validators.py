@@ -476,6 +476,43 @@ def validate_cpp(code: str) -> ValidatorResult:
     if not code.strip():
         return ValidatorResult(ok=False, score=0.0, errors=["Empty output"], tool=tool)
 
+    # Hard, unconditional safety net — catches truncated/cut-off generation
+    # (e.g. LLM output hit a token limit mid-statement) regardless of how
+    # clang++'s stub-injection/line-filtering behaves below. A real,
+    # complete C++ translation unit is always brace-balanced; this check
+    # costs nothing and cannot be fooled by line-number filtering quirks.
+    open_braces, close_braces = code.count("{"), code.count("}")
+    if open_braces != close_braces:
+        return ValidatorResult(
+            ok=False, score=0.0, tool=tool,
+            errors=[f"Unbalanced braces ({open_braces} open vs {close_braces} close) "
+                    f"— output is truncated or otherwise malformed, likely cut off "
+                    f"mid-statement by a token limit"])
+
+    # Hard fail: the exact stub pattern the contract explicitly forbids.
+    # Real AOSP compile would still succeed on this pattern (it's valid
+    # C++), so clang++ syntax-only below cannot catch it — it's a contract
+    # violation, not a syntax error, so it must be checked here directly.
+    if re.search(r"\(\*callback\)\(\{\}\)", code):
+        return ValidatorResult(
+            ok=False, score=0.1, tool=tool,
+            errors=["getValues/setValues discards requests and returns an "
+                    "empty vector via callback({}) — this is a forbidden "
+                    "stub, not a real HW-register implementation"])
+
+    # Hard fail: field names that don't exist on the real AIDL
+    # VehiclePropValue.value (RawPropValues) type. These compile-clean
+    # against the validator's own placeholder stubs (see docstring above)
+    # but fail against the REAL AOSP header, which is exactly the kind of
+    # false-pass this check exists to prevent.
+    invalid_fields = [f for f in ("booleanValues", "boolValues") if f in code]
+    if invalid_fields:
+        return ValidatorResult(
+            ok=False, score=0.1, tool=tool,
+            errors=[f"Uses non-existent RawPropValues field(s) "
+                    f"{invalid_fields} — real AOSP has no boolean array "
+                    f"field; booleans must use int32Values with 0/1"])
+
     clang = _tool("clang++") or _tool("clang")
     if not clang:
         return _cpp_regex_fallback(code)

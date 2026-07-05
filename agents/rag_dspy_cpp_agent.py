@@ -38,7 +38,17 @@ from dspy_opt.hal_signatures import (
 # a real run, lower it further — this is a heuristic tuned against one
 # real truncation case, not a hard guarantee for any LM/prompt
 # combination.
-CHUNK_SIZE = 30
+#
+# LOWERED from 30 → 12 after the real-HW-register-file contract shipped:
+# each switch-case entry now emits ~8-10 lines (ifstream/ofstream open,
+# type-specific read/write, error handling) versus ~3-4 lines under the
+# previous in-memory-map contract. Domains at or below the OLD threshold
+# (ADAS=24, HVAC=20, INFOTAINMENT=20 — all ≤30) were silently truncated
+# mid-file (unbalanced braces, cut off mid-statement) because they never
+# triggered chunking, while every domain >30 properties WAS chunked and
+# came out complete. 12 was chosen so ALL current domains (min size 20)
+# safely chunk under the new, more verbose per-property code.
+CHUNK_SIZE = 12
 
 # Maximum retry attempts per chunk when enable_chunk_retry=True.
 # Only used by C4/C4-minimal callers — C3 passes enable_chunk_retry=False.
@@ -188,7 +198,26 @@ CORRECT Android 14 method signatures:
 REAL HARDWARE-REGISTER FILE STORE — MANDATORY, DO NOT STUB, DO NOT USE A PLAIN MAP:
   getValues/setValues MUST NOT be `(*callback)({}); return StatusCode::OK;`.
   That discards every request and stores nothing — a set-then-get round trip
-  would silently return nothing, which is wrong.
+  would silently return nothing, which is wrong. THIS EXACT PATTERN — an
+  empty vector passed to the callback while ignoring `requests` — IS A
+  STUB AND WILL BE REJECTED, even for domains where generation is split
+  into skeleton + per-property chunks: the skeleton pass MUST ALSO emit
+  the real read/write logic below, not a placeholder to fill in later.
+
+  VALUE FIELD NAMES — THE REAL AIDL VehiclePropValue.value (RawPropValues)
+  TYPE HAS EXACTLY THESE FIELDS AND NO OTHERS:
+    int32Values   (std::vector<int32_t>)   — use for INT32 AND BOOLEAN
+                                              (true/false stored as 1/0 —
+                                              there is NO separate bool
+                                              array field in real AOSP)
+    int64Values   (std::vector<int64_t>)   — use for INT64
+    floatValues   (std::vector<float>)     — use for FLOAT
+    byteValues    (std::vector<uint8_t>)   — use for BYTES
+    stringValue   (std::string)            — use for STRING (not an array)
+  `boolValues` and `booleanValues` DO NOT EXIST on this type — using
+  either is a compile error. A BOOLEAN-typed property's true/false MUST
+  go through int32Values (e.g. `in.value.int32Values = {v ? 1 : 0};`).
+
   Each property is backed by a REAL file under
   /data/vendor/vss_hw/{domain_lower}/<hex_prop_id>.reg — this simulates a
   hardware register interface via genuine file I/O, not an in-memory map.
