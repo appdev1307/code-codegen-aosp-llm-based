@@ -102,6 +102,8 @@ MANDATORY REQUIREMENTS — you MUST implement ALL of these:
    #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyAccess.h>
    #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyChangeMode.h>
    #include "VssPropertyIds.h"
+   #include <fstream>
+   #include <string>
 
 2. Class inherits BnIVehicle
 
@@ -117,13 +119,29 @@ MANDATORY REQUIREMENTS — you MUST implement ALL of these:
    - unregisterCallback(const std::shared_ptr<IVehicleCallback>& callback)
    Include VehiclePropValue type in all value handling.
 
-4. Use thread-safe unordered_map<PropKey, VehiclePropValue> or vector
+4. REAL HARDWARE-REGISTER FILE STORE — MANDATORY, DO NOT use an in-memory-only
+   unordered_map. Each property is backed by a REAL file under
+   /data/vendor/vss_hw/<hex_prop_id>.reg — this simulates a hardware
+   register interface via genuine file I/O (std::ifstream/std::ofstream).
+   Add private helper methods:
+     std::string registerPath(int32_t propId) const;   // snprintf "/data/vendor/vss_hw/%08x.reg"
+     bool readRegister(int32_t propId, VehiclePropValue* out) const;
+     bool writeRegister(int32_t propId, const VehiclePropValue& in);
+   readRegister() and writeRegister() dispatch with a switch(propId) —
+   one case per property this service owns — reading/writing the value's
+   int32Values[0]/floatValues[0]/boolValues[0] (whichever field matches
+   that property's type) to/from the register file for that case. If the
+   file doesn't exist yet on read, return a zero/false default (normal on
+   first boot).
 
-5. In constructor: set realistic default values for all WRITE/READ_WRITE properties (false for enabled flags, 0 for speeds/distances, etc.)
+5. In get()/getValues(): call readRegister() for the requested prop id(s)
+   and return the real file-backed value — never a hardcoded/stubbed
+   constant.
 
-6. In set(): 
+6. In set()/setValues():
    - reject READ-only props with EX_UNSUPPORTED_OPERATION
    - basic type validation (boolValues.size()==1 for bool, floatValues.size()==1 for float, etc.)
+   - call writeRegister() to persist the new value to its file
    - notify all callbacks
 
 7. In getAllPropConfigs(): return full list of VehiclePropConfig for ALL properties in spec

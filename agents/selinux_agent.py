@@ -42,20 +42,24 @@ You are an Android SELinux policy expert.
 
 Generate SELinux rules for an Android Automotive Vehicle HAL service.
 
+ARCHITECTURE: all VSS domains run inside ONE shared process/domain called
+hal_vehicle_vss (already declared and initialised elsewhere — do NOT
+redeclare it, do NOT create a new domain for this VSS property group).
+Every domain's C++ implementation performs real file I/O against
+/data/vendor/vss_hw/{domain_lower}/ instead of stubbing property access,
+so this fragment MUST grant access to the shared vss_hw_data_file type.
+
 REQUIRED CONTENT — ALL of the following MUST appear in the output:
-  type hal_vehicle_{domain_lower}, domain;
-  type hal_vehicle_{domain_lower}_exec, exec_type, vendor_file_type, file_type;
-  hal_attribute(vehicle);
-  allow hal_vehicle_{domain_lower} hal_vehicle_hwservice:hwservice_manager add_service;
-  binder_call(hal_vehicle_{domain_lower}, system_server);
-  hwservice_use(hal_vehicle_{domain_lower}, hal_vehicle_hwservice);
-  add_hwservice(hal_vehicle_{domain_lower}, hal_vehicle_hwservice);
+  allow hal_vehicle_vss vss_hw_data_file:dir {{ search add_name write create }};
+  allow hal_vehicle_vss vss_hw_data_file:file {{ create read write open getattr unlink }};
 
 Rules:
-- Follow AOSP SELinux conventions
-- Define service domain and type using hal_vehicle_{domain_lower} as domain name
-- Allow required binder communication (binder_call, hwservice_use, add_hwservice)
-- Use hal_vehicle_default as the HAL domain type if domain-specific is not available
+- This is AIDL (Android 14), NOT HIDL — never use hwservice_manager,
+  add_hwservice, hwservice_use, hal_attribute, or hal_*_hwservice
+- Do NOT declare: type <x>, domain; type <x>_exec, exec_type, ...;
+  init_daemon_domain(...); hal_server_domain(...); binder_use(...);
+  binder_call(...) — these are already granted to hal_vehicle_vss elsewhere
+- Every allow rule's subject MUST be hal_vehicle_vss, never a per-domain name
 - No placeholders
 - No explanations
 
