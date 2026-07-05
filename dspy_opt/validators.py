@@ -623,10 +623,8 @@ def _selinux_regex_fallback(policy: str) -> ValidatorResult:
                                tool=tool)
 
     # New contract: this fragment runs INSIDE the shared hal_vehicle_vss
-    # process (VssVehicleHardware aggregates every domain into one binary).
-    # It must NOT declare a new per-domain daemon — that domain would never
-    # actually run. init_daemon_domain/hal_server_domain here are dead
-    # policy for a process that doesn't exist.
+    # process. It must NOT declare a new per-domain daemon — that domain
+    # would never actually run.
     declares_new_domain = bool(_re.search(r"type\s+\w+\s*,\s*domain\s*;", policy)) \
         or "init_daemon_domain(" in policy or "hal_server_domain(" in policy
     if declares_new_domain:
@@ -634,33 +632,35 @@ def _selinux_regex_fallback(policy: str) -> ValidatorResult:
                        "rules must target the shared hal_vehicle_vss domain "
                        "instead (see SELinuxSignature contract)")
     else:
-        score += 0.35
+        score += 0.30
 
-    # Every allow rule (if any) must target hal_vehicle_vss and be well-formed.
-    # A comment-only "no extra permissions needed" fragment is equally valid —
-    # it means this domain's C++ implementation does no real device/file I/O.
-    allow_lines = [l for l in policy.splitlines() if l.strip().startswith("allow ")]
-    if not allow_lines:
+    # Every domain's C++ genuinely performs file I/O against the shared
+    # vss_hw_data_file type (simulated HW register files) — this is now
+    # mandatory, not optional, because getValues/setValues are backed by
+    # real file I/O rather than a stub or in-memory map.
+    if "vss_hw_data_file" in policy and "allow hal_vehicle_vss vss_hw_data_file" in policy:
         score += 0.35
     else:
-        bad = [l for l in allow_lines
-               if not l.strip().startswith("allow hal_vehicle_vss ")
-               or not l.strip().rstrip("{").rstrip().endswith((";", "{"))]
-        if bad:
-            errors.append(f"{len(bad)} allow rule(s) not scoped to "
-                           f"hal_vehicle_vss or malformed")
-        else:
-            score += 0.35
+        errors.append("Missing allow hal_vehicle_vss vss_hw_data_file rule "
+                       "— required because this domain's HAL implementation "
+                       "performs real file I/O against the simulated "
+                       "hardware register directory")
+
+    # Any OTHER allow rules present must still target hal_vehicle_vss
+    allow_lines = [l for l in policy.splitlines() if l.strip().startswith("allow ")]
+    bad = [l for l in allow_lines
+           if not l.strip().startswith("allow hal_vehicle_vss ")
+           or not l.strip().rstrip("{").rstrip().endswith((";", "{"))]
+    if bad:
+        errors.append(f"{len(bad)} allow rule(s) not scoped to "
+                       f"hal_vehicle_vss or malformed")
+    else:
+        score += 0.20
 
     if policy.count("{") == policy.count("}"):
         score += 0.15
     else:
         errors.append("Unbalanced braces")
-
-    if policy.strip():
-        score += 0.15
-    else:
-        errors.append("Empty policy content")
 
     ok = score >= 0.70 and len(errors) == 0
     return ValidatorResult(ok=ok, score=round(score, 3),

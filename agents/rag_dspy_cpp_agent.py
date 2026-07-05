@@ -185,27 +185,40 @@ CORRECT Android 14 method signatures:
   void registerOnPropertySetErrorEvent(
       std::unique_ptr<const PropertySetErrorCallback> callback) override;
 
-REAL PROPERTY STORE — MANDATORY, DO NOT STUB:
+REAL HARDWARE-REGISTER FILE STORE — MANDATORY, DO NOT STUB, DO NOT USE A PLAIN MAP:
   getValues/setValues MUST NOT be `(*callback)({}); return StatusCode::OK;`.
   That discards every request and stores nothing — a set-then-get round trip
   would silently return nothing, which is wrong.
-  Add a private member: std::unordered_map<int32_t, VehiclePropValue> mValues;
-  (plus #include <unordered_map> and #include <mutex> in the header, plus a
-  mutable std::mutex mLock; member for thread safety.)
-  In the constructor, seed mValues from getAllPropertyConfigs() with a
-  default-constructed VehiclePropValue per prop id (value 0 / false / empty
-  is fine — the point is the entry EXISTS and is keyed by the real prop id).
-  getValues(): for each request, look up req.prop.prop in mValues; if found
-  set r.status = StatusCode::OK and r.prop = the stored value; if not found
-  set r.status = StatusCode::INVALID_ARG. Collect into a vector and pass it
-  to the callback — never pass an empty vector when requests is non-empty.
-  setValues(): for each request, look up req.value.prop in mValues; if found,
-  overwrite it with req.value and set status OK; else INVALID_ARG. Same
+  Each property is backed by a REAL file under
+  /data/vendor/vss_hw/{domain_lower}/<hex_prop_id>.reg — this simulates a
+  hardware register interface via genuine file I/O, not an in-memory map.
+  Header needs: #include <mutex>, #include <string>; private members:
+    mutable std::mutex mLock;
+    static constexpr const char* kHwRegisterDir = "/data/vendor/vss_hw/{domain_lower}/";
+    std::string registerPath(int32_t propId) const;
+    bool readRegister(int32_t propId, VehiclePropValue& out) const;
+    bool writeRegister(int32_t propId, const VehiclePropValue& in) const;
+  Impl needs: #include <fstream>, #include <sys/stat.h>
+  registerPath(): snprintf "%s%08x.reg" with kHwRegisterDir and propId.
+  readRegister(): use a switch(propId) with one case per property this
+  domain owns (matching the enum constants in getAllPropertyConfigs()).
+  Each case opens registerPath(propId) with std::ifstream; if the file
+  doesn't exist yet, return a zero/false default (file not created yet is
+  normal on first boot) — still return true with a valid default value.
+  writeRegister(): mkdir(kHwRegisterDir, 0770) best-effort, then open
+  registerPath(propId) with std::ofstream(..., std::ios::trunc) and write
+  the value.
+  getValues(): for each request, call readRegister(req.prop.prop, v); if it
+  returns true, status = OK and prop = v; else status = INVALID_ARG. Collect
+  into a vector and pass to the callback — never pass an empty vector when
+  requests is non-empty.
+  setValues(): for each request, call writeRegister(req.value.prop,
+  req.value); status = OK if it returns true, else INVALID_ARG. Same
   callback pattern as getValues.
-  This is intentionally a plain in-memory map — it must NOT open files, touch
-  sysfs, or use sockets. A domain whose HAL only stores values in RAM needs
-  no SELinux permissions beyond the binder IPC already granted to the
-  aggregate hal_vehicle_vss domain.
+  This IS real file I/O against /data/vendor/vss_hw/ — that is the point.
+  Do NOT substitute it with an in-memory std::unordered_map; the file-backed
+  register interface is what justifies this domain's SELinux permissions
+  (see the SELinux agent's contract, which grants vss_hw_data_file access).
 
 FORBIDDEN Android 13 types (do NOT use):
   IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only

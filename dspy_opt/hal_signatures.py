@@ -101,15 +101,14 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
        #include <vector>
        #include <memory>
-       #include <unordered_map>
        #include <mutex>
+       #include <string>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
 
        class VehicleHalService{Domain} : public IVehicleHardware {
        public:
-           VehicleHalService{Domain}();
            std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
            StatusCode getValues(std::shared_ptr<const GetValuesCallback> callback,
                                 const std::vector<GetValueRequest>& requests) const override;
@@ -123,13 +122,21 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
                std::unique_ptr<const PropertySetErrorCallback> callback) override;
        private:
            mutable std::mutex mLock;
-           std::unordered_map<int32_t, VehiclePropValue> mValues;  // in-memory property store
+           // Each property is backed by a simulated hardware register file
+           // under this vendor-writable directory — real file I/O, not RAM.
+           static constexpr const char* kHwRegisterDir = "/data/vendor/vss_hw/{domain_lower}/";
+           std::string registerPath(int32_t propId) const;   // kHwRegisterDir + hex(propId) + ".reg"
+           bool readRegister(int32_t propId, VehiclePropValue& out) const;
+           bool writeRegister(int32_t propId, const VehiclePropValue& in) const;
        };
 
        } // namespace android::hardware::automotive::vehicle
 
-    IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp) — REAL property store, NOT a stub:
+    IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp) — REAL hardware-register
+    file I/O with an explicit switch(propId), NOT an in-memory map, NOT a stub:
        #include "VehicleHalService{Domain}.h"
+       #include <fstream>
+       #include <sys/stat.h>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
@@ -141,17 +148,39 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
            };
        }
 
-       // Constructor seeds mValues with a zero/false/empty default for every
-       // property this domain owns, keyed by the SAME prop id used above.
-       VehicleHalService{Domain}::VehicleHalService{Domain}() {
-           for (const auto& cfg : getAllPropertyConfigs()) {
-               VehiclePropValue v;
-               v.prop = cfg.prop;
-               mValues[cfg.prop] = v;   // default-constructed value (0 / false / empty)
+       std::string VehicleHalService{Domain}::registerPath(int32_t propId) const {
+           char buf[64];
+           snprintf(buf, sizeof(buf), "%s%08x.reg", kHwRegisterDir, propId);
+           return std::string(buf);
+       }
+
+       // Real file I/O — simulates a memory-mapped hardware register per property.
+       // A switch(propId) dispatches per-property so each case is explicit about
+       // which property it is servicing, matching how a real VHAL backed by
+       // actual hardware registers/CAN signals would be structured.
+       bool VehicleHalService{Domain}::readRegister(int32_t propId, VehiclePropValue& out) const {
+           switch (propId) {
+               case static_cast<int32_t>(VehicleProperty::VEHICLE_CHILDREN_...): {
+                   std::ifstream f(registerPath(propId));
+                   if (!f.good()) { out.prop = propId; out.value.int32Values = {0}; return true; }
+                   int32_t v = 0; f >> v;
+                   out.prop = propId; out.value.int32Values = {v};
+                   return true;
+               }
+               // ... one case per property this domain owns ...
+               default:
+                   return false;
            }
        }
 
-       // getValues MUST actually read from mValues — NOT return an empty result.
+       bool VehicleHalService{Domain}::writeRegister(int32_t propId, const VehiclePropValue& in) const {
+           mkdir(kHwRegisterDir, 0770);  // best-effort; already created by init.rc in production
+           std::ofstream f(registerPath(propId), std::ios::trunc);
+           if (!f.good()) return false;
+           if (!in.value.int32Values.empty()) f << in.value.int32Values[0];
+           return true;
+       }
+
        StatusCode VehicleHalService{Domain}::getValues(
                std::shared_ptr<const GetValuesCallback> callback,
                const std::vector<GetValueRequest>& requests) const {
@@ -160,20 +189,15 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
            for (const auto& req : requests) {
                GetValueResult r;
                r.requestId = req.requestId;
-               auto it = mValues.find(req.prop.prop);
-               if (it != mValues.end()) {
-                   r.status = StatusCode::OK;
-                   r.prop = it->second;
-               } else {
-                   r.status = StatusCode::INVALID_ARG;
-               }
+               VehiclePropValue v;
+               if (readRegister(req.prop.prop, v)) { r.status = StatusCode::OK; r.prop = v; }
+               else { r.status = StatusCode::INVALID_ARG; }
                results.push_back(std::move(r));
            }
            (*callback)(results);
            return StatusCode::OK;
        }
 
-       // setValues MUST actually write into mValues — NOT discard the request.
        StatusCode VehicleHalService{Domain}::setValues(
                std::shared_ptr<const SetValuesCallback> callback,
                const std::vector<SetValueRequest>& requests) {
@@ -182,13 +206,7 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
            for (const auto& req : requests) {
                SetValueResult r;
                r.requestId = req.requestId;
-               auto it = mValues.find(req.value.prop);
-               if (it != mValues.end()) {
-                   it->second = req.value;
-                   r.status = StatusCode::OK;
-               } else {
-                   r.status = StatusCode::INVALID_ARG;
-               }
+               r.status = writeRegister(req.value.prop, req.value) ? StatusCode::OK : StatusCode::INVALID_ARG;
                results.push_back(std::move(r));
            }
            (*callback)(results);
@@ -208,13 +226,11 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        {.prop = static_cast<int32_t>(VehicleProperty::VEHICLE_CHILDREN_ADAS_...),
         .access = VehiclePropertyAccess::READ_WRITE}
 
-    WHY THIS MATTERS: getValues/setValues that discard requests and return an
-    empty result mean NO real state is ever stored — VTS's Readable/Writable
-    checks pass only because they check for a non-error status, not correct
-    round-trip behavior. A real in-memory store (mValues) is what makes a
-    set-then-get sequence actually return what was set, and is also what
-    justifies whether this domain needs any additional SELinux permissions
-    (an in-memory map needs none beyond binder IPC — no file/device access).
+    WHY THIS MATTERS: this domain's implementation performs REAL file I/O
+    against /data/vendor/vss_hw/{domain}/ — a stand-in for a genuine
+    hardware register interface. This is what makes the domain's SELinux
+    policy meaningful: it must be granted access to that specific vendor
+    data path (see the SELinux agent's contract), not just generic binder.
 
     NEVER output markdown fences, no extra explanation.
 
@@ -226,17 +242,21 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
     - Missing #include "VehicleHalService{Domain}.h" in .cpp
     - getValues/setValues that call the callback with an empty vector and
       discard the request — this is a stub, not an implementation
+    - An in-memory-only std::unordered_map with no file I/O — the register
+      file backing IS the point; do not substitute it with a plain map
     - IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
     - hidl_interface, @2.0, HIDL_FETCH_*, Return<>, .valueType
     - aidlvhal:: namespace prefix
     """
     domain: str = dspy.InputField(desc="HAL domain name (e.g. HVAC, ADAS, BODY)")
     properties: str = dspy.InputField(desc="List of VSS properties with name, type, access, and AIDL enum")
-    aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples — prefer FakeVehicleHardware / DefaultVehicleHal patterns showing a real mValues-style property store")
+    aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples — prefer FakeVehicleHardware / DefaultVehicleHal patterns")
 
-    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, mValues member, include VehicleProperty.h")
-    cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp — MUST include own .h, namespace wrapper, enum names, and REAL getValues/setValues backed by mValues (no stub returns)")
-    reasoning: str = dspy.OutputField(desc="Brief reasoning about class name, prop IDs used, and how mValues is populated")
+    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, registerPath/readRegister/writeRegister members")
+    cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp — MUST include own .h, namespace wrapper, switch(propId)-based readRegister/writeRegister backed by real file I/O under /data/vendor/vss_hw/{domain}/")
+    reasoning: str = dspy.OutputField(desc="Brief reasoning about class name, prop IDs used, and which properties the switch-case handles")
+
+
 
 
 
@@ -666,8 +686,16 @@ class SELinuxSignature(dspy.Signature):
     already declared and initialised elsewhere (init_daemon_domain,
     hal_server_domain, binder_use, exec_type — do NOT redeclare these).
     There is no separate daemon per VSS domain — matching real AOSP
-    devices, which likewise expose exactly one Vehicle HAL process
-    (e.g. hal_vehicle_default), never one process per property group.
+    devices, which likewise expose exactly one Vehicle HAL process.
+
+    REAL HARDWARE ACCESS THIS DOMAIN NEEDS:
+    Every domain's C++ implementation reads/writes a simulated hardware
+    register file per property under /data/vendor/vss_hw/{domain}/ (see
+    the CPP agent's contract — this is real file I/O via std::ifstream/
+    std::ofstream, not an in-memory-only map). This means EVERY domain
+    genuinely needs vendor data file access — this is not optional or
+    domain-specific like a camera or LED would be; it is required by the
+    HAL implementation itself.
 
     STRICT RULES — NO EXCEPTIONS:
     - Output ONLY the raw .te policy content.
@@ -684,22 +712,23 @@ class SELinuxSignature(dspy.Signature):
     FORBIDDEN (HIDL — causes build failure on Android 14):
     - hal_attribute_hwservice, add_hwservice, find_hwservice
     - hwservice_manager, hwbinder_device, fwk_vehicle_hwservice
-    - hwbinder_use, hidl_base_hwservice
 
-    REQUIRED — every rule targets the single shared runtime domain:
-    - allow hal_vehicle_vss <target_type>:<class> { <perms> };
-    - Only emit rules for hardware/resource access this property group's
-      C++ implementation genuinely needs beyond generic binder IPC
-      (e.g. a real sensor/actuator device node or sysfs path). If the
-      implementation only returns static config and stubs getValues/
-      setValues, it needs NO additional rules — an empty policy (just a
-      comment explaining why) is the CORRECT output in that case.
+    REQUIRED — every rule targets the single shared runtime domain and
+    the vendor data type that backs this domain's hardware register files:
+       allow hal_vehicle_vss vss_hw_data_file:dir { search add_name write };
+       allow hal_vehicle_vss vss_hw_data_file:file { create read write open getattr unlink };
+    (vss_hw_data_file is declared once in the shared base policy — do not
+    redeclare its type here, just emit the allow rules above.)
+    If this domain ALSO needs something beyond the register-file access
+    every domain shares (e.g. a genuinely domain-specific resource),
+    add additional `allow hal_vehicle_vss <target>:<class> {...};` lines
+    for that — but the two lines above are always required.
     """
     domain: str = dspy.InputField(desc="HAL domain name")
     service_name: str = dspy.InputField(desc="Full VHAL service name, e.g. vendor.vss.adas")
     aosp_context: str = dspy.InputField(desc="Retrieved real AOSP 14 AIDL .te policy file examples")
 
-    policy: str = dspy.OutputField(desc="allow-only .te fragment scoped to hal_vehicle_vss — no new domain/type declarations")
+    policy: str = dspy.OutputField(desc="allow-only .te fragment scoped to hal_vehicle_vss, granting vss_hw_data_file access — no new domain/type declarations")
 
 
 class BuildFileSignature(dspy.Signature):

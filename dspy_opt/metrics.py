@@ -220,10 +220,10 @@ def metric_selinux(example, prediction, trace=None) -> float:
     syntax_valid weighted highest (0.65) because checkpolicy is authoritative.
 
     New contract: this fragment must NOT declare a new per-domain daemon —
-    every domain runs inside the single shared hal_vehicle_vss process, so
-    rules must target that domain directly (or the fragment may be a
-    comment-only "no extra permissions needed" for domains with no real
-    device/file I/O).
+    every domain runs inside the single shared hal_vehicle_vss process —
+    and MUST grant vss_hw_data_file access, since every domain's C++
+    implementation performs real file I/O against the simulated hardware
+    register directory rather than stubbing getValues/setValues.
     """
     policy = _get_output(prediction, "policy")
     if not policy:
@@ -232,15 +232,16 @@ def metric_selinux(example, prediction, trace=None) -> float:
         __import__("re").search(r"type\s+\w+\s*,\s*domain\s*;", policy) is not None
         or "init_daemon_domain(" in policy or "hal_server_domain(" in policy
     )
-    allow_lines = [l for l in policy.splitlines() if l.strip().startswith("allow ")]
-    allow_ok = (not allow_lines) or all(
-        l.strip().startswith("allow hal_vehicle_vss ") for l in allow_lines
+    has_hw_data_access = (
+        "vss_hw_data_file" in policy and "allow hal_vehicle_vss vss_hw_data_file" in policy
     )
+    allow_lines = [l for l in policy.splitlines() if l.strip().startswith("allow ")]
+    allow_ok = all(l.strip().startswith("allow hal_vehicle_vss ") for l in allow_lines)
     structural = _heuristic([
-        (not declares_new_domain,                                            0.35),
-        (allow_ok,                                                           0.35),
-        (policy.count("{") == policy.count("}"),                             0.15),
-        (bool(policy.strip()),                                               0.15),
+        (not declares_new_domain,                                            0.30),
+        (has_hw_data_access,                                                 0.35),
+        (allow_ok,                                                           0.20),
+        (policy.count("{") == policy.count("}"),                            0.15),
     ])
     syntax_res = validate("selinux", policy)
     coverage   = _type_coverage(example, policy)   # VSS names don't appear in .te files

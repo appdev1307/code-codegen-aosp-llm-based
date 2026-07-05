@@ -358,6 +358,11 @@ def _generate_init_rc() -> str:
     group vehicle_network system inet
     capabilities BLOCK_SUSPEND
     ioprio be 4
+
+# Simulated hardware register directory — created before the service starts
+# so getValues/setValues have somewhere to read/write on first boot.
+on post-fs-data
+    mkdir /data/vendor/vss_hw 0770 vehicle_network vehicle_network
 """
 
 
@@ -423,6 +428,13 @@ allow hal_vehicle_vss vndbinder_device:chr_file { read write open };
 allow hal_vehicle_vss self:process { fork sigchld };
 allow hal_vehicle_vss vendor_configs_file:dir search;
 allow hal_vehicle_vss vendor_configs_file:file { read getattr open };
+
+# Simulated hardware register files — every domain's C++ implementation
+# performs real file I/O under /data/vendor/vss_hw/{domain}/ instead of
+# stubbing getValues/setValues, so this type is required unconditionally.
+type vss_hw_data_file, file_type, data_file_type;
+allow hal_vehicle_vss vss_hw_data_file:dir { search add_name write create };
+allow hal_vehicle_vss vss_hw_data_file:file { create read write open getattr unlink };
 """
     return base + extra_rules
 

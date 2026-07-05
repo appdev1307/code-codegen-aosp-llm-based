@@ -339,6 +339,12 @@ if ! grep -qF "V3-vss-service" "$FC_VSS" 2>/dev/null; then
 else
     ok "SELinux label already present"
 fi
+if ! grep -qF "vss_hw_data_file" "$FC_VSS" 2>/dev/null; then
+    echo "/data/vendor/vss_hw(/.*)?    u:object_r:vss_hw_data_file:s0" >> "$FC_VSS"
+    ok "SELinux label added for vss_hw_data_file (simulated HW registers)"
+else
+    ok "vss_hw_data_file label already present"
+fi
 
 MAIN_FC="$AOSP_ROOT/system/sepolicy/vendor/file_contexts"
 if [ -f "$MAIN_FC" ] && ! grep -qF "V3-vss-service" "$MAIN_FC" 2>/dev/null; then
@@ -346,6 +352,12 @@ if [ -f "$MAIN_FC" ] && ! grep -qF "V3-vss-service" "$MAIN_FC" 2>/dev/null; then
     ok "SELinux label added to system/sepolicy/vendor/file_contexts"
 else
     ok "SELinux label already present in system/sepolicy/vendor/file_contexts"
+fi
+if [ -f "$MAIN_FC" ] && ! grep -qF "vss_hw_data_file" "$MAIN_FC" 2>/dev/null; then
+    echo "/data/vendor/vss_hw(/.*)?    u:object_r:vss_hw_data_file:s0" >> "$MAIN_FC"
+    ok "SELinux label added for vss_hw_data_file in system/sepolicy/vendor/file_contexts"
+else
+    ok "vss_hw_data_file label already present in system/sepolicy/vendor/file_contexts"
 fi
 
 # ═══════════════════════════════════════════════════════════════
