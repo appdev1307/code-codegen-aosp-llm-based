@@ -101,12 +101,15 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
        #include <vector>
        #include <memory>
+       #include <unordered_map>
+       #include <mutex>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
 
        class VehicleHalService{Domain} : public IVehicleHardware {
        public:
+           VehicleHalService{Domain}();
            std::vector<VehiclePropConfig> getAllPropertyConfigs() const override;
            StatusCode getValues(std::shared_ptr<const GetValuesCallback> callback,
                                 const std::vector<GetValueRequest>& requests) const override;
@@ -118,11 +121,14 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
                std::unique_ptr<const PropertyChangeCallback> callback) override;
            void registerOnPropertySetErrorEvent(
                std::unique_ptr<const PropertySetErrorCallback> callback) override;
+       private:
+           mutable std::mutex mLock;
+           std::unordered_map<int32_t, VehiclePropValue> mValues;  // in-memory property store
        };
 
        } // namespace android::hardware::automotive::vehicle
 
-    IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp) MUST BE EXACTLY:
+    IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp) — REAL property store, NOT a stub:
        #include "VehicleHalService{Domain}.h"
 
        namespace android::hardware::automotive::vehicle {
@@ -134,12 +140,61 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
                 .access = VehiclePropertyAccess::READ},
            };
        }
+
+       // Constructor seeds mValues with a zero/false/empty default for every
+       // property this domain owns, keyed by the SAME prop id used above.
+       VehicleHalService{Domain}::VehicleHalService{Domain}() {
+           for (const auto& cfg : getAllPropertyConfigs()) {
+               VehiclePropValue v;
+               v.prop = cfg.prop;
+               mValues[cfg.prop] = v;   // default-constructed value (0 / false / empty)
+           }
+       }
+
+       // getValues MUST actually read from mValues — NOT return an empty result.
        StatusCode VehicleHalService{Domain}::getValues(
                std::shared_ptr<const GetValuesCallback> callback,
-               const std::vector<GetValueRequest>&) const { (*callback)({}); return StatusCode::OK; }
+               const std::vector<GetValueRequest>& requests) const {
+           std::lock_guard<std::mutex> lock(mLock);
+           std::vector<GetValueResult> results;
+           for (const auto& req : requests) {
+               GetValueResult r;
+               r.requestId = req.requestId;
+               auto it = mValues.find(req.prop.prop);
+               if (it != mValues.end()) {
+                   r.status = StatusCode::OK;
+                   r.prop = it->second;
+               } else {
+                   r.status = StatusCode::INVALID_ARG;
+               }
+               results.push_back(std::move(r));
+           }
+           (*callback)(results);
+           return StatusCode::OK;
+       }
+
+       // setValues MUST actually write into mValues — NOT discard the request.
        StatusCode VehicleHalService{Domain}::setValues(
                std::shared_ptr<const SetValuesCallback> callback,
-               const std::vector<SetValueRequest>&) { (*callback)({}); return StatusCode::OK; }
+               const std::vector<SetValueRequest>& requests) {
+           std::lock_guard<std::mutex> lock(mLock);
+           std::vector<SetValueResult> results;
+           for (const auto& req : requests) {
+               SetValueResult r;
+               r.requestId = req.requestId;
+               auto it = mValues.find(req.value.prop);
+               if (it != mValues.end()) {
+                   it->second = req.value;
+                   r.status = StatusCode::OK;
+               } else {
+                   r.status = StatusCode::INVALID_ARG;
+               }
+               results.push_back(std::move(r));
+           }
+           (*callback)(results);
+           return StatusCode::OK;
+       }
+
        DumpResult VehicleHalService{Domain}::dump(const std::vector<std::string>&) { return {}; }
        StatusCode VehicleHalService{Domain}::checkHealth() { return StatusCode::OK; }
        void VehicleHalService{Domain}::registerOnPropertyChangeEvent(
@@ -153,6 +208,14 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        {.prop = static_cast<int32_t>(VehicleProperty::VEHICLE_CHILDREN_ADAS_...),
         .access = VehiclePropertyAccess::READ_WRITE}
 
+    WHY THIS MATTERS: getValues/setValues that discard requests and return an
+    empty result mean NO real state is ever stored — VTS's Readable/Writable
+    checks pass only because they check for a non-error status, not correct
+    round-trip behavior. A real in-memory store (mValues) is what makes a
+    set-then-get sequence actually return what was set, and is also what
+    justifies whether this domain needs any additional SELinux permissions
+    (an in-memory map needs none beyond binder IPC — no file/device access).
+
     NEVER output markdown fences, no extra explanation.
 
     FORBIDDEN:
@@ -161,17 +224,21 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
     - Missing #pragma once in header
     - Missing namespace wrapper in both .h and .cpp
     - Missing #include "VehicleHalService{Domain}.h" in .cpp
+    - getValues/setValues that call the callback with an empty vector and
+      discard the request — this is a stub, not an implementation
     - IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
     - hidl_interface, @2.0, HIDL_FETCH_*, Return<>, .valueType
     - aidlvhal:: namespace prefix
     """
     domain: str = dspy.InputField(desc="HAL domain name (e.g. HVAC, ADAS, BODY)")
     properties: str = dspy.InputField(desc="List of VSS properties with name, type, access, and AIDL enum")
-    aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples")
+    aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples — prefer FakeVehicleHardware / DefaultVehicleHal patterns showing a real mValues-style property store")
 
-    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, include VehicleProperty.h")
-    cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp — MUST include own .h, namespace wrapper, enum names in getAllPropertyConfigs()")
-    reasoning: str = dspy.OutputField(desc="Brief reasoning about class name and prop IDs used")
+    cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, mValues member, include VehicleProperty.h")
+    cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp — MUST include own .h, namespace wrapper, enum names, and REAL getValues/setValues backed by mValues (no stub returns)")
+    reasoning: str = dspy.OutputField(desc="Brief reasoning about class name, prop IDs used, and how mValues is populated")
+
+
 
 
 class CppSkeletonSignature(dspy.Signature):

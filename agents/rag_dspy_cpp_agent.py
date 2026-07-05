@@ -79,6 +79,8 @@ _QUERIES = [
     "ndk SharedRefBase make automotive vehicle",
     "FakeVehicleHardware getAllPropertyConfigs VehiclePropConfig "
     "areaConfigs automotive vehicle implementation",
+    "unordered_map mValues property store getValues setValues "
+    "VehiclePropValue lock_guard mutex vehicle hardware",
 ]
 
 # Injected into every generation — explicit AIDL V3 contract
@@ -182,6 +184,29 @@ CORRECT Android 14 method signatures:
       std::unique_ptr<const PropertyChangeCallback> callback) override;
   void registerOnPropertySetErrorEvent(
       std::unique_ptr<const PropertySetErrorCallback> callback) override;
+
+REAL PROPERTY STORE — MANDATORY, DO NOT STUB:
+  getValues/setValues MUST NOT be `(*callback)({}); return StatusCode::OK;`.
+  That discards every request and stores nothing — a set-then-get round trip
+  would silently return nothing, which is wrong.
+  Add a private member: std::unordered_map<int32_t, VehiclePropValue> mValues;
+  (plus #include <unordered_map> and #include <mutex> in the header, plus a
+  mutable std::mutex mLock; member for thread safety.)
+  In the constructor, seed mValues from getAllPropertyConfigs() with a
+  default-constructed VehiclePropValue per prop id (value 0 / false / empty
+  is fine — the point is the entry EXISTS and is keyed by the real prop id).
+  getValues(): for each request, look up req.prop.prop in mValues; if found
+  set r.status = StatusCode::OK and r.prop = the stored value; if not found
+  set r.status = StatusCode::INVALID_ARG. Collect into a vector and pass it
+  to the callback — never pass an empty vector when requests is non-empty.
+  setValues(): for each request, look up req.value.prop in mValues; if found,
+  overwrite it with req.value and set status OK; else INVALID_ARG. Same
+  callback pattern as getValues.
+  This is intentionally a plain in-memory map — it must NOT open files, touch
+  sysfs, or use sockets. A domain whose HAL only stores values in RAM needs
+  no SELinux permissions beyond the binder IPC already granted to the
+  aggregate hal_vehicle_vss domain.
+
 FORBIDDEN Android 13 types (do NOT use):
   IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
   VssVehicleHardwareImpl — does not exist in Android 14
@@ -196,6 +221,8 @@ FORBIDDEN:
   VehiclePropertyAdas:: | VehiclePropertyBody:: | VehiclePropertyCabin:: — use VehicleProperty:: instead
   HIDL_FETCH_* | Return<> | BnVehicle | BnIVehicle | .valueType | sync getValues
   aidlvhal:: prefix — use namespace directly via using namespace
+  getValues/setValues that call the callback with an empty vector and
+  discard the request — this is a stub, not a real property store
 NEVER wrap output in markdown code fences (``` or ```cpp) — emit raw C++ only.
 Start every .h file with the includes above. Do not omit them.
 """
