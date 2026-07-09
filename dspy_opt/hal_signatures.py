@@ -471,12 +471,22 @@ class CppRegisterBodySignature(dspy.Signature):
     Use enum constant names EXACTLY as they appear in `properties` — do
     not invent or modify names.
 
+    CRITICAL: output ONLY cases for the properties listed in `properties`
+    above — exactly one read_cases entry and, for READ_WRITE properties
+    only, one write_cases entry per property in that list, and NOTHING
+    ELSE. Do NOT add cases for any other property name, even ones that
+    look familiar from `aosp_context` — those are reference examples for
+    STYLE only, not additional properties to handle. A case for a
+    property not in `properties` is a contract violation.
+
     FORBIDDEN:
     - Markdown code fences (``` or ```cpp)
     - `boolValues` or `booleanValues` — use int32Values for BOOLEAN
     - A stub case that ignores propId's real type and always uses
       int32Values regardless of what `properties` says
     - Placeholder/fake property names
+    - Cases for ANY property not listed in `properties` — including
+      property names that only appear in `aosp_context`
     """
     domain: str = dspy.InputField(desc="HAL domain name (e.g. HVAC, ADAS, BODY)")
     properties: str = dspy.InputField(desc="THIS CHUNK ONLY: list of VSS properties with name, type, and access")

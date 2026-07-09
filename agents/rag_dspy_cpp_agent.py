@@ -483,20 +483,96 @@ class RagDspyCppAgent:
         # this keeps the artifact genuinely LLM-generated (the object of
         # study in this thesis), while chunking removes the domain-size
         # reliability risk a single large call would have.
+        def _filter_cases_to_allowed_names(cases_text: str, allowed_names: set) -> tuple[str, set]:
+            """Keep only `case static_cast<int32_t>(VehicleProperty::NAME): { ... }`
+            blocks where NAME is in allowed_names — strips any case the LLM
+            added for a property outside its assigned chunk (observed:
+            property names bleeding in from aosp_context's real AOSP
+            examples, e.g. a Body-domain chunk emitting an ADAS or OBD
+            property's case). Brace-counts rather than using a single
+            regex, since a case body can contain nested `{ }` (e.g. the
+            `if (!f.good()) { ... }` inside every generated case).
+            Returns (filtered_text, set of names actually kept).
+            """
+            kept_blocks, kept_names = [], set()
+            for m in re.finditer(r"case\s+static_cast<int32_t>\(VehicleProperty::(\w+)\)\s*:\s*\{", cases_text):
+                name = m.group(1)
+                if name not in allowed_names:
+                    continue
+                depth = 1
+                pos = m.end()
+                while depth > 0 and pos < len(cases_text):
+                    if cases_text[pos] == "{":
+                        depth += 1
+                    elif cases_text[pos] == "}":
+                        depth -= 1
+                    pos += 1
+                kept_blocks.append(cases_text[m.start():pos])
+                kept_names.add(name)
+            return "\n".join(kept_blocks), kept_names
+
         all_read_cases, all_write_cases = [], []
         for i in range(0, len(prop_list), chunk_size):
             chunk = prop_list[i:i + chunk_size]
             chunk_properties_text = self._build_chunk_properties_text(domain, chunk, aidl_block)
-            body_result = self.register_body_predictor(
-                domain       = domain,
-                properties   = chunk_properties_text,
-                aosp_context = aosp_context,
-            )
-            all_read_cases.append(_strip_markdown_fences(getattr(body_result, "read_cases", "") or ""))
-            all_write_cases.append(_strip_markdown_fences(getattr(body_result, "write_cases", "") or ""))
+            chunk_names = {getattr(p, "id", None) or getattr(p, "signal_name", None) for p in chunk}
+            chunk_rw_names = {
+                getattr(p, "id", None) or getattr(p, "signal_name", None)
+                for p in chunk
+                if str(getattr(p, "access", "")).upper() in ("READ_WRITE", "WRITE")
+            }
 
-        merged_read_cases  = "\n".join(c.strip() for c in all_read_cases)
-        merged_write_cases = "\n".join(c.strip() for c in all_write_cases)
+            read_cases_text, write_cases_text = "", ""
+            if enable_chunk_retry:
+                for attempt in range(1, MAX_CHUNK_RETRIES + 2):
+                    body_result = self.register_body_predictor(
+                        domain       = domain,
+                        properties   = chunk_properties_text,
+                        aosp_context = aosp_context,
+                    )
+                    raw_read  = _strip_markdown_fences(getattr(body_result, "read_cases", "") or "")
+                    raw_write = _strip_markdown_fences(getattr(body_result, "write_cases", "") or "")
+                    read_cases_text, kept_read   = _filter_cases_to_allowed_names(raw_read, chunk_names)
+                    write_cases_text, kept_write = _filter_cases_to_allowed_names(raw_write, chunk_rw_names)
+
+                    if kept_read >= chunk_names and kept_write >= chunk_rw_names:
+                        if attempt > 1:
+                            print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
+                                  f"✓ retry {attempt-1} recovered all cases")
+                        break
+                    if attempt <= MAX_CHUNK_RETRIES:
+                        missing = sorted((chunk_names - kept_read) | (chunk_rw_names - kept_write))
+                        missing_hint = "\n".join(f"  - {n}" for n in missing[:10])
+                        retry_context = (
+                            f"=== RETRY: MISSING cases for these properties ===\n"
+                            f"{missing_hint}\n"
+                            f"Output a case for EVERY property listed below — do not skip any.\n"
+                            f"=== END RETRY ==="
+                        )
+                        chunk_properties_text = retry_context + "\n\n" + chunk_properties_text
+                        print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
+                              f"⚠ attempt {attempt}: missing {len(missing)} case(s) — retrying...")
+                    else:
+                        print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
+                              f"✗ gave up after {MAX_CHUNK_RETRIES} retries: "
+                              f"still missing {len((chunk_names - kept_read) | (chunk_rw_names - kept_write))}")
+            else:
+                # C3 path: no retry — single shot per chunk, by design.
+                body_result = self.register_body_predictor(
+                    domain       = domain,
+                    properties   = chunk_properties_text,
+                    aosp_context = aosp_context,
+                )
+                raw_read  = _strip_markdown_fences(getattr(body_result, "read_cases", "") or "")
+                raw_write = _strip_markdown_fences(getattr(body_result, "write_cases", "") or "")
+                read_cases_text, _  = _filter_cases_to_allowed_names(raw_read, chunk_names)
+                write_cases_text, _ = _filter_cases_to_allowed_names(raw_write, chunk_rw_names)
+
+            all_read_cases.append(read_cases_text.strip())
+            all_write_cases.append(write_cases_text.strip())
+
+        merged_read_cases  = "\n".join(all_read_cases)
+        merged_write_cases = "\n".join(all_write_cases)
 
         _READ_PLACEHOLDER  = "/*__READ_CASES_PLACEHOLDER__*/"
         _WRITE_PLACEHOLDER = "/*__WRITE_CASES_PLACEHOLDER__*/"
