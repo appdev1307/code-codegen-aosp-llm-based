@@ -278,6 +278,8 @@ class CppSkeletonSignature(dspy.Signature):
        #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
        #include <vector>
        #include <memory>
+       #include <mutex>
+       #include <string>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
@@ -295,12 +297,22 @@ class CppSkeletonSignature(dspy.Signature):
                std::unique_ptr<const PropertyChangeCallback> callback) override;
            void registerOnPropertySetErrorEvent(
                std::unique_ptr<const PropertySetErrorCallback> callback) override;
+       private:
+           mutable std::mutex mLock;
+           static constexpr const char* kHwRegisterDir = "/data/vendor/vss_hw/{domain_lower}/";
+           std::string registerPath(int32_t propId) const;
+           bool readRegister(int32_t propId, VehiclePropValue& out) const;
+           bool writeRegister(int32_t propId, const VehiclePropValue& in) const;
        };
 
        } // namespace android::hardware::automotive::vehicle
 
-    IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp) MUST BE EXACTLY:
+    IMPLEMENTATION FILE (VehicleHalService{Domain}.cpp) MUST BE EXACTLY
+    THIS STRUCTURE — getValues/setValues call readRegister/writeRegister,
+    NEVER a stub that discards requests and returns an empty vector:
        #include "VehicleHalService{Domain}.h"
+       #include <fstream>
+       #include <sys/stat.h>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
@@ -310,12 +322,49 @@ class CppSkeletonSignature(dspy.Signature):
                /*__PROPERTY_ENTRIES_PLACEHOLDER__*/
            };
        }
+
+       std::string VehicleHalService{Domain}::registerPath(int32_t propId) const {
+           char buf[64];
+           snprintf(buf, sizeof(buf), "%s%08x.reg", kHwRegisterDir, propId);
+           return std::string(buf);
+       }
+
+       // readRegister/writeRegister are generated per property in the
+       // separate chunked calls (this skeleton pass does NOT write their
+       // bodies) — but getValues/setValues below MUST call them, not stub.
+
        StatusCode VehicleHalService{Domain}::getValues(
                std::shared_ptr<const GetValuesCallback> callback,
-               const std::vector<GetValueRequest>&) const { (*callback)({}); return StatusCode::OK; }
+               const std::vector<GetValueRequest>& requests) const {
+           std::lock_guard<std::mutex> lock(mLock);
+           std::vector<GetValueResult> results;
+           for (const auto& req : requests) {
+               GetValueResult r;
+               r.requestId = req.requestId;
+               VehiclePropValue v;
+               if (readRegister(req.prop.prop, v)) { r.status = StatusCode::OK; r.prop = v; }
+               else { r.status = StatusCode::INVALID_ARG; }
+               results.push_back(std::move(r));
+           }
+           (*callback)(results);
+           return StatusCode::OK;
+       }
+
        StatusCode VehicleHalService{Domain}::setValues(
                std::shared_ptr<const SetValuesCallback> callback,
-               const std::vector<SetValueRequest>&) { (*callback)({}); return StatusCode::OK; }
+               const std::vector<SetValueRequest>& requests) {
+           std::lock_guard<std::mutex> lock(mLock);
+           std::vector<SetValueResult> results;
+           for (const auto& req : requests) {
+               SetValueResult r;
+               r.requestId = req.requestId;
+               r.status = writeRegister(req.value.prop, req.value) ? StatusCode::OK : StatusCode::INVALID_ARG;
+               results.push_back(std::move(r));
+           }
+           (*callback)(results);
+           return StatusCode::OK;
+       }
+
        DumpResult VehicleHalService{Domain}::dump(const std::vector<std::string>&) { return {}; }
        StatusCode VehicleHalService{Domain}::checkHealth() { return StatusCode::OK; }
        void VehicleHalService{Domain}::registerOnPropertyChangeEvent(
@@ -338,6 +387,11 @@ class CppSkeletonSignature(dspy.Signature):
     - Missing namespace wrapper in both .h and .cpp
     - Missing #include "VehicleHalService{Domain}.h" in .cpp
     - Omitting or duplicating the /*__PROPERTY_ENTRIES_PLACEHOLDER__*/ marker
+    - getValues/setValues that call the callback with an empty vector and
+      discard the request (`(*callback)({}); return StatusCode::OK;`) —
+      this is a stub, not an implementation, and will be rejected
+    - `boolValues` or `booleanValues` fields — RawPropValues has no such
+      field; booleans use int32Values with 0/1
     - IOnPropertyChangeCallback, IOnPropertySetErrorCallback — Android 13 only
     - hidl_interface, @2.0, HIDL_FETCH_*, Return<>, .valueType
     """
