@@ -8,10 +8,18 @@ uses a DSPy-optimised prompt to generate SELinux Type Enforcement
 policy files for VHAL services.
 
 FIX (2026-06): RAG queries updated to retrieve AIDL-based patterns
-only (hal_server_domain, init_daemon_domain, binder_use).
-Old queries referenced hwservice/add_hwservice (HIDL) which caused
-the LLM to generate legacy HIDL SELinux policy despite Layer 1/2
-filtering.
+(hal_server_domain, init_daemon_domain, binder_use) instead of
+HIDL patterns (hwservice/add_hwservice), which the old queries
+retrieved and which caused legacy HIDL SELinux output despite
+Layer 1/2 filtering. Superseded by the 2026-07 fix below.
+
+FIX (2026-07): every VSS domain now runs inside the single shared
+hal_vehicle_vss process (see agents/vss_glue_agent.py), so this
+fragment must NOT declare a new per-domain daemon — the
+hal_server_domain/init_daemon_domain pattern from the 2026-06 fix
+above is now explicitly FORBIDDEN by SELinuxSignature. Queries
+updated accordingly to retrieve allow-rule/vendor-data-file examples
+instead, so retrieval no longer contradicts the current contract.
 ═══════════════════════════════════════════════════════════════════
 """
 
@@ -61,14 +69,21 @@ class RAGDSPySELinuxAgent(RAGDSPyMixin):
         domain       = getattr(full_spec, "domain", "VEHICLE")
         service_name = f"vendor.vss.{domain.lower()}"
 
-        # FIX: queries now target AIDL-based SELinux patterns only.
-        # Old queries ("add_hwservice find_hwservice hwservice") retrieved
-        # HIDL examples from ChromaDB, causing HIDL output even after
-        # Layer 1 (indexer) and Layer 2 (mixin) filtering.
+        # FIX (2026-07): queries updated again to match the current
+        # SELinuxSignature contract — every VSS domain runs inside the
+        # SHARED hal_vehicle_vss process (see agents/vss_glue_agent.py);
+        # this fragment must NOT declare a new domain, so retrieving
+        # "hal_server_domain"/"init_daemon_domain" examples (the OLD
+        # per-domain-daemon pattern, now explicitly forbidden) actively
+        # worked against the instruction. Queries now target real AOSP
+        # examples of the pattern this fragment actually needs: allow
+        # rules granting an existing domain access to a vendor data file
+        # (matching the vss_hw_data_file permission the CPP agent's real
+        # file-backed register store requires).
         queries = [
-            f"hal_vehicle SELinux AIDL Android 14 type enforcement binder",
-            f"{domain.lower()} vendor hal selinux te hal_server_domain init_daemon_domain",
-            f"binder_use binder_call vndbinder_device hal_vehicle type domain",
+            f"SELinux allow rule vendor data file read write create Android 14",
+            f"vendor data_file_type file_type declaration allow domain file dir",
+            f"allow domain data_file_type dir search create file getattr open",
         ]
         aosp_context = self._retrieve_multi(queries)
 
