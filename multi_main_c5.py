@@ -77,6 +77,14 @@ VSS_TYPE_BITS = {
     "INT32":   0x00400000,
     "INT64":   0x00500000,
     "FLOAT":   0x00600000,
+    # "INT" (not "INT32") is what vss_to_yaml.py's vss_datatype_to_yaml_type()
+    # actually produces for every int-like VSS datatype (int8/16/32,
+    # uint8/16/32 all collapse to this one category — see that function's
+    # docstring). Without this key, .get(vss_type, default) below silently
+    # fell through to the default for every "INT" lookup — numerically
+    # correct by coincidence (default happened to equal INT32's value),
+    # but fragile: changing that default would have broken this silently.
+    "INT":     0x00400000,
 }
 
 def encode_prop_id(raw_index: int, vss_type: str) -> int:
@@ -88,7 +96,7 @@ def encode_prop_id(raw_index: int, vss_type: str) -> int:
     """
     if raw_index & 0xF0000000:                 # already a full ID — leave alone
         return raw_index
-    type_bits = VSS_TYPE_BITS.get(vss_type, 0x00400000)   # default INT32
+    type_bits = VSS_TYPE_BITS.get(vss_type.upper(), 0x00400000)   # default INT32
     return VSS_GROUP | VSS_AREA | type_bits | (raw_index & 0xFFFF)
 
 # ── LLM client (reused from C1-C4) ───────────────────────────────
@@ -156,7 +164,7 @@ def load_vss_properties() -> dict:
         name = prop.get("id", "") or prop.get("name", "")
         if name:
             prop_meta[name] = {
-                "type":   prop.get("type", "INT32").upper(),
+                "type":   prop.get("type", "INT").upper(),
                 "access": prop.get("access", "READ").upper(),
             }
 
@@ -219,7 +227,7 @@ def load_vss_properties() -> dict:
         props = []
         for idx, name in enumerate(prop_names):
             meta    = prop_meta.get(name, {})
-            typ     = meta.get("type", "INT32")
+            typ     = meta.get("type", "INT")
             access  = meta.get("access", "READ")
             # Always assign from the global counter. The AOSP-dump values in
             prop_id = encode_prop_id(global_idx, typ)
@@ -415,16 +423,23 @@ TEST_F(VssVhalTest, VssPropertiesWritable) {{
 // propId via switch-case.
 TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
   ASSERT_FALSE(kVssPropertyIds.empty());
-  constexpr uint32_t kTypeMask  = 0x00FF0000u;
-  constexpr uint32_t kFloatType = 0x00600000u;   // VSS_TYPE_BITS["FLOAT"]
-  // Every other type in VSS_TYPE_BITS (STRING/BOOLEAN/INT32/INT64) is
-  // written by the generated C++ via int32Values — see readRegister above.
+  constexpr uint32_t kTypeMask   = 0x00FF0000u;
+  constexpr uint32_t kFloatType  = 0x00600000u;   // VSS_TYPE_BITS["FLOAT"]
+  constexpr uint32_t kStringType = 0x00100000u;   // VSS_TYPE_BITS["STRING"]
+  // BOOLEAN and INT (vss_to_yaml.py's only other real categories — see
+  // vss_datatype_to_yaml_type) both map to int32Values in the generated
+  // C++ (see CppRegisterBodySignature); that's the default branch below.
+  // INT64 is defined in VSS_TYPE_BITS but never actually produced by the
+  // real type-labelling pipeline (all int-like VSS datatypes collapse to
+  // a single "INT" category), so it is intentionally not tested here.
 
   int passed = 0, failed = 0;
   std::vector<int32_t> failedProps;
 
   for (int32_t targetProp : kVssPropertyIds) {{
-    const bool isFloat = (static_cast<uint32_t>(targetProp) & kTypeMask) == kFloatType;
+    const uint32_t typeBits = static_cast<uint32_t>(targetProp) & kTypeMask;
+    const bool isFloat  = (typeBits == kFloatType);
+    const bool isString = (typeBits == kStringType);
 
     SetValueRequests setReqs;
     SetValueRequest setReq;
@@ -432,6 +447,8 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
     setReq.value.prop = targetProp;
     if (isFloat) {{
       setReq.value.value.floatValues = {{12.5f}};
+    }} else if (isString) {{
+      setReq.value.value.stringValue = "vts_test_value";
     }} else {{
       setReq.value.value.int32Values = {{42}};
     }}
@@ -458,9 +475,14 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
     }}
 
     const auto& got = getResults.payloads[0].prop.value;
-    bool matches = isFloat
-        ? (!got.floatValues.empty() && std::abs(got.floatValues[0] - 12.5f) < 0.001f)
-        : (!got.int32Values.empty() && got.int32Values[0] == 42);
+    bool matches;
+    if (isFloat) {{
+      matches = !got.floatValues.empty() && std::abs(got.floatValues[0] - 12.5f) < 0.001f;
+    }} else if (isString) {{
+      matches = got.stringValue == "vts_test_value";
+    }} else {{
+      matches = !got.int32Values.empty() && got.int32Values[0] == 42;
+    }}
 
     if (matches) {{ passed++; }}
     else {{ failed++; failedProps.push_back(targetProp); }}
