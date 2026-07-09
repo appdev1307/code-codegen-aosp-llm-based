@@ -329,9 +329,21 @@ class CppSkeletonSignature(dspy.Signature):
            return std::string(buf);
        }
 
-       // readRegister/writeRegister are generated per property in the
-       // separate chunked calls (this skeleton pass does NOT write their
-       // bodies) — but getValues/setValues below MUST call them, not stub.
+       bool VehicleHalService{Domain}::readRegister(int32_t propId, VehiclePropValue& out) const {
+           switch (propId) {
+               /*__READ_CASES_PLACEHOLDER__*/
+               default:
+                   return false;
+           }
+       }
+
+       bool VehicleHalService{Domain}::writeRegister(int32_t propId, const VehiclePropValue& in) const {
+           switch (propId) {
+               /*__WRITE_CASES_PLACEHOLDER__*/
+               default:
+                   return false;
+           }
+       }
 
        StatusCode VehicleHalService{Domain}::getValues(
                std::shared_ptr<const GetValuesCallback> callback,
@@ -379,6 +391,15 @@ class CppSkeletonSignature(dspy.Signature):
     getAllPropertyConfigs(), and NOWHERE else. Do not add any actual
     property entries yourself — they are added separately.
 
+    CRITICAL: the literal text `/*__READ_CASES_PLACEHOLDER__*/` MUST
+    appear EXACTLY ONCE inside readRegister()'s switch block, and
+    `/*__WRITE_CASES_PLACEHOLDER__*/` MUST appear EXACTLY ONCE inside
+    writeRegister()'s switch block, each immediately before that
+    function's `default:` case. Do not write any actual case statements
+    yourself — they are generated separately, per property, and spliced
+    in here. Do NOT leave these functions as stubs and do NOT omit the
+    switch/default wrapper shown above.
+
     NEVER output markdown fences, no extra explanation.
 
     FORBIDDEN:
@@ -402,6 +423,67 @@ class CppSkeletonSignature(dspy.Signature):
     cpp_header: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.h — MUST have #pragma once, namespace wrapper, include VehicleProperty.h")
     cpp_impl: str = dspy.OutputField(desc="Full VehicleHalService{Domain}.cpp with the /*__PROPERTY_ENTRIES_PLACEHOLDER__*/ marker inside getAllPropertyConfigs()")
     reasoning: str = dspy.OutputField(desc="Brief reasoning about class name used")
+
+
+class CppRegisterBodySignature(dspy.Signature):
+    """Generate ONLY the switch(propId) CASE STATEMENTS for readRegister()
+    and writeRegister() for a CHUNK of VSS properties — used for domains
+    with more properties than fit in one LLM call (see CHUNK_SIZE in
+    agents/rag_dspy_cpp_agent.py). Mirrors CppPropertyEntriesSignature's
+    per-chunk design so domain size never affects reliability: 3 or 300
+    properties, each chunk gets the same bounded, high-quality generation.
+
+    Each property needs ONE case in read_cases and ONE case in
+    write_cases. Use the property's real VSS type (given in `properties`)
+    to pick the correct RawPropValues field — there is no separate
+    boolean array field in real AOSP: booleans use int32Values (0/1).
+      INT32, BOOLEAN → int32Values
+      INT64          → int64Values
+      FLOAT          → floatValues
+      STRING         → stringValue (a single std::string, not an array)
+
+    Each read_cases entry MUST look exactly like this pattern (adjust
+    the value field per the property's type as above):
+       case static_cast<int32_t>(VehicleProperty::PROPERTY_NAME): {
+           std::ifstream f(registerPath(propId));
+           if (!f.good()) { out.prop = propId; out.value.int32Values = {0}; return true; }
+           int32_t v = 0; f >> v;
+           out.prop = propId; out.value.int32Values = {v};
+           return true;
+       }
+
+    Each write_cases entry MUST look exactly like this pattern (adjust
+    the value field per the property's type as above):
+       case static_cast<int32_t>(VehicleProperty::PROPERTY_NAME): {
+           mkdir(kHwRegisterDir, 0770);
+           std::ofstream f(registerPath(propId), std::ios::trunc);
+           if (!f.good()) return false;
+           if (!in.value.int32Values.empty()) f << in.value.int32Values[0];
+           return true;
+       }
+
+    Output EXACTLY one case per property, in order, for EACH of
+    read_cases and write_cases — no method signature, no switch/default,
+    no class, no namespace, no markdown fences, no explanation. The
+    switch/default wrapper and method signature already exist in the
+    skeleton; you fill in only the case bodies.
+
+    Use enum constant names EXACTLY as they appear in `properties` — do
+    not invent or modify names.
+
+    FORBIDDEN:
+    - Markdown code fences (``` or ```cpp)
+    - `boolValues` or `booleanValues` — use int32Values for BOOLEAN
+    - A stub case that ignores propId's real type and always uses
+      int32Values regardless of what `properties` says
+    - Placeholder/fake property names
+    """
+    domain: str = dspy.InputField(desc="HAL domain name (e.g. HVAC, ADAS, BODY)")
+    properties: str = dspy.InputField(desc="THIS CHUNK ONLY: list of VSS properties with name, type, and access")
+    aosp_context: str = dspy.InputField(desc="Retrieved AOSP AIDL V3 examples")
+
+    read_cases: str = dspy.OutputField(desc="One switch-case per property for readRegister(), nothing else")
+    write_cases: str = dspy.OutputField(desc="One switch-case per property for writeRegister(), nothing else")
 
 
 class CppPropertyEntriesSignature(dspy.Signature):
