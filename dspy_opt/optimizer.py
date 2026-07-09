@@ -59,6 +59,20 @@ from dspy_opt.metrics      import METRIC_REGISTRY
 from dspy_opt.validators   import print_availability_report
 from rag.aosp_retriever    import get_retriever, COLLECTION_MAP
 
+# Agents whose real generation-time prompt construction differs from the
+# generic single-query approach below (multi-query retrieval and/or an
+# injected rules block like _CONTRACT). Importing these directly — rather
+# than re-deriving a weaker approximation — keeps MIPROv2's training-time
+# evaluation representative of what the module actually sees in production.
+# Single source of truth: edit the agent file, not this dict.
+try:
+    from agents.rag_dspy_cpp_agent import _CONTRACT as _CPP_CONTRACT, _QUERIES as _CPP_QUERIES
+    _AGENT_REAL_CONTEXT = {
+        "cpp": {"contract": _CPP_CONTRACT, "queries": _CPP_QUERIES, "top_k": 8},
+    }
+except ImportError:
+    _AGENT_REAL_CONTEXT = {}
+
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────
@@ -100,6 +114,13 @@ MAX_LABELED_DEMOS = 2
 # Agents where MIPROv2 gives zero trial variance (metric ceiling or miscalibration).
 # These use LabeledFewShot (~2 LLM calls) instead of MIPROv2 (~36 LLM calls).
 # Re-enable individually once the metric is fixed and re-validated.
+#
+# cpp intentionally NOT skipped: the 2026-07-09 run showing baseline 0.948
+# with no MIPROv2 improvement was evaluated on a training-time context that
+# didn't match real generation (single weak query, top_k=3, no _CONTRACT —
+# see _AGENT_REAL_CONTEXT above). Now that training uses the same _QUERIES/
+# _CONTRACT/top_k as production, re-run MIPROv2 for cpp before concluding
+# it can't improve.
 MIPRO_SKIP_AGENTS = {"aidl", "design_doc", "selinux", "build"}
 
 # RAG settings for building training examples
@@ -164,9 +185,27 @@ class TrainingSetBuilder:
         )
 
     def _get_rag_context(self, query: str, agent_type: str) -> str:
-        """Retrieve RAG context for a training example."""
+        """Retrieve RAG context for a training example.
+
+        For agents with a documented real-generation context construction
+        (see _AGENT_REAL_CONTEXT), use the SAME multi-query retrieval and
+        top_k, and prepend the SAME rules block (_CONTRACT), so MIPROv2's
+        training-time evaluation reflects what the module actually sees
+        in production. Otherwise, fall back to the generic single-query
+        approach below.
+        """
         if self.retriever is None:
             return ""
+        real = _AGENT_REAL_CONTEXT.get(agent_type)
+        if real is not None:
+            try:
+                retrieved = self.retriever.retrieve_multi(
+                    real["queries"], agent_type=agent_type, top_k=real["top_k"]
+                )
+                retrieved_text = self.retriever.format_for_prompt(retrieved)
+                return real["contract"] + "\n" + retrieved_text
+            except Exception:
+                pass  # fall through to generic path below
         try:
             results = self.retriever.retrieve(
                 query, agent_type=agent_type, top_k=RAG_TOP_K
