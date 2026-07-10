@@ -207,8 +207,13 @@ No explanations. No markdown. Pure JSON only.
         # Step A: generate the header (VssPropertyIds.h) from all props — it's small
         header_ok = self._generate_header(props)
 
-        # Step B: generate CPP per chunk, extract getAllPropConfigs blocks, merge
+        # Step B: generate CPP per chunk, extract getAllPropConfigs blocks
+        # AND readRegister/writeRegister case blocks, merge across ALL
+        # chunks (not just chunk 0 — see _extract_register_case_blocks
+        # docstring for why chunk 0-only was a real bug).
         all_prop_config_blocks: list = []
+        all_read_case_blocks: list = []
+        all_write_case_blocks: list = []
         cpp_boilerplate_written = False
 
         for idx, chunk in enumerate(chunks):
@@ -223,12 +228,21 @@ No explanations. No markdown. Pure JSON only.
             self._dump_raw(raw, f"chunk{idx + 1}")
             blocks = self._extract_prop_config_block(raw)
             all_prop_config_blocks.extend(blocks)
+            read_blocks, write_blocks = self._extract_register_case_blocks(raw)
+            all_read_case_blocks.extend(read_blocks)
+            all_write_case_blocks.extend(write_blocks)
             print(f"[DEBUG] {self.name}: chunk {idx + 1}/{len(chunks)} "
-                  f"-> {len(blocks)} prop config entries")
+                  f"-> {len(blocks)} prop config entries, "
+                  f"{len(read_blocks)} read cases, {len(write_blocks)} write cases")
             if idx == 0:
                 cpp_boilerplate_written = self._write_cpp_from_raw(raw)
 
         cpp_ok = self._merge_cpp_prop_configs(all_prop_config_blocks)
+        registers_ok = self._merge_cpp_register_cases(all_read_case_blocks, all_write_case_blocks)
+        if not registers_ok:
+            print(f"[WARN] {self.name}: readRegister/writeRegister merge failed — "
+                  f"only chunk 1's cases will be present, all other properties "
+                  f"will return INVALID_ARG on get/set")
 
         if not cpp_boilerplate_written:
             print(f"[WARN] {self.name}: CPP boilerplate missing -> repair")
@@ -304,6 +318,118 @@ No explanations. No markdown. Pure JSON only.
 
     def _write_fallback_header(self, props: list) -> None:
         self._generate_header(props)
+
+    def _extract_case_blocks(self, text: str) -> list:
+        """Brace-aware extraction of `case ...: { ... }` blocks — handles
+        nested braces (e.g. the `if (!f.good()) { ... }` inside every
+        generated register case), which a single regex cannot reliably
+        match. Shared logic with the contamination filter added to the
+        C3/C4 pipeline (agents/rag_dspy_cpp_agent.py) for the same reason.
+        """
+        blocks = []
+        for m in re.finditer(r"case\s+[^:{}]+:\s*\{", text):
+            depth = 1
+            pos = m.end()
+            while depth > 0 and pos < len(text):
+                if text[pos] == "{":
+                    depth += 1
+                elif text[pos] == "}":
+                    depth -= 1
+                pos += 1
+            blocks.append(text[m.start():pos])
+        return blocks
+
+    def _extract_register_case_blocks(self, raw: str) -> tuple:
+        """Extract readRegister()/writeRegister() case blocks from this
+        CHUNK's raw LLM output — mirrors _extract_prop_config_block, but
+        for the register-body functions. Previously, only chunk 0's raw
+        output was ever used for these functions (see run()'s special
+        `if idx == 0: cpp_boilerplate_written = ...` case): every other
+        chunk's register-case content was silently discarded, meaning any
+        domain needing more than one chunk (>CHUNK_SIZE properties) got
+        readRegister/writeRegister cases for only its FIRST CHUNK_SIZE
+        properties — every other property would return StatusCode::
+        INVALID_ARG from getValues/setValues via the switch's default,
+        not because of a real hardware fault but because this chunk's
+        cases were simply never merged in.
+        """
+        try:
+            data = json.loads(raw.strip())
+            for item in data.get("files", []):
+                path = (item.get("path") or "").strip()
+                if "VehicleHalService.cpp" in path:
+                    content = item.get("content", "")
+                    read_start = content.find("::readRegister")
+                    write_start = content.find("::writeRegister")
+                    read_body = content[read_start:write_start] if read_start >= 0 and write_start >= 0 else ""
+                    write_body = content[write_start:] if write_start >= 0 else content[read_start:] if read_start >= 0 else ""
+                    return self._extract_case_blocks(read_body), self._extract_case_blocks(write_body)
+        except Exception:
+            pass
+        return [], []
+
+    def _find_switch_body_range(self, content: str, func_marker: str):
+        """Find the (start, end) char positions of a switch statement's
+        body inside the function containing `func_marker`, using brace
+        counting. A regex like `[^}]*?` between the switch's `{` and
+        `default:` CANNOT work here: existing case bodies already
+        contain their own nested `{ }` (e.g. `if (!f.good()) { ... }`),
+        so `[^}]` stops at the first inner `}` and never reaches
+        `default:` — confirmed by testing: 0 matches against real
+        generated content. Brace counting has no such limitation.
+        """
+        func_pos = content.find(func_marker)
+        if func_pos < 0:
+            return None
+        switch_pos = content.find("switch", func_pos)
+        if switch_pos < 0:
+            return None
+        brace_pos = content.find("{", switch_pos)
+        if brace_pos < 0:
+            return None
+        depth = 1
+        pos = brace_pos + 1
+        while depth > 0 and pos < len(content):
+            if content[pos] == "{":
+                depth += 1
+            elif content[pos] == "}":
+                depth -= 1
+            pos += 1
+        return brace_pos + 1, pos - 1  # (after switch's `{`, at switch's closing `}`)
+
+    def _merge_cpp_register_cases(self, read_blocks: list, write_blocks: list) -> bool:
+        """Rewrite readRegister()/writeRegister() switch bodies in the
+        saved CPP with the FULL merged set of cases from every chunk —
+        not just chunk 0's. Full-body replacement (not append) avoids
+        duplicating chunk 0's cases, since chunk 0's own cases are
+        included in read_blocks/write_blocks like every other chunk's.
+        """
+        if not read_blocks and not write_blocks:
+            return False
+        cpp_path = Path(self.output_root) / self.impl_cpp
+        if not cpp_path.exists():
+            return False
+        try:
+            content = cpp_path.read_text(encoding="utf-8")
+            any_merged = False
+
+            for marker, blocks in (("::readRegister", read_blocks), ("::writeRegister", write_blocks)):
+                if not blocks:
+                    continue
+                rng = self._find_switch_body_range(content, marker)
+                if rng is None:
+                    continue
+                start, end = rng
+                merged_body = "\n" + "\n".join(blocks) + "\n        default:\n            return false;\n    "
+                content = content[:start] + merged_body + content[end:]
+                any_merged = True
+
+            if any_merged:
+                cpp_path.write_text(content, encoding="utf-8")
+                return True
+        except Exception:
+            pass
+        return False
 
     def _extract_prop_config_block(self, raw: str) -> list:
         """Extract VehiclePropConfig cfg blocks from C++ source in LLM JSON output."""
