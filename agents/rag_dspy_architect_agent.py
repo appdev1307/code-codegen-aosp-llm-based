@@ -81,6 +81,7 @@ class RAGDSPyArchitectAgent:
         )
         self._output_root       = Path(output_root)
         self._enable_chunk_retry = enable_chunk_retry
+        self.last_chunk_retries = 0  # set by _write_cpp(); read by callers for the module summary line
 
     # ─────────────────────────────────────────────────────────────
     # File writing helpers
@@ -130,6 +131,17 @@ class RAGDSPyArchitectAgent:
         domain_cap  = domain.capitalize()
         domain_lower = domain.lower()
         written = []
+
+        # Surfaced separately (not via return value, to avoid changing this
+        # method's existing return-type contract for other callers) so the
+        # module-level summary line can report chunk-retry activity
+        # alongside module-level (C4 feedback loop) retries — previously
+        # chunk retries only printed to console mid-generation and were
+        # never reflected in the final "[C4 MODULE ...] retries=N" line,
+        # which reports a DIFFERENT retry mechanism entirely and made
+        # "retries=0" read as if nothing needed fixing when chunk-level
+        # retries had, in fact, already silently fixed missing cases.
+        self.last_chunk_retries = content.get("chunk_retries", 0) if isinstance(content, dict) else 0
 
         if isinstance(content, dict):
             # Modern multi-file output from RagDspyCppAgent.generate()

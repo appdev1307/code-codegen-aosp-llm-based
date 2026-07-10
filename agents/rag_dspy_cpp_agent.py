@@ -388,6 +388,7 @@ class RagDspyCppAgent:
         header = _strip_markdown_fences(getattr(skeleton, "cpp_header", "") or "")
         impl   = _strip_markdown_fences(getattr(skeleton, "cpp_impl", "") or "")
 
+        chunk_retry_count = 0  # total chunks that needed at least 1 retry, across entries + register bodies
         all_entries = []
         for i in range(0, len(prop_list), chunk_size):
             chunk = prop_list[i:i + chunk_size]
@@ -410,6 +411,7 @@ class RagDspyCppAgent:
                     if generated_count >= expected_count:
                         chunk_entries = raw
                         if attempt > 1:
+                            chunk_retry_count += 1
                             print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
                                   f"✓ retry {attempt-1} recovered {generated_count}/{expected_count} entries")
                         break
@@ -537,6 +539,7 @@ class RagDspyCppAgent:
 
                     if kept_read >= chunk_names and kept_write >= chunk_rw_names:
                         if attempt > 1:
+                            chunk_retry_count += 1
                             print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
                                   f"✓ retry {attempt-1} recovered all cases")
                         break
@@ -604,6 +607,7 @@ class RagDspyCppAgent:
             "reasoning":    f"Chunked generation: {len(prop_list)} properties in "
                             f"{(len(prop_list) + chunk_size - 1) // chunk_size} chunk(s)",
             "violations":   result.violations,
+            "chunk_retries": chunk_retry_count,
         }
 
     def _generate(self, domain: str, properties: str, aosp_context: str = "", **kwargs) -> str:

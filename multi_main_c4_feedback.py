@@ -651,6 +651,7 @@ def _generate_one_module(
             enable_chunk_retry=True,   # C4: chunk retry is a C4 contribution
         )
         agent.run(module_spec)
+        chunk_retries = getattr(agent, "last_chunk_retries", 0)
     except Exception as e:
         print(f" [C4 MODULE {domain}] → architect.run() FAILED: {e}")
         run_metrics.append({
@@ -774,10 +775,12 @@ def _generate_one_module(
         "c4_retries": total_retries,
         "c4_fixes": fixes,
         "c4_retry_details": retry_metrics,
+        "cpp_chunk_retries": chunk_retries,
     })
 
     print(f"\n [C4 MODULE {domain}] → OK avg_score={avg_score:.3f} "
-          f"retries={total_retries} fixes={fixes} ({elapsed:.1f}s)")
+          f"retries={total_retries} fixes={fixes} "
+          f"cpp_chunk_retries={chunk_retries} ({elapsed:.1f}s)")
     return (domain, True, None)
 
 # ─────────────────────────────────────────────────────────────────
