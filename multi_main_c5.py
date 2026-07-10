@@ -322,34 +322,48 @@ class VtsGeneratorAgent:
         which are produced by a separate agent and were the source of earlier
         compile / ID-mismatch failures (and of the "0 test cases" result).
         """
-        # Reference the REAL enum names directly (compiler-verified against the
-        # actual generated VehicleProperty.aidl) instead of independently
-        # recomputing numeric IDs — eliminates the class of ID-mismatch bugs
-        # that come from having encode_prop_id() duplicated across multiple
-        # files. If a name here doesn't exist in the real compiled enum, the
-        # VTS build fails immediately instead of silently testing wrong IDs.
-        all_names_raw = [n for props in domain_map.values() for (n, _pid, *_r) in props]
+        # Parse the REAL generated AIDL files FIRST — this is the single
+        # source of truth for property names from here on. Previously,
+        # names came from domain_map (Python-tracked, ultimately from
+        # VSS_LABELLED_500.json / MODULE_PLAN.json) while type/access came
+        # from this same AIDL parse — two DIFFERENT sources that can
+        # disagree. Confirmed in practice: the AIDL generation LLM
+        # occasionally duplicates a "CHILDREN_" segment in very long,
+        # deeply-nested property paths (e.g. "CABIN_CHILDREN_CHILDREN_SEAT"
+        # instead of "CABIN_CHILDREN_SEAT") — domain_map's name doesn't
+        # have this quirk, so referencing THAT name against the REAL
+        # compiled enum (which DOES have the quirk) fails to compile.
+        # Building all_names from real_props instead means kVssPropertyIds
+        # only ever references names that are GUARANTEED to exist in the
+        # real enum, because they were read from it.
+        aidl_dir = str(C4_OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl"
+                        "/android/hardware/automotive/vehicle")
+        real_props = _parse_aidl_properties(aidl_dir)
+
         seen = set()
         all_names = []
-        for n in all_names_raw:
+        for p in real_props:
+            n = p["name"]
             if n not in seen:
                 seen.add(n)
                 all_names.append(n)
+
+        skipped = set(n for props in domain_map.values() for (n, _pid, *_r) in props) - seen
+        if skipped:
+            print(f"[C5] ⚠ {len(skipped)} propert(y/ies) in domain_map were not "
+                  f"found in the real generated AIDL — excluded from VTS "
+                  f"(this means the AIDL generation step silently dropped "
+                  f"them; worth checking that agent's output separately):")
+            for n in sorted(skipped)[:10]:
+                print(f"      - {n}")
+
         ids_literal = ",\n    ".join(
             f"static_cast<int32_t>(VehicleProperty::{n})" for n in all_names
         )
         total = len(all_names)
 
-        # Real per-property type, read directly from the generated AIDL
-        # file's own comment (e.g. "// BOOLEAN, READ_WRITE, GLOBAL") via
-        # VssGlueAgent's proven parser — NOT re-derived by bit-masking
-        # the numeric property ID at C++ runtime. The numeric ID's type
-        # bits are only as trustworthy as whichever encode_prop_id()
-        # copy produced them; the AIDL comment is the artifact's own
-        # ground truth, one step closer to the real generated source.
-        aidl_dir = str(C4_OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl"
-                        "/android/hardware/automotive/vehicle")
-        real_props = _parse_aidl_properties(aidl_dir)
+        # Type/access from the SAME real_props parsed above — one source,
+        # not two, so this can never disagree with all_names again.
         name_to_type = {p["name"]: p["type"] for p in real_props}
         all_types = [name_to_type.get(n, "INT") for n in all_names]
         types_literal = ",\n    ".join(f'"{t}"' for t in all_types)
