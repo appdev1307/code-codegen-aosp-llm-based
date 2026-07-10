@@ -353,7 +353,7 @@ class RAGDSPyArchitectAgent:
              # C4/C4-minimal: use a.run() → generate_chunked() with retry
              # C3: use a.inner.generate() — single-shot, no chunking,
              #     preserving original C3 design (chunking is a C4 contribution)
-             (lambda a: a.run(patched_spec))
+             (lambda a: a.run(patched_spec, aidl_dir=str(self._output_root / self._AIDL_DIR)))
              if self._enable_chunk_retry else
              (lambda a: a.inner.generate(
                  domain     = module_spec.domain,

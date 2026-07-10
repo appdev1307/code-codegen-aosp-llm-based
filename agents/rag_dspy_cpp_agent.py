@@ -2,6 +2,7 @@
 import re
 import dspy
 from rag.aosp_retriever import AOSPRetriever
+from agents.vss_glue_agent import _parse_aidl_properties
 from dspy_opt.hal_signatures import (
     ModernCppVehicleHardwareSignature,
     CppSkeletonSignature,
@@ -347,6 +348,7 @@ class RagDspyCppAgent:
         extra_context: str = "",
         chunk_size:    int = CHUNK_SIZE,
         enable_chunk_retry: bool = False,
+        aidl_dir:      str = "",
     ) -> dict:
         """Chunked counterpart to generate(), for domains with more
         properties than reliably fit in one LLM call without hitting
@@ -375,6 +377,50 @@ class RagDspyCppAgent:
         would blur the ablation boundary. Set True only from C4/C4-minimal
         callers.
         """
+        # If the real .aidl file already exists (AIDL generation runs
+        # before CPP in the pipeline), override prop_list's names with
+        # what's ACTUALLY in that file -- the same principle already
+        # applied to C5's kVssPropertyIds (_parse_aidl_properties is
+        # the proven, single source of truth). Without this, prop_list
+        # carries whatever name Python happened to track separately,
+        # and CPP generation (entries_predictor, register_body_predictor)
+        # ends up inventing its OWN version of a long compound name
+        # independently -- the actual root cause behind every naming-
+        # mismatch bug found in this pipeline (Hvac/Chassis compile
+        # failures from getAllPropertyConfigs vs readRegister/
+        # writeRegister disagreeing on one property's name; BODY's
+        # register-body chunk repeatedly failing to reproduce a name
+        # matching entries_predictor's own independently-typed version).
+        if aidl_dir:
+            # Scope to THIS module's specific .aidl file (e.g.
+            # VehiclePropertyBody.aidl) — NOT a prefix filter on the
+            # enum constant name. A property module_planner assigned to
+            # the BODY module can have a VSS path starting with
+            # "Cabin.Seat...", producing an enum name starting with
+            # VEHICLE_CHILDREN_CABIN_CHILDREN_... — module grouping
+            # (functional) and VSS tree path (structural) are different
+            # classifications and do NOT necessarily share a prefix.
+            # Confirmed by testing: filtering by name prefix incorrectly
+            # excluded a real property that DOES belong in this file.
+            real_props = _parse_aidl_properties(
+                aidl_dir, file_pattern=f"VehicleProperty{domain.capitalize()}.aidl"
+            )
+            real_names_for_domain = [p["name"] for p in real_props]
+            if len(real_names_for_domain) == len(prop_list):
+                class _RenamedProp:
+                    def __init__(self, real_name, orig):
+                        self.id = real_name
+                        self.name = real_name
+                        self.signal_name = real_name
+                        self.type = getattr(orig, "type", "INT")
+                        self.access = getattr(orig, "access", "READ_WRITE")
+                prop_list = [_RenamedProp(rn, p) for rn, p in zip(real_names_for_domain, prop_list)]
+            else:
+                print(f"  [CPP] warning {domain}: real AIDL has {len(real_names_for_domain)} "
+                      f"properties matching this domain's prefix but prop_list has "
+                      f"{len(prop_list)} -- counts don't match, falling back to "
+                      f"prop_list's own names")
+
         retrieved_text = self._retrieved_context()
         aosp_context = _CONTRACT + "\n" + retrieved_text
         if extra_context:
@@ -738,7 +784,7 @@ class RAGDSPyCppAgent:
         self.inner = RagDspyCppAgent(**kwargs)
         self.enable_chunk_retry = enable_chunk_retry
 
-    def run(self, module_spec) -> dict:
+    def run(self, module_spec, aidl_dir: str = "") -> dict:
         """Called by architect — returns dict with header + impl.
 
         Domains with more properties than CHUNK_SIZE use the chunked
@@ -746,6 +792,11 @@ class RAGDSPyCppAgent:
         getAllPropertyConfigs() — see CHUNK_SIZE docstring above for
         why this exists (BODY=84 and POWERTRAIN=120 properties were
         observed truncating mid-token under the single-shot path).
+
+        aidl_dir: path to the directory containing the real generated
+        .aidl files for this run. When provided, property names are
+        read from that real file instead of prop_list's own tracked
+        names — see generate_chunked's aidl_dir docstring for why.
         """
         prop_list = getattr(module_spec, "properties", None) or []
         if len(prop_list) > CHUNK_SIZE:
@@ -758,6 +809,7 @@ class RAGDSPyCppAgent:
                 prop_list          = prop_list,
                 aidl_block         = aidl_block,
                 enable_chunk_retry = self.enable_chunk_retry,
+                aidl_dir           = aidl_dir,
             )
 
         out = self.inner.generate(

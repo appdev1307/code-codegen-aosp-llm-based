@@ -37,14 +37,14 @@ def _build_full_prop_id(global_idx: int, vtype: str) -> int:
     return _VSS_GROUP | _VSS_AREA | type_bits | (global_idx & 0xFFFF)
 
 
-def _parse_aidl_properties(aidl_dir: str) -> list[dict]:
+def _parse_aidl_properties(aidl_dir: str, file_pattern: str = "VehicleProperty*.aidl") -> list[dict]:
     props = []
     pattern = re.compile(
         r"^\s+(\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+),\s*//\s*(\w+)(?:,\s*(\w+))?",
         re.MULTILINE,
     )
 
-    aidl_files = sorted(glob.glob(os.path.join(aidl_dir, "VehicleProperty*.aidl")))
+    aidl_files = sorted(glob.glob(os.path.join(aidl_dir, file_pattern)))
     global_idx = _GLOBAL_IDX_START
 
     _TYPE_KEYWORDS = ["BOOLEAN", "FLOAT", "STRING", "BYTES", "INT64", "INT"]
