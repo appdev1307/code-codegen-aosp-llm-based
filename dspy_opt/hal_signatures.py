@@ -137,6 +137,7 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        #include "VehicleHalService{Domain}.h"
        #include <fstream>
        #include <sys/stat.h>
+       #include <cerrno>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
@@ -174,7 +175,7 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        }
 
        bool VehicleHalService{Domain}::writeRegister(int32_t propId, const VehiclePropValue& in) const {
-           mkdir(kHwRegisterDir, 0770);  // best-effort; already created by init.rc in production
+           if (mkdir(kHwRegisterDir, 0770) != 0 && errno != EEXIST) return false;
            std::ofstream f(registerPath(propId), std::ios::trunc);
            if (!f.good()) return false;
            if (!in.value.int32Values.empty()) f << in.value.int32Values[0];
@@ -313,6 +314,7 @@ class CppSkeletonSignature(dspy.Signature):
        #include "VehicleHalService{Domain}.h"
        #include <fstream>
        #include <sys/stat.h>
+       #include <cerrno>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
@@ -455,7 +457,7 @@ class CppRegisterBodySignature(dspy.Signature):
     Each write_cases entry MUST look exactly like this pattern (adjust
     the value field per the property's type as above):
        case static_cast<int32_t>(VehicleProperty::PROPERTY_NAME): {
-           mkdir(kHwRegisterDir, 0770);
+           if (mkdir(kHwRegisterDir, 0770) != 0 && errno != EEXIST) return false;
            std::ofstream f(registerPath(propId), std::ios::trunc);
            if (!f.good()) return false;
            if (!in.value.int32Values.empty()) f << in.value.int32Values[0];

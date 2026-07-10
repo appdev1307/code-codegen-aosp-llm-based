@@ -228,16 +228,16 @@ REAL HARDWARE-REGISTER FILE STORE — MANDATORY, DO NOT STUB, DO NOT USE A PLAIN
     std::string registerPath(int32_t propId) const;
     bool readRegister(int32_t propId, VehiclePropValue& out) const;
     bool writeRegister(int32_t propId, const VehiclePropValue& in) const;
-  Impl needs: #include <fstream>, #include <sys/stat.h>
+  Impl needs: #include <fstream>, #include <sys/stat.h>, #include <cerrno>
   registerPath(): snprintf "%s%08x.reg" with kHwRegisterDir and propId.
   readRegister(): use a switch(propId) with one case per property this
   domain owns (matching the enum constants in getAllPropertyConfigs()).
   Each case opens registerPath(propId) with std::ifstream; if the file
   doesn't exist yet, return a zero/false default (file not created yet is
   normal on first boot) — still return true with a valid default value.
-  writeRegister(): mkdir(kHwRegisterDir, 0770) best-effort, then open
-  registerPath(propId) with std::ofstream(..., std::ios::trunc) and write
-  the value.
+  writeRegister(): if (mkdir(kHwRegisterDir, 0770) != 0 && errno != EEXIST)
+  return false; — then open registerPath(propId) with
+  std::ofstream(..., std::ios::trunc) and write the value.
   getValues(): for each request, call readRegister(req.prop.prop, v); if it
   returns true, status = OK and prop = v; else status = INVALID_ARG. Collect
   into a vector and pass to the callback — never pass an empty vector when
