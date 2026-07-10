@@ -390,6 +390,18 @@ class RagDspyCppAgent:
 
         chunk_retry_count = 0  # total chunks that needed at least 1 retry, across entries + register bodies
         all_entries = []
+        chunk_entry_names = []  # per-chunk: the ACTUAL names entries_predictor generated —
+                                  # ground truth for register-body filtering below, since
+                                  # entries_predictor and register_body_predictor are two
+                                  # independent LLM calls that can render the same long,
+                                  # deeply-nested property name differently (confirmed: one
+                                  # occasionally drops or adds a duplicated "CHILDREN_"
+                                  # segment relative to the other, producing a .cpp file
+                                  # whose getAllPropertyConfigs() and readRegister()/
+                                  # writeRegister() reference DIFFERENT enum name strings
+                                  # for what's meant to be the same property — a compile
+                                  # error, since only ONE of the two variants exists in the
+                                  # real generated .aidl enum).
         for i in range(0, len(prop_list), chunk_size):
             chunk = prop_list[i:i + chunk_size]
             chunk_num = i // chunk_size + 1
@@ -453,6 +465,8 @@ class RagDspyCppAgent:
                 chunk_entries = _strip_markdown_fences(getattr(entries_result, "entries", "") or "")
 
             all_entries.append(chunk_entries.strip())
+            import re as _re2
+            chunk_entry_names.append(_re2.findall(r"VehicleProperty::(\w+)", chunk_entries))  # ORDERED list
 
         merged_entries = "\n".join(all_entries)
 
@@ -516,11 +530,27 @@ class RagDspyCppAgent:
         all_read_cases, all_write_cases = [], []
         for i in range(0, len(prop_list), chunk_size):
             chunk = prop_list[i:i + chunk_size]
+            chunk_idx = i // chunk_size
             chunk_properties_text = self._build_chunk_properties_text(domain, chunk, aidl_block)
-            chunk_names = {getattr(p, "id", None) or getattr(p, "signal_name", None) for p in chunk}
+
+            # Ground truth for names: what entries_predictor ACTUALLY wrote
+            # for this chunk, not Python's clean prop_list names — see the
+            # chunk_entry_names docstring above for why these can differ.
+            # Paired positionally (both lists follow the same input order);
+            # if entries generated fewer names than expected (a residual
+            # gap even after that loop's own retries), zip() safely
+            # truncates rather than index-erroring, and access-mode
+            # pairing for the missing tail is simply skipped.
+            real_names_ordered = chunk_entry_names[chunk_idx] if chunk_idx < len(chunk_entry_names) else []
+            if len(real_names_ordered) != len(chunk):
+                print(f"  [CPP register-body chunk {chunk_idx + 1}] ⚠ entries produced "
+                      f"{len(real_names_ordered)} names but chunk has {len(chunk)} properties — "
+                      f"pairing by position for the overlapping range only")
+
+            chunk_names = set(real_names_ordered)
             chunk_rw_names = {
-                getattr(p, "id", None) or getattr(p, "signal_name", None)
-                for p in chunk
+                real_name
+                for real_name, p in zip(real_names_ordered, chunk)
                 if str(getattr(p, "access", "")).upper() in ("READ_WRITE", "WRITE")
             }
 
