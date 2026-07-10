@@ -48,7 +48,37 @@ MAX_RETRIES       = 3
 
 # Input paths
 import os as _os
-C4_OUTPUT_DIR     = Path(_os.environ.get("C4_INPUT", "output_c4_feedback"))  # C4 YAML spec + MODULE_PLAN.json
+
+def _resolve_c4_input_dir() -> Path:
+    """Which C4 run's output does C5 read from?
+
+    C4_INPUT env var always wins when set — explicit and unambiguous.
+    Otherwise, auto-detect: prefer output_c4_minimal (the directory used
+    for quick iterative testing — gen_hal_minimal_c4.py) if it exists,
+    falling back to output_c4_feedback (the full pipeline —
+    multi_main_c4_feedback.py) otherwise. Silently defaulting to
+    output_c4_feedback regardless of which one actually has fresh data
+    was a real bug: C5 would read stale or nonexistent data without any
+    indication it was looking in the wrong place.
+    """
+    explicit = _os.environ.get("C4_INPUT")
+    if explicit:
+        print(f"[C5] C4_INPUT explicitly set → using {explicit}")
+        return Path(explicit)
+
+    minimal_dir  = Path("output_c4_minimal")
+    feedback_dir = Path("output_c4_feedback")
+    if minimal_dir.exists():
+        print(f"[C5] C4_INPUT not set — auto-detected {minimal_dir} (exists)")
+        return minimal_dir
+    if feedback_dir.exists():
+        print(f"[C5] C4_INPUT not set — auto-detected {feedback_dir} (exists)")
+        return feedback_dir
+    print(f"[C5] ⚠ C4_INPUT not set and neither {minimal_dir} nor {feedback_dir} "
+          f"exists yet — defaulting to {feedback_dir}, will likely fail to find input")
+    return feedback_dir
+
+C4_OUTPUT_DIR     = _resolve_c4_input_dir()  # C4 YAML spec + MODULE_PLAN.json
 VTS_REL           = "test/vts/vss_vehicle"
 
 # Vehicle HAL AIDL interface version the VTS links against. MUST match the
