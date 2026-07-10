@@ -391,7 +391,14 @@ class RagDspyCppAgent:
         # writeRegister disagreeing on one property's name; BODY's
         # register-body chunk repeatedly failing to reproduce a name
         # matching entries_predictor's own independently-typed version).
+        if not aidl_dir:
+            print(f"  [CPP DEBUG] {domain}: aidl_dir is empty/not passed — override SKIPPED entirely, "
+                  f"using prop_list's own names (the original bug path)")
         if aidl_dir:
+            import os as _os_diag
+            _file_exists = _os_diag.path.exists(_os_diag.path.join(aidl_dir, f"VehicleProperty{domain.capitalize()}.aidl"))
+            print(f"  [CPP DEBUG] {domain}: aidl_dir={aidl_dir!r} "
+                  f"file_exists={_file_exists} prop_list_count={len(prop_list)}")
             # Scope to THIS module's specific .aidl file (e.g.
             # VehiclePropertyBody.aidl) — NOT a prefix filter on the
             # enum constant name. A property module_planner assigned to
@@ -406,6 +413,7 @@ class RagDspyCppAgent:
                 aidl_dir, file_pattern=f"VehicleProperty{domain.capitalize()}.aidl"
             )
             real_names_for_domain = [p["name"] for p in real_props]
+            print(f"  [CPP DEBUG] {domain}: real_names_for_domain_count={len(real_names_for_domain)}")
             if len(real_names_for_domain) == len(prop_list):
                 class _RenamedProp:
                     def __init__(self, real_name, orig):
@@ -415,6 +423,7 @@ class RagDspyCppAgent:
                         self.type = getattr(orig, "type", "INT")
                         self.access = getattr(orig, "access", "READ_WRITE")
                 prop_list = [_RenamedProp(rn, p) for rn, p in zip(real_names_for_domain, prop_list)]
+                print(f"  [CPP DEBUG] {domain}: override APPLIED — prop_list renamed to real AIDL names")
             else:
                 print(f"  [CPP] warning {domain}: real AIDL has {len(real_names_for_domain)} "
                       f"properties matching this domain's prefix but prop_list has "
