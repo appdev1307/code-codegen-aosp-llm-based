@@ -513,6 +513,28 @@ def validate_cpp(code: str) -> ValidatorResult:
                     f"{invalid_fields} — real AOSP has no boolean array "
                     f"field; booleans must use int32Values with 0/1"])
 
+    # Hard fail: readRegister/writeRegister declared (in the header, as
+    # private members every VehicleHalService{Domain} has) but never
+    # DEFINED in the implementation — a linker error at build time that
+    # brace-balance/stub/field-name checks above cannot catch, since the
+    # file is syntactically well-formed C++, it just doesn't link.
+    declares_read = re.search(r"bool\s+readRegister\s*\(", code) is not None
+    declares_write = re.search(r"bool\s+writeRegister\s*\(", code) is not None
+    if declares_read or declares_write:
+        defines_read = re.search(r"::readRegister\s*\(", code) is not None
+        defines_write = re.search(r"::writeRegister\s*\(", code) is not None
+        missing = []
+        if declares_read and not defines_read:
+            missing.append("readRegister")
+        if declares_write and not defines_write:
+            missing.append("writeRegister")
+        if missing:
+            return ValidatorResult(
+                ok=False, score=0.1, tool=tool,
+                errors=[f"{missing} declared in header but never defined "
+                        f"in implementation — undefined reference at "
+                        f"link time"])
+
     clang = _tool("clang++") or _tool("clang")
     if not clang:
         return _cpp_regex_fallback(code)

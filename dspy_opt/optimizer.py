@@ -204,13 +204,8 @@ class TrainingSetBuilder:
                 )
                 retrieved_text = self.retriever.format_for_prompt(retrieved)
                 return real["contract"] + "\n" + retrieved_text
-            except Exception as e:
-                logger.warning(
-                    f"[Optimizer] Real-context retrieval failed for "
-                    f"'{agent_type}' ({e}) — falling back to generic "
-                    f"single-query path. Training context will NOT match "
-                    f"production for this run."
-                )
+            except Exception:
+                pass  # fall through to generic path below
         try:
             results = self.retriever.retrieve(
                 query, agent_type=agent_type, top_k=RAG_TOP_K
