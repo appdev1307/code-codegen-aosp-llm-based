@@ -535,6 +535,35 @@ def validate_cpp(code: str) -> ValidatorResult:
                         f"in implementation — undefined reference at "
                         f"link time"])
 
+    # Hard fail: every property declared in getAllPropertyConfigs() must
+    # have a corresponding case in readRegister() — a property missing
+    # its read case is syntactically valid C++ (falls through to
+    # `default: return false`), so none of the checks above catch it,
+    # but it's a real functional defect: getValues() on that property
+    # will always return INVALID_ARG. This is exactly the gap the
+    # register-body chunk retry loop can end up with after exhausting
+    # MAX_CHUNK_RETRIES ("gave up after N retries: still missing M") —
+    # confirmed in practice: that log line printed, and this validator
+    # still scored the file 1.000, because nothing compared the two
+    # counts. writeRegister is NOT checked the same way: READ-only
+    # properties correctly have no write case by design (see
+    # CppRegisterBodySignature), so write_count < config_count is
+    # often correct, not a defect.
+    config_section = code[:code.find("::readRegister")] if "::readRegister" in code else code
+    config_count = config_section.count("static_cast<int32_t>(VehicleProperty::")
+    read_section_start = code.find("::readRegister")
+    read_section_end = code.find("::writeRegister") if "::writeRegister" in code else len(code)
+    read_section = code[read_section_start:read_section_end] if read_section_start >= 0 else ""
+    read_case_count = len(re.findall(r"case\s+static_cast<int32_t>\(VehicleProperty::", read_section))
+    if config_count > 0 and read_case_count < config_count:
+        return ValidatorResult(
+            ok=False, score=0.3, tool=tool,
+            errors=[f"getAllPropertyConfigs() declares {config_count} properties "
+                    f"but readRegister() only has {read_case_count} case(s) — "
+                    f"{config_count - read_case_count} propert(y/ies) will always "
+                    f"return INVALID_ARG from getValues(), even though the file "
+                    f"compiles and links cleanly"])
+
     clang = _tool("clang++") or _tool("clang")
     if not clang:
         return _cpp_regex_fallback(code)
