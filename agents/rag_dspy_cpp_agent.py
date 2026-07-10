@@ -451,6 +451,8 @@ class RagDspyCppAgent:
                         print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
                               f"⚠ attempt {attempt}: {generated_count}/{expected_count} entries — retrying...")
                     else:
+                        chunk_retry_count += 1  # attempted but ultimately failed — see the
+                                                  # matching comment in the register-body loop below
                         print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
                               f"✗ gave up after {MAX_CHUNK_RETRIES} retries: "
                               f"{generated_count}/{expected_count} entries")
@@ -595,25 +597,55 @@ class RagDspyCppAgent:
 
                     if attempt <= MAX_CHUNK_RETRIES:
                         missing = sorted((chunk_names - kept_read_names_accum) | (chunk_rw_names - kept_write_names_accum))
-                        # Narrow retry: only ask for the specific missing
-                        # properties (a 1-3 item task), not the full
-                        # CHUNK_SIZE-item chunk again — a much easier,
-                        # more focused generation than re-deriving cases
-                        # that were already correct, which previously
-                        # sometimes hit the SAME miss twice in a row even
-                        # across separate retry attempts.
-                        missing_props = [name_to_prop[n] for n in missing if n in name_to_prop]
-                        if missing_props:
-                            retry_properties_text = self._build_chunk_properties_text(domain, missing_props, aidl_block)
+                        # Narrow retry (only the missing properties, not the
+                        # full chunk) — cheaper and normally sufficient once
+                        # it's actually given the correct required name (see
+                        # the CRITICAL note below — a real bug, previously
+                        # attributed to LLM "auto-correction" behavior,
+                        # actually caused every narrow retry to silently
+                        # request the WRONG name every time). Kept the
+                        # narrow-then-full-chunk fallback structure anyway
+                        # as defense in depth, in case some other class of
+                        # miss genuinely benefits from full-chunk context.
+                        missing_props = [(n, name_to_prop[n]) for n in missing if n in name_to_prop]
+                        use_narrow = missing_props and attempt <= 2
+                        if use_narrow:
+                            # CRITICAL: use the REQUIRED name (n, from
+                            # entries' real output / chunk_names) — NOT
+                            # prop.id (the prop object's own "clean" name).
+                            # This was the actual bug behind every narrow
+                            # retry failing identically: _build_chunk_
+                            # properties_text always rendered prop.id,
+                            # silently asking the LLM for a DIFFERENT
+                            # (clean) name than the one being checked
+                            # against — the LLM correctly wrote what it
+                            # was asked for, every time; it was never
+                            # asked for the name that was actually needed.
+                            lines = [f"HAL Domain: {domain}", f"Properties in this chunk: {len(missing_props)}", ""]
+                            for required_name, prop in missing_props:
+                                typ    = getattr(prop, "type", "UNKNOWN")
+                                access = getattr(prop, "access", "READ_WRITE")
+                                lines += [f"- Name: {required_name}", f"  Type: {typ}", f"  Access: {access}", ""]
+                            retry_properties_text = "\n".join(lines)
+                            if aidl_block:
+                                retry_properties_text += "\n" + aidl_block
+                            print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
+                                  f"⚠ attempt {attempt}: missing {len(missing)} case(s) "
+                                  f"— retrying narrowly for: {missing[:3]}{'...' if len(missing) > 3 else ''}")
                         else:
-                            # Missing name has no known prop mapping (entries
-                            # itself never produced it) — fall back to the
-                            # full chunk text as a last resort.
                             retry_properties_text = chunk_properties_text
-                        print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
-                              f"⚠ attempt {attempt}: missing {len(missing)} case(s) "
-                              f"— retrying narrowly for: {missing[:3]}{'...' if len(missing) > 3 else ''}")
+                            print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
+                                  f"⚠ attempt {attempt}: missing {len(missing)} case(s) "
+                                  f"— narrow retry exhausted, falling back to full-chunk "
+                                  f"retry for: {missing[:3]}{'...' if len(missing) > 3 else ''}")
                     else:
+                        chunk_retry_count += 1  # attempted retries even though they ultimately failed —
+                                                  # previously only successful recoveries were counted,
+                                                  # so a chunk that exhausted all retries WITHOUT
+                                                  # succeeding silently contributed 0, making the
+                                                  # final "cpp_chunk_retries=0" summary line say
+                                                  # "no retry activity" when 5 retries had in fact
+                                                  # just failed — exactly backwards from useful.
                         print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
                               f"✗ gave up after {MAX_CHUNK_RETRIES} retries: "
                               f"still missing {len((chunk_names - kept_read_names_accum) | (chunk_rw_names - kept_write_names_accum))}")
