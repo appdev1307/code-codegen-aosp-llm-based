@@ -9,7 +9,18 @@ import yaml
 
 
 def vss_datatype_to_yaml_type(dt: Optional[str]) -> str:
-    """Map VSS datatype to supported YAML types"""
+    """Map VSS datatype to supported YAML types.
+
+    FIX: string/string[] previously fell through to the "INT" fallback —
+    207 of the 1,571 VSS signals in this dataset are string-typed
+    ("string": 183, "string[]": 24, per direct inspection of vss.json),
+    meaning any of them selected into the 500-signal training set would
+    be silently mislabelled INT from this very first, LLM-free
+    conversion step — corrupting the AIDL enum comment, the CPP agent's
+    RawPropValues field selection (int32Values instead of stringValue),
+    and C5's VTS round-trip test type inference, all of which trust this
+    label as ground truth. STRING is now a real category.
+    """
     if not dt:
         return "INT"
     dt = str(dt).lower()
@@ -17,9 +28,11 @@ def vss_datatype_to_yaml_type(dt: Optional[str]) -> str:
         return "FLOAT"
     if dt in ("boolean", "bool"):
         return "BOOLEAN"
+    if dt in ("string", "string[]"):
+        return "STRING"
     if dt.startswith(("int", "uint")):
         return "INT"
-    return "INT"  # Fallback
+    return "INT"  # Fallback for genuinely unrecognised types only
 
 
 def vss_type_to_access(vss_node: Dict[str, Any]) -> str:
