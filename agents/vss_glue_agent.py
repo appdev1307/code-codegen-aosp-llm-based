@@ -127,7 +127,16 @@ def _generate_vss_hardware_cpp(props: list[dict], domains: list[str] = None,
     Class names are parsed from generated headers — LLM naming does not matter.
     Fallback: use AIDL-parsed prop IDs if domain services return empty.
     """
-    init_lines = "\n    ".join(f"mPropIds.push_back({p['prop_id']});" for p in props)
+    # Reference the REAL enum names directly (compiler-verified against the
+    # actual generated VehicleProperty.aidl) instead of the independently
+    # computed hex literal in p['prop_id'] — same fix as multi_main_c5.py's
+    # kVssPropertyIds. If a name here doesn't exist in the real compiled
+    # enum, the build fails immediately instead of silently using a
+    # possibly-stale numeric value from a separate encode_prop_id() copy.
+    init_lines = "\n    ".join(
+        f"mPropIds.push_back(static_cast<int32_t>(VehicleProperty::{p['name']}));"
+        for p in props
+    )
 
     _domains = domains if domains else DOMAINS
     _headers = domain_headers or {}
@@ -158,6 +167,7 @@ def _generate_vss_hardware_cpp(props: list[dict], domains: list[str] = None,
 // Aggregates domain VehicleHalService* implementations (each extends IVehicleHardware)
 #include "VssVehicleHardware.h"
 {domain_includes}
+#include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
 #include <android-base/logging.h>
 
 namespace android::hardware::automotive::vehicle {{
