@@ -53,7 +53,7 @@ CHUNK_SIZE = 12
 
 # Maximum retry attempts per chunk when enable_chunk_retry=True.
 # Only used by C4/C4-minimal callers — C3 passes enable_chunk_retry=False.
-MAX_CHUNK_RETRIES = 2
+MAX_CHUNK_RETRIES = 5
 _PLACEHOLDER = "/*__PROPERTY_ENTRIES_PLACEHOLDER__*/"
 
 _MD_FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?|```$", re.MULTILINE)
@@ -554,41 +554,69 @@ class RagDspyCppAgent:
                 if str(getattr(p, "access", "")).upper() in ("READ_WRITE", "WRITE")
             }
 
+            name_to_prop = dict(zip(real_names_ordered, chunk))  # for building narrow retry requests
+
             read_cases_text, write_cases_text = "", ""
             if enable_chunk_retry:
+                kept_read_cases_accum, kept_write_cases_accum = "", ""
+                kept_read_names_accum, kept_write_names_accum = set(), set()
+                retry_properties_text = chunk_properties_text
+
                 for attempt in range(1, MAX_CHUNK_RETRIES + 2):
                     body_result = self.register_body_predictor(
                         domain       = domain,
-                        properties   = chunk_properties_text,
+                        properties   = retry_properties_text,
                         aosp_context = aosp_context,
                     )
                     raw_read  = _strip_markdown_fences(getattr(body_result, "read_cases", "") or "")
                     raw_write = _strip_markdown_fences(getattr(body_result, "write_cases", "") or "")
-                    read_cases_text, kept_read   = _filter_cases_to_allowed_names(raw_read, chunk_names)
-                    write_cases_text, kept_write = _filter_cases_to_allowed_names(raw_write, chunk_rw_names)
+                    new_read_text,  new_read_names  = _filter_cases_to_allowed_names(raw_read, chunk_names)
+                    new_write_text, new_write_names = _filter_cases_to_allowed_names(raw_write, chunk_rw_names)
 
-                    if kept_read >= chunk_names and kept_write >= chunk_rw_names:
+                    # Merge newly-generated cases with whatever prior attempts
+                    # already got right — a narrow retry regenerating just 1
+                    # property must not discard the other 11 that were
+                    # already correct on attempt 1.
+                    if new_read_text.strip():
+                        kept_read_cases_accum += ("\n" if kept_read_cases_accum else "") + new_read_text
+                        kept_read_names_accum |= new_read_names
+                    if new_write_text.strip():
+                        kept_write_cases_accum += ("\n" if kept_write_cases_accum else "") + new_write_text
+                        kept_write_names_accum |= new_write_names
+
+                    read_cases_text, write_cases_text = kept_read_cases_accum, kept_write_cases_accum
+
+                    if kept_read_names_accum >= chunk_names and kept_write_names_accum >= chunk_rw_names:
                         if attempt > 1:
                             chunk_retry_count += 1
                             print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
                                   f"✓ retry {attempt-1} recovered all cases")
                         break
+
                     if attempt <= MAX_CHUNK_RETRIES:
-                        missing = sorted((chunk_names - kept_read) | (chunk_rw_names - kept_write))
-                        missing_hint = "\n".join(f"  - {n}" for n in missing[:10])
-                        retry_context = (
-                            f"=== RETRY: MISSING cases for these properties ===\n"
-                            f"{missing_hint}\n"
-                            f"Output a case for EVERY property listed below — do not skip any.\n"
-                            f"=== END RETRY ==="
-                        )
-                        chunk_properties_text = retry_context + "\n\n" + chunk_properties_text
+                        missing = sorted((chunk_names - kept_read_names_accum) | (chunk_rw_names - kept_write_names_accum))
+                        # Narrow retry: only ask for the specific missing
+                        # properties (a 1-3 item task), not the full
+                        # CHUNK_SIZE-item chunk again — a much easier,
+                        # more focused generation than re-deriving cases
+                        # that were already correct, which previously
+                        # sometimes hit the SAME miss twice in a row even
+                        # across separate retry attempts.
+                        missing_props = [name_to_prop[n] for n in missing if n in name_to_prop]
+                        if missing_props:
+                            retry_properties_text = self._build_chunk_properties_text(domain, missing_props, aidl_block)
+                        else:
+                            # Missing name has no known prop mapping (entries
+                            # itself never produced it) — fall back to the
+                            # full chunk text as a last resort.
+                            retry_properties_text = chunk_properties_text
                         print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
-                              f"⚠ attempt {attempt}: missing {len(missing)} case(s) — retrying...")
+                              f"⚠ attempt {attempt}: missing {len(missing)} case(s) "
+                              f"— retrying narrowly for: {missing[:3]}{'...' if len(missing) > 3 else ''}")
                     else:
                         print(f"  [CPP register-body chunk {i // chunk_size + 1}] "
                               f"✗ gave up after {MAX_CHUNK_RETRIES} retries: "
-                              f"still missing {len((chunk_names - kept_read) | (chunk_rw_names - kept_write))}")
+                              f"still missing {len((chunk_names - kept_read_names_accum) | (chunk_rw_names - kept_write_names_accum))}")
             else:
                 # C3 path: no retry — single shot per chunk, by design.
                 body_result = self.register_body_predictor(
