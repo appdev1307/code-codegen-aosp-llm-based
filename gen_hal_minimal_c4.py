@@ -251,7 +251,14 @@ for domain, signal_ids in module_signal_map.items():
             patched_spec = _PatchedSpec(mspec, aidl_content)
         else:
             patched_spec = mspec
-        cpp_result = cpp_agent.run(patched_spec)
+        # Pass aidl_dir so RAGDSPyCppAgent.run() forwards it to
+        # generate_chunked(), which then routes property names through
+        # _parse_aidl_properties() on the already-written .aidl file.
+        # Without this, aidl_dir defaults to "" and the deterministic
+        # override is skipped entirely — LLM-typed VEHICLE_CHILDREN_*
+        # names leak into VssVehicleHardware.cpp and glue artifacts,
+        # violating the single-source-of-truth invariant.
+        cpp_result = cpp_agent.run(patched_spec, aidl_dir=str(AIDL_OUT))
         cpp_chunk_retries = cpp_result.get("chunk_retries", 0) if isinstance(cpp_result, dict) else 0
         print(f"  [CPP] {domain}: cpp_chunk_retries={cpp_chunk_retries}")
         domain_cap = domain.capitalize()
