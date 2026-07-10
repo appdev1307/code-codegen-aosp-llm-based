@@ -252,6 +252,9 @@ for domain, signal_ids in module_signal_map.items():
         else:
             patched_spec = mspec
         cpp_result = cpp_agent.run(patched_spec)
+        cpp_chunk_retries = cpp_result.get("chunk_retries", 0) if isinstance(cpp_result, dict) else 0
+        if cpp_chunk_retries > 0:
+            print(f"  [CPP] {domain}: {cpp_chunk_retries} chunk(s) needed retry to recover missing entries/cases")
         domain_cap = domain.capitalize()
         impl_fpath = CPP_OUT / f"VehicleHalService{domain_cap}.cpp"
         # Extract header and impl from dict result
@@ -301,11 +304,14 @@ try:
     agent.run(str(VSS_OUT), aidl_dir=str(AIDL_OUT), sepolicy_dir=str(SE_OUT))
     import re
     cpp_content = (VSS_OUT / "VssVehicleHardware.cpp").read_text()
-    raw_ids = re.findall(r'mPropIds\.push_back\((0x[0-9a-fA-F]+)\)', cpp_content)
-    invalid = [x for x in raw_ids if int(x, 16) < 0x20000000]
-    print(f"  Props  : {len(raw_ids)} total")
-    print(f"  Sample : {raw_ids[:3]}")
-    print(f"  IDs    : {'✅ All valid 32-bit VHAL IDs' if not invalid else '❌ ' + str(invalid[:3])}")
+    # mPropIds now references the real compiled enum (VehicleProperty::NAME)
+    # instead of independently-computed hex literals — see vss_glue_agent.py
+    # _generate_vss_hardware_cpp(). The old hex-literal check below always
+    # found 0 matches after that fix; checking for enum references instead.
+    prop_refs = re.findall(r"mPropIds\.push_back\(static_cast<int32_t>\(VehicleProperty::(\w+)\)\)", cpp_content)
+    print(f"  Props  : {len(prop_refs)} total")
+    print(f"  Sample : {prop_refs[:3]}")
+    print(f"  IDs    : {'✅ All reference real compiled enum names' if prop_refs else '❌ No enum references found — check _generate_vss_hardware_cpp output'}")
 except Exception as e:
     print(f"  ❌ VssGlueAgent ERROR: {e}")
 
