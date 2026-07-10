@@ -253,8 +253,7 @@ for domain, signal_ids in module_signal_map.items():
             patched_spec = mspec
         cpp_result = cpp_agent.run(patched_spec)
         cpp_chunk_retries = cpp_result.get("chunk_retries", 0) if isinstance(cpp_result, dict) else 0
-        if cpp_chunk_retries > 0:
-            print(f"  [CPP] {domain}: {cpp_chunk_retries} chunk(s) needed retry to recover missing entries/cases")
+        print(f"  [CPP] {domain}: cpp_chunk_retries={cpp_chunk_retries}")
         domain_cap = domain.capitalize()
         impl_fpath = CPP_OUT / f"VehicleHalService{domain_cap}.cpp"
         # Extract header and impl from dict result
