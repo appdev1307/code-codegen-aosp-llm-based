@@ -104,6 +104,8 @@ MANDATORY REQUIREMENTS — you MUST implement ALL of these:
    #include "VssPropertyIds.h"
    #include <fstream>
    #include <string>
+   #include <sys/stat.h>
+   #include <cerrno>
 
 2. Class inherits BnIVehicle
 
@@ -128,11 +130,25 @@ MANDATORY REQUIREMENTS — you MUST implement ALL of these:
      bool readRegister(int32_t propId, VehiclePropValue* out) const;
      bool writeRegister(int32_t propId, const VehiclePropValue& in);
    readRegister() and writeRegister() dispatch with a switch(propId) —
-   one case per property this service owns — reading/writing the value's
-   int32Values[0]/floatValues[0]/boolValues[0] (whichever field matches
-   that property's type) to/from the register file for that case. If the
-   file doesn't exist yet on read, return a zero/false default (normal on
-   first boot).
+   one case per property this service owns. If the file doesn't exist
+   yet on read, return a zero/false/empty default (normal on first boot).
+
+   VALUE FIELD NAMES — THE REAL AIDL VehiclePropValue.value (RawPropValues)
+   TYPE HAS EXACTLY THESE FIELDS AND NO OTHERS:
+     int32Values   (std::vector<int32_t>)   — use for INT32 AND BOOLEAN
+                                               (true/false stored as 1/0 —
+                                               there is NO separate bool
+                                               array field in real AOSP)
+     int64Values   (std::vector<int64_t>)   — use for INT64
+     floatValues   (std::vector<float>)     — use for FLOAT
+     stringValue   (std::string)            — use for STRING (not an array)
+   `boolValues` and `booleanValues` DO NOT EXIST on this type — using
+   either is a compile error. A BOOLEAN-typed property's true/false MUST
+   go through int32Values (e.g. `in.value.int32Values = {{v ? 1 : 0}};`).
+
+   writeRegister()'s mkdir call MUST check its return value:
+     if (mkdir(kHwRegisterDir, 0770) != 0 && errno != EEXIST) return false;
+   (requires #include <cerrno>) — do NOT call mkdir() and ignore the result.
 
 5. In get()/getValues(): call readRegister() for the requested prop id(s)
    and return the real file-backed value — never a hardcoded/stubbed
@@ -140,7 +156,9 @@ MANDATORY REQUIREMENTS — you MUST implement ALL of these:
 
 6. In set()/setValues():
    - reject READ-only props with EX_UNSUPPORTED_OPERATION
-   - basic type validation (boolValues.size()==1 for bool, floatValues.size()==1 for float, etc.)
+   - basic type validation per the real field for that property's type
+     (int32Values.size()==1 for bool/int32, floatValues.size()==1 for
+     float, etc. — see VALUE FIELD NAMES above)
    - call writeRegister() to persist the new value to its file
    - notify all callbacks
 
