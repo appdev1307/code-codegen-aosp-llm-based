@@ -234,26 +234,14 @@ print(f"  Modules: {list(module_signal_map.keys())}")
 scores = {"aidl": [], "cpp": [], "selinux": []}
 t_total = time.time()
 
-def _get_aidl_content(domain: str) -> str:
-    """Read generated AIDL enum to inject exact prop IDs into CPP prompt.
-    Rewrites the per-domain enum name (e.g. VehiclePropertyAdas) to
-    VehicleProperty so the LLM generates VehicleProperty::PROP_NAME —
-    the correct prefix after all domains are merged into the single
-    aidl_property/VehicleProperty.aidl on the build system.
-    """
-    import glob as _glob, re as _re
-    files = _glob.glob(str(AIDL_OUT / f"VehicleProperty{domain.capitalize()}.aidl"))
-    if not files:
-        return ""
-    raw = open(files[0], errors="ignore").read()
-    # Rewrite "enum VehiclePropertyAdas {" → "enum VehicleProperty {"
-    raw = _re.sub(r"\benum\s+VehicleProperty\w+\s*\{", "enum VehicleProperty {", raw)
-    return (
-        "\n=== Generated AIDL enum (use these exact prop IDs) ===\n"
-        "// NOTE: All VSS properties are merged into VehicleProperty in VehicleProperty.h\n"
-        "// Use VehicleProperty::PROP_NAME — NOT VehiclePropertyAdas:: or other per-domain prefixes\n"
-        + raw
-    )
+# NOTE: _get_aidl_content(domain) — which read the raw .aidl file text
+# for injection into CPP retry prompts — was removed. See the comment
+# block above the CPP retry gen_kwargs construction for why: it bloated
+# retry prompts by ~2900 tokens on large domains, risking output
+# truncation and preventing retry convergence. The consistency-check
+# feedback (format_cpp_aidl_consistency_feedback) is the compact
+# replacement — targeted bad-name + nearest-match hints instead of the
+# full redundant enum text.
 
 for domain, signal_ids in module_signal_map.items():
     print(f"\n{'='*54}")
@@ -300,11 +288,26 @@ for domain, signal_ids in module_signal_map.items():
     except Exception as e:
         print(f"  [✗] aidl    ERROR: {e}")
 
-    # CPP — retry uses _get_aidl_content(domain) injected into properties
-    # so the raw _generate() path also sees the real enum names on retry.
-    # aidl_dir wired into _retry_agent so the C4-only consistency gate
-    # (check_cpp_aidl_name_consistency) runs on both initial + retry
-    # attempts, rejecting any VehicleProperty::X not defined in AIDL_OUT.
+    # CPP — retry properties = llm_spec ONLY (matches C4 full's behavior,
+    # see multi_main_c4_feedback.py's cpp gen_kwargs construction).
+    #
+    # PREVIOUSLY this appended _get_aidl_content(domain) — the full raw
+    # .aidl file text — to give retry ground truth for exact names.
+    # Measured against real BODY domain output: that adds ~2900 extra
+    # tokens of mostly-redundant text per retry attempt, on top of an
+    # already-narrow margin (~4302 tokens observed under max_tokens=4096
+    # for single-shot CPP generation — see CHUNK_SIZE comment history).
+    # Combined with the new consistency-check feedback (which lists each
+    # bad name + nearest-match hints), this pushed large domains (BODY,
+    # POWERTRAIN) over budget on retry, truncating output and preventing
+    # convergence within MAX_RETRIES — exactly the "still failing" loop
+    # observed empirically, absent in C4 full which never appended the
+    # raw AIDL block.
+    #
+    # The consistency-check feedback (format_cpp_aidl_consistency_feedback)
+    # already gives the LLM the exact bad names plus nearest-match AIDL
+    # names — a compact, targeted substitute for the same ground truth,
+    # without redundantly re-sending the full enum file every retry.
     try:
         impl_fpath = CPP_OUT / f"VehicleHalService{domain_cap}.cpp"
         extra = [CPP_OUT / f"VehicleHalService{domain_cap}.h",
@@ -315,7 +318,7 @@ for domain, signal_ids in module_signal_map.items():
         passed, score, attempts = _retry_agent(
             agent=cpp_agent, agent_type="cpp", fpath=impl_fpath,
             gen_kwargs={"domain": domain,
-                        "properties": llm_spec + _get_aidl_content(domain),
+                        "properties": llm_spec,
                         "aosp_context": rag_ctx},
             extra_files=extra,
             aidl_dir=str(AIDL_OUT),
