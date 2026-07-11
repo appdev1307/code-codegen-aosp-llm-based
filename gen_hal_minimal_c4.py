@@ -335,7 +335,12 @@ for domain, signal_ids in module_signal_map.items():
             agent=cpp_agent, agent_type="cpp", fpath=impl_fpath,
             gen_kwargs={"domain": domain,
                         "properties": llm_spec,
-                        "aosp_context": rag_ctx},
+                        "aosp_context": rag_ctx,
+                        # Enables _generate() to route through the
+                        # chunked path for large domains on retry —
+                        # see RAGDSPyCppAgent._generate()'s docstring.
+                        "prop_list": domain_props,
+                        "aidl_dir": str(AIDL_OUT)},
             extra_files=extra,
             aidl_dir=str(AIDL_OUT),
         )
