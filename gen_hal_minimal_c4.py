@@ -102,12 +102,23 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None, aidl_di
     itself, only whether this function treats the file as passing and
     what feedback goes back to the LLM. C1/C2/C3 never call this with
     aidl_dir set, so their scoring is unaffected.
+
+    Score source: the score returned (used for the "keep best version"
+    comparison below) comes from rescore_all_conditions.py's
+    score_content() — the same rubric that produces the final reported
+    thesis numbers — not from dspy_opt.validators' own internal score.
+    See ValidatorFeedback.validate()'s docstring in
+    multi_main_c4_feedback.py for the full rationale: the two rubrics
+    have different weights/checks, so a retry that "wins" under one can
+    lose under the other, and without this override the retry loop had
+    no way to know it was optimizing the wrong number.
     """
     if not fpath.exists():
         return False, 0.0, 0
 
     def _check(code_str):
-        """Run canonical validate() + (cpp-only) consistency gate."""
+        """Run canonical validate() + (cpp-only) consistency gate,
+        then override the score with the rescore-rubric score."""
         r = validate(agent_type, code_str)
         bad_names = (check_cpp_aidl_name_consistency(code_str, aidl_dir)
                      if agent_type == "cpp" and aidl_dir else [])
@@ -116,7 +127,12 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None, aidl_di
         if bad_names:
             consistency_msg = format_cpp_aidl_consistency_feedback(bad_names, aidl_dir)
             msg = f"{msg}\n\n{consistency_msg}" if msg else consistency_msg
-        return ok, r.score, msg
+        try:
+            from rescore_all_conditions import score_content
+            score = score_content(agent_type, code_str)["score"]
+        except Exception:
+            score = r.score
+        return ok, score, msg
 
     code = fpath.read_text(encoding="utf-8", errors="ignore")
     code_to_val = code

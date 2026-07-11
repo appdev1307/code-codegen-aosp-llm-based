@@ -422,6 +422,49 @@ def score_coverage(content: str, agent_type: str) -> float:
     return round(min(hits / max(len(terms) - 2, 1), 1.0), 4)
 
 
+def score_content(agent_type: str, content: str) -> dict[str, Any]:
+    """Score already-in-memory content against the thesis rubric.
+
+    This is the core of score_file(), extracted so callers with content
+    already in memory — notably C4's PostValidationRetry / _retry_agent,
+    deciding which regenerated version to keep — can score against the
+    EXACT SAME rubric that produces the final reported numbers, instead
+    of dspy_opt/validators.py's independently-weighted internal score.
+
+    Previously, retry's "best_score" comparison used validate_cpp()'s
+    own ad-hoc scoring (different weights, different checks entirely —
+    see WEIGHTS above vs validate_cpp's +0.15/+0.20/etc. scheme). A
+    retry could satisfy that internal rubric while scoring WORSE under
+    this one, since the two were never required to agree — meaning a
+    "successful" retry could still lower the final reported average.
+    Using score_content() for the retry's keep/discard decision closes
+    that gap: only wins that would also win under the real rescore
+    rubric get kept.
+
+    Does NOT include the cpp header/impl/service-file combination
+    step — callers building combined content themselves (as C4's retry
+    engine already does via extra_files) should pass it in pre-combined;
+    score_file() below handles that combination for the from-disk case.
+    """
+    if len(content.strip()) < 20:
+        return {"agent": agent_type, "score": 0.0,
+                "struct": 0.0, "syntax": 0.0, "coverage": 0.0, "skipped": "empty"}
+
+    w = WEIGHTS[agent_type]
+    s_struct   = score_structure(content, agent_type)
+    s_syntax   = score_syntax(content, agent_type)
+    s_coverage = score_coverage(content, agent_type)
+    total = w["struct"] * s_struct + w["syntax"] * s_syntax + w["coverage"] * s_coverage
+
+    return {
+        "agent": agent_type,
+        "struct": s_struct,
+        "syntax": s_syntax,
+        "coverage": s_coverage,
+        "score": round(total, 4),
+    }
+
+
 def score_file(agent_type: str, filepath: Path, output_root: Path) -> dict[str, Any]:
     content = filepath.read_text(errors="replace")
     rel_path = str(filepath.relative_to(output_root))
@@ -446,24 +489,8 @@ def score_file(agent_type: str, filepath: Path, output_root: Path) -> dict[str, 
                     parts.append(extra.read_text(errors="replace"))
             content = "\n".join(parts)
 
-    if len(content.strip()) < 20:
-        return {"file": rel_path, "agent": agent_type, "score": 0.0,
-                "struct": 0.0, "syntax": 0.0, "coverage": 0.0, "skipped": "empty"}
-
-    w = WEIGHTS[agent_type]
-    s_struct   = score_structure(content, agent_type)
-    s_syntax   = score_syntax(content, agent_type)
-    s_coverage = score_coverage(content, agent_type)
-    total = w["struct"] * s_struct + w["syntax"] * s_syntax + w["coverage"] * s_coverage
-
-    return {
-        "file": rel_path,
-        "agent": agent_type,
-        "struct": s_struct,
-        "syntax": s_syntax,
-        "coverage": s_coverage,
-        "score": round(total, 4),
-    }
+    result = score_content(agent_type, content)
+    return {"file": rel_path, **result}
 
 
 # ── Main rescore ──────────────────────────────────────────────────

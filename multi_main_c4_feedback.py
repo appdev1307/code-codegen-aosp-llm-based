@@ -112,24 +112,58 @@ class ValidatorFeedback:
         dspy_opt.validators.check_cpp_aidl_name_consistency). Ignored
         for all other agent_types — this keeps C1/C2/C3 scoring, which
         never pass aidl_dir, byte-for-byte unchanged.
+
+        Score source: `passed` (pass/fail) and `error_message` (LLM
+        feedback) still come from the per-type _validate_* methods
+        below, each wrapping dspy_opt.validators' canonical structural
+        checks. But the numeric `score` is overridden to come from
+        rescore_all_conditions.py::score_content() — the SAME rubric
+        that produces the final reported thesis numbers.
+
+        Why: PostValidationRetry's "keep the best-scoring version"
+        comparison previously used each validator's own internal score
+        (e.g. validate_cpp()'s +0.15/+0.20/... ad-hoc scheme), which
+        has DIFFERENT weights and checks than score_content()'s
+        struct/syntax/coverage rubric (see WEIGHTS in
+        rescore_all_conditions.py). A retry attempt could score higher
+        under the internal rubric and get kept, while scoring LOWER
+        under the rescore rubric — meaning "successful" retries could
+        silently lower the final reported average for a domain, with
+        no way to detect it until the separate rescoring step ran.
+        Overriding the score here closes that gap: the retry loop's
+        "best version" decision now agrees with what actually gets
+        reported.
+
+        Falls back to the per-type validator's own score if
+        score_content() doesn't recognize agent_type (e.g. types with
+        no WEIGHTS entry), so this degrades safely rather than crashing.
         """
         if agent_type == "aidl":
-            return ValidatorFeedback._validate_aidl(code)
+            passed, msg, fallback_score = ValidatorFeedback._validate_aidl(code)
         elif agent_type == "cpp":
-            return ValidatorFeedback._validate_cpp(code, aidl_dir)
+            passed, msg, fallback_score = ValidatorFeedback._validate_cpp(code, aidl_dir)
         elif agent_type == "selinux":
-            return ValidatorFeedback._validate_selinux(code)
+            passed, msg, fallback_score = ValidatorFeedback._validate_selinux(code)
         elif agent_type == "build":
-            return ValidatorFeedback._validate_build(code)
+            passed, msg, fallback_score = ValidatorFeedback._validate_build(code)
         elif agent_type in ("backend", "backend_model", "simulator"):
-            return ValidatorFeedback._validate_python(code)
+            passed, msg, fallback_score = ValidatorFeedback._validate_python(code)
         elif agent_type in ("android_app",):
-            return ValidatorFeedback._validate_kotlin(code)
+            passed, msg, fallback_score = ValidatorFeedback._validate_kotlin(code)
         elif agent_type in ("android_layout",):
-            return ValidatorFeedback._validate_xml(code)
+            passed, msg, fallback_score = ValidatorFeedback._validate_xml(code)
         elif agent_type == "design_doc":
-            return ValidatorFeedback._validate_markdown(code)
-        return (True, "", 1.0)
+            passed, msg, fallback_score = ValidatorFeedback._validate_markdown(code)
+        else:
+            return (True, "", 1.0)
+
+        try:
+            from rescore_all_conditions import score_content
+            score = score_content(agent_type, code)["score"]
+        except Exception:
+            score = fallback_score
+
+        return (passed, msg, score)
 
     @staticmethod
     def _validate_python(code: str) -> tuple[bool, str, float]:
