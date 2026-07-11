@@ -53,13 +53,32 @@ def _resolve_c4_input_dir() -> Path:
     """Which C4 run's output does C5 read from?
 
     C4_INPUT env var always wins when set — explicit and unambiguous.
-    Otherwise, auto-detect: prefer output_c4_minimal (the directory used
-    for quick iterative testing — gen_hal_minimal_c4.py) if it exists,
-    falling back to output_c4_feedback (the full pipeline —
-    multi_main_c4_feedback.py) otherwise. Silently defaulting to
-    output_c4_feedback regardless of which one actually has fresh data
-    was a real bug: C5 would read stale or nonexistent data without any
-    indication it was looking in the wrong place.
+
+    Otherwise, auto-detect by ACTUAL FRESHNESS: compare the most recent
+    .aidl file modification time under each candidate directory and
+    pick whichever is newer.
+
+    BUG THIS FIXES: previously this hardcoded a static preference for
+    output_c4_minimal over output_c4_feedback whenever minimal existed
+    at all — regardless of which one actually had the current data.
+    output_c4_minimal is used repeatedly for quick iterative testing
+    throughout a session (gen_hal_minimal_c4.py), so it almost always
+    exists and is often STALE relative to a later, complete
+    output_c4_feedback run. C5 would then silently build VTS
+    (VtsHalAutomotiveVehicleVss.cpp) from minimal's older/incomplete
+    AIDL enum content, while VssGlueAgent (running inside
+    multi_main_c4_feedback.py itself, always against that SAME run's
+    current AIDL) produced the aggregator from the correct, current
+    data — producing exactly the "aggregator and VTS have mismatched
+    /outdated names vs current AIDL + domain CPPs" symptom, without any
+    error or warning, since both files were individually internally
+    consistent (500/500 properties each) — just built from two
+    different points in time.
+
+    Freshness is measured by the newest VehicleProperty*.aidl file's
+    mtime under each candidate's aidl subdirectory (not the directory's
+    own mtime, which can be touched by unrelated writes and doesn't
+    reliably reflect when generation last completed).
     """
     explicit = _os.environ.get("C4_INPUT")
     if explicit:
@@ -68,15 +87,37 @@ def _resolve_c4_input_dir() -> Path:
 
     minimal_dir  = Path("output_c4_minimal")
     feedback_dir = Path("output_c4_feedback")
-    if minimal_dir.exists():
-        print(f"[C5] C4_INPUT not set — auto-detected {minimal_dir} (exists)")
-        return minimal_dir
-    if feedback_dir.exists():
-        print(f"[C5] C4_INPUT not set — auto-detected {feedback_dir} (exists)")
+
+    def _newest_aidl_mtime(base: Path) -> float:
+        aidl_dir = base / "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
+        if not aidl_dir.is_dir():
+            return -1.0
+        mtimes = [f.stat().st_mtime for f in aidl_dir.glob("VehicleProperty*.aidl")]
+        return max(mtimes) if mtimes else -1.0
+
+    minimal_mtime  = _newest_aidl_mtime(minimal_dir)  if minimal_dir.exists()  else -1.0
+    feedback_mtime = _newest_aidl_mtime(feedback_dir) if feedback_dir.exists() else -1.0
+
+    if minimal_mtime < 0 and feedback_mtime < 0:
+        print(f"[C5] ⚠ C4_INPUT not set and neither {minimal_dir} nor {feedback_dir} "
+              f"has any generated .aidl files yet — defaulting to {feedback_dir}, "
+              f"will likely fail to find input")
         return feedback_dir
-    print(f"[C5] ⚠ C4_INPUT not set and neither {minimal_dir} nor {feedback_dir} "
-          f"exists yet — defaulting to {feedback_dir}, will likely fail to find input")
-    return feedback_dir
+
+    import datetime as _dt
+    def _fmt(t):
+        return _dt.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S") if t >= 0 else "absent"
+
+    if feedback_mtime >= minimal_mtime:
+        print(f"[C5] C4_INPUT not set — auto-detected by freshness: "
+              f"{feedback_dir} (newest .aidl: {_fmt(feedback_mtime)}) "
+              f"vs {minimal_dir} ({_fmt(minimal_mtime)}) → using {feedback_dir}")
+        return feedback_dir
+    else:
+        print(f"[C5] C4_INPUT not set — auto-detected by freshness: "
+              f"{minimal_dir} (newest .aidl: {_fmt(minimal_mtime)}) "
+              f"vs {feedback_dir} ({_fmt(feedback_mtime)}) → using {minimal_dir}")
+        return minimal_dir
 
 C4_OUTPUT_DIR     = _resolve_c4_input_dir()  # C4 YAML spec + MODULE_PLAN.json
 VTS_REL           = "test/vts/vss_vehicle"
