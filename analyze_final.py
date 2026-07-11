@@ -2,7 +2,14 @@
 """
 analyze_final.py
 ────────────────
-Final 3-way comparison and thesis-ready analysis for VHAL code generation.
+Final N-way comparison and thesis-ready analysis for VHAL code generation.
+Supports any subset of C1 Baseline / C2 Adaptive / C3 RAG+DSPy / C4 Feedback
+present in experiments/results/ — conditions with a missing JSON file are
+silently excluded (see load_results()). Table headers and columns are
+built dynamically from whichever conditions are actually loaded, so
+adding a future condition (e.g. C5) only requires updating
+CONDITION_FILES / CONDITION_ORDER at the top of this file — no other
+edits needed.
 
 Reads the JSON results from rescore_all_conditions.py and produces:
   1. Statistical comparison (Kruskal-Wallis + pairwise Mann-Whitney U)
@@ -37,10 +44,38 @@ CONDITION_FILES = {
     "C1 Baseline":  RESULTS_DIR / "baseline.json",
     "C2 Adaptive":  RESULTS_DIR / "adaptive.json",
     "C3 RAG+DSPy":  RESULTS_DIR / "rag_dspy.json",
+    "C4 Feedback":  RESULTS_DIR / "c4_feedback.json",
 }
 
 AGENT_ORDER = ["aidl", "cpp", "selinux", "build", "design_doc", "android_app", "backend"]
-CONDITION_ORDER = ["C1 Baseline", "C2 Adaptive", "C3 RAG+DSPy"]
+CONDITION_ORDER = ["C1 Baseline", "C2 Adaptive", "C3 RAG+DSPy", "C4 Feedback"]
+
+
+def get_all_agents_present(per_agent: dict) -> list[str]:
+    """AGENT_ORDER, extended with any agent types found in the actual
+    data but not in that fixed list.
+
+    Bug this fixes: AGENT_ORDER previously hardcoded only 7 types, but
+    validators.py's dispatch table supports up to 12 (also vintf, puml,
+    android_layout, backend_model, simulator). Files scored under a
+    type missing from AGENT_ORDER were silently dropped from Section 2
+    (Per-Agent Breakdown) and the LaTeX export — while still counted
+    in Section 1 (Overall Scores) and Section 4 (Statistics), since
+    those read from the flat file list, not through AGENT_ORDER. This
+    produced a real discrepancy: e.g. observed n=58 in the overview
+    but only 50 files summed across the 7 listed agents in Section 2,
+    with the 8 invisible files' high scores (~0.99) inflating the
+    overall average above what Section 2 alone would suggest.
+
+    Extra types are appended in sorted order after the known ones so
+    existing table layouts stay stable and any newly-appearing type is
+    still visible rather than silently vanishing again.
+    """
+    known = set(AGENT_ORDER)
+    extra = set()
+    for agent_map in per_agent.values():
+        extra |= set(agent_map.keys()) - known
+    return AGENT_ORDER + sorted(extra)
 
 
 def load_results() -> dict[str, dict]:
@@ -148,14 +183,25 @@ def build_overview_table(data: dict) -> str:
 
 
 def build_per_agent_table(per_agent: dict) -> str:
-    """Markdown table: Agent | C1 avg | C2 avg | C3 avg."""
-    header = "| Agent | C1 Baseline | C2 Adaptive | C3 RAG+DSPy |"
-    sep    = "|---|---|---|---|"
+    """Markdown table: Agent | <avg (n)> per condition present in per_agent.
+
+    Header is built FROM the same condition list used to populate rows
+    (`present`), rather than a separate hardcoded string — this is the
+    fix for the header/data column-count drift bug: previously
+    CONDITION_ORDER could grow (e.g. C4 added) while the header string
+    stayed hardcoded at 3 columns, producing N+1 data cells under an
+    N-column header. Building both from one source makes that class of
+    bug structurally impossible.
+    """
+    present = [l for l in CONDITION_ORDER if l in per_agent]
+    all_agents = get_all_agents_present(per_agent)
+    header = "| Agent | " + " | ".join(present) + " |"
+    sep    = "|---|" + "---|" * len(present)
     rows = []
-    for agent in AGENT_ORDER:
+    for agent in all_agents:
         cells = [f"| {agent} "]
-        for label in CONDITION_ORDER:
-            if label in per_agent and agent in per_agent[label]:
+        for label in present:
+            if agent in per_agent[label]:
                 files = per_agent[label][agent]
                 avg = sum(f["score"] for f in files) / len(files)
                 cells.append(f"| {avg:.4f} ({len(files)}) ")
@@ -167,20 +213,22 @@ def build_per_agent_table(per_agent: dict) -> str:
 
 
 def build_dimension_table(per_agent: dict) -> str:
-    """Per-dimension (struct/syntax/coverage) breakdown by condition."""
-    header = "| Dimension | C1 Baseline | C2 Adaptive | C3 RAG+DSPy |"
-    sep    = "|---|---|---|---|"
+    """Per-dimension (struct/syntax/coverage) breakdown by condition.
+
+    Same fix as build_per_agent_table: header derived from `present`,
+    not a separate hardcoded string.
+    """
+    present = [l for l in CONDITION_ORDER if l in per_agent]
+    header = "| Dimension | " + " | ".join(present) + " |"
+    sep    = "|---|" + "---|" * len(present)
     rows = []
     for dim in ["struct", "syntax", "coverage"]:
         cells = [f"| {dim} "]
-        for label in CONDITION_ORDER:
-            if label in per_agent:
-                all_files = [f for agent_files in per_agent[label].values() for f in agent_files]
-                if all_files:
-                    avg = sum(f.get(dim, 0) for f in all_files) / len(all_files)
-                    cells.append(f"| {avg:.4f} ")
-                else:
-                    cells.append("| — ")
+        for label in present:
+            all_files = [f for agent_files in per_agent[label].values() for f in agent_files]
+            if all_files:
+                avg = sum(f.get(dim, 0) for f in all_files) / len(all_files)
+                cells.append(f"| {avg:.4f} ")
             else:
                 cells.append("| — ")
         cells.append("|")
@@ -218,20 +266,23 @@ def export_csv(data: dict, path: Path):
 # ── LaTeX table ───────────────────────────────────────────────────
 def export_latex(data: dict, per_agent: dict, path: Path):
     """LaTeX table for thesis insertion."""
+    present = [l for l in CONDITION_ORDER if l in data]
+    col_spec = "l" + "c" * len(present)
+    header_row = "Agent & " + " & ".join(present) + r" \\"
     lines = [
         r"\begin{table}[htbp]",
         r"\centering",
-        r"\caption{Average quality scores across three LLM pipeline conditions}",
+        rf"\caption{{Average quality scores across {len(present)} LLM pipeline conditions}}",
         r"\label{tab:condition-comparison}",
-        r"\begin{tabular}{lccc}",
+        rf"\begin{{tabular}}{{{col_spec}}}",
         r"\toprule",
-        r"Agent & C1 Baseline & C2 Adaptive & C3 RAG+DSPy \\",
+        header_row,
         r"\midrule",
     ]
-    for agent in AGENT_ORDER:
+    for agent in get_all_agents_present(per_agent):
         cells = [agent.replace("_", r"\_")]
-        for label in CONDITION_ORDER:
-            if label in per_agent and agent in per_agent[label]:
+        for label in present:
+            if agent in per_agent.get(label, {}):
                 files = per_agent[label][agent]
                 avg = sum(f["score"] for f in files) / len(files)
                 cells.append(f"{avg:.3f}")
@@ -242,11 +293,8 @@ def export_latex(data: dict, per_agent: dict, path: Path):
     # Overall average row
     lines.append(r"\midrule")
     cells = [r"\textbf{Overall}"]
-    for label in CONDITION_ORDER:
-        if label in data:
-            cells.append(f"\\textbf{{{data[label]['avg_score']:.3f}}}")
-        else:
-            cells.append("--")
+    for label in present:
+        cells.append(f"\\textbf{{{data[label]['avg_score']:.3f}}}")
     lines.append(" & ".join(cells) + r" \\")
 
     lines += [
@@ -261,9 +309,11 @@ def export_latex(data: dict, per_agent: dict, path: Path):
 # ── Markdown report ───────────────────────────────────────────────
 def generate_report(data: dict, per_agent: dict, score_lists: dict, path: Path):
     """Write the full analysis report as Markdown."""
+    present = [l for l in CONDITION_ORDER if l in data]
+    n_way = len(present)
     sections = []
 
-    sections.append("# VHAL Code Generation — Final 3-Way Comparison\n")
+    sections.append(f"# VHAL Code Generation — Final {n_way}-Way Comparison\n")
     sections.append(f"*Generated by analyze_final.py*\n")
 
     # Overview
@@ -286,16 +336,23 @@ def generate_report(data: dict, per_agent: dict, score_lists: dict, path: Path):
     sections.append("```")
 
     # Interpretation guide
+    condition_notes = {
+        "C1 Baseline":  "- C1 (Baseline) uses hand-crafted prompts with LLM-first generation.\n",
+        "C2 Adaptive":  "- C2 (Adaptive) adds Thompson Sampling for prompt selection.\n",
+        "C3 RAG+DSPy":  "- C3 (RAG+DSPy) adds AOSP document retrieval + MIPROv2-optimised prompts.\n",
+        "C4 Feedback":  "- C4 (Feedback) adds post-validation retry with error feedback on top of C3's "
+                        "RAG+DSPy generation, self-correcting failed files within a bounded retry budget.\n",
+    }
     sections.append("\n## 5. Interpretation Notes\n")
-    sections.append(
-        "- All three conditions were scored using identical validators and weights.\n"
-        "- C1 (Baseline) uses hand-crafted prompts with LLM-first generation.\n"
-        "- C2 (Adaptive) adds Thompson Sampling for prompt selection.\n"
-        "- C3 (RAG+DSPy) adds AOSP document retrieval + MIPROv2-optimised prompts.\n"
+    notes = f"- All {n_way} conditions were scored using identical validators and weights.\n"
+    for label in present:
+        notes += condition_notes.get(label, "")
+    notes += (
         "- Statistical significance tested with non-parametric tests (Kruskal-Wallis, Mann-Whitney U) "
         "since score distributions may not be normal.\n"
         "- Effect size reported as rank-biserial correlation r.\n"
     )
+    sections.append(notes)
 
     path.write_text("\n".join(sections))
     print(f"  → Report: {path}")
