@@ -265,6 +265,16 @@ def _syntax_aidl(content: str) -> float:
 
 
 def _syntax_cpp(content: str) -> float:
+    def _manual_check(content: str) -> float:
+        """Best-effort structural check when clang++ cannot fully verify
+        the file — not installed, timed out, or aborted before reaching
+        the function bodies (see fallback call sites below)."""
+        issues = 0
+        if content.count("{") != content.count("}"): issues += 2
+        if content.count("(") != content.count(")"): issues += 1
+        if "#include" not in content: issues += 1
+        return round(max(0, 1.0 - issues * 0.15), 4)
+
     try:
         import tempfile
         tmp = Path(tempfile.mktemp(suffix=".cpp"))
@@ -280,18 +290,33 @@ def _syntax_cpp(content: str) -> float:
         real_errors = [l for l in stderr.splitlines()
                        if "error:" in l and "file not found" not in l
                        and "no such file" not in l.lower()]
-        # If only missing-header errors → structural issues only, treat as 1.0
-        # This ensures C3/C4 (correct Android 14 headers) score same as C1/C2
         if not real_errors:
-            return 1.0
+            # clang++ ran, but every reported line was an unresolved
+            # AOSP-internal #include (e.g. "fatal error: 'X.h' file not
+            # found"). A fatal preprocessor error like this HALTS
+            # compilation immediately, before clang ever reaches the
+            # function bodies — so it has verified NOTHING about the
+            # actual code, not "found no issues".
+            #
+            # Previously this returned 1.0 here — a blind "perfect" score
+            # for content clang literally never analyzed. Since every
+            # generated VHAL .cpp file includes an AOSP-internal header
+            # not present in this scoring environment (unlike the
+            # generation-time environment, which stubs them in), this
+            # branch fired for 100% of files regardless of their actual
+            # content — silently disabling this check entirely. Verified
+            # empirically: a truncated file with 108 open vs 103 close
+            # braces (won't compile) still scored 1.0 under the old logic.
+            #
+            # Fall back to the manual structural check instead — weaker
+            # than a real compile, but at least catches gross defects
+            # like unbalanced braces from truncated LLM output, rather
+            # than silently passing everything.
+            return _manual_check(content)
         return round(max(0, 1.0 - len(real_errors) * 0.12), 4)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    issues = 0
-    if content.count("{") != content.count("}"): issues += 2
-    if content.count("(") != content.count(")"): issues += 1
-    if "#include" not in content: issues += 1
-    return round(max(0, 1.0 - issues * 0.15), 4)
+    return _manual_check(content)
 
 
 def _syntax_selinux(content: str) -> float:
