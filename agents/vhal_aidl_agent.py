@@ -17,7 +17,28 @@ class VHALAidlAgent:
     # 15 props -> ~300 output tokens -> ~30-60s per call.
     CHUNK_SIZE = 15
 
-    def __init__(self, output_root: str = "output/.llm_draft/latest"):
+    def __init__(self, output_root: str = "output/.llm_draft/latest",
+                 domain: str = "Adas"):
+        """
+        domain: which VSS domain this instance generates AIDL for
+        (e.g. "Adas", "Body", "Cabin", ...). Determines the enum name
+        and output filename (VehicleProperty{Domain}.aidl).
+
+        Bug this fixes: this class previously hardcoded the filename
+        and enum name to "VehiclePropertyAdas" everywhere — the system
+        prompt literally told the LLM "Generate ONLY a
+        VehiclePropertyAdas.aidl enum file" regardless of which domain
+        was actually being processed. In multi_main.py / 
+        multi_main_adaptive.py's sequential per-domain loop, EVERY
+        domain therefore wrote to the exact same output path
+        (hardware/.../VehiclePropertyAdas.aidl), each domain's write
+        overwriting the previous one's — so only the last domain
+        processed ever survived to the final output. SELinux (a
+        separate, correctly domain-parameterized agent) was unaffected,
+        which is why 7/7 domains produced .te files but only 1/7
+        produced AIDL/CPP. Same fix applied symmetrically in
+        vhal_service_agent.py for the .cpp side.
+        """
         self.name = "VHAL AIDL Agent (VSS-aware)"
         self.output_root = output_root
         self.writer = SafeWriter(self.output_root)
@@ -25,13 +46,17 @@ class VHALAidlAgent:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.report_path = Path(self.output_root) / "VHAL_AIDL_VALIDATE_REPORT.json"
 
+        self.domain = (domain or "Adas").strip() or "Adas"
+        self.domain_cap = self.domain.capitalize()
+        self.enum_name = f"VehicleProperty{self.domain_cap}"
+
         self.system_prompt = (
             "You are an expert Android Automotive OS (AAOS) Vehicle HAL engineer.\n"
             "Generate correct, production-grade AIDL files from the provided VSS spec.\n"
             "You MUST output ONLY valid JSON. No explanations, no markdown, no code blocks.\n"
             'If you cannot produce perfect JSON, output exactly: {"files": []}\n\n'
             "CRITICAL RULES FOR ANDROID 14+ AIDL:\n"
-            "- Generate ONLY a VehiclePropertyAdas.aidl enum file — do NOT generate IVehicle.aidl,\n"
+            f"- Generate ONLY a {self.enum_name}.aidl enum file — do NOT generate IVehicle.aidl,\n"
             "  IVehicleCallback.aidl, or VehiclePropValue.aidl (these already exist in AOSP).\n"
             "- Use package: android.hardware.automotive.vehicle\n"
             "- Add @VintfStability annotation\n"
@@ -44,7 +69,7 @@ class VHALAidlAgent:
         self.pkg_dir = f"{self.base_dir}/android/hardware/automotive/vehicle"
 
         self.required_files = [
-            f"{self.pkg_dir}/VehiclePropertyAdas.aidl",
+            f"{self.pkg_dir}/{self.enum_name}.aidl",
         ]
 
     def _parse_properties(self, plan_text: str):
@@ -73,7 +98,7 @@ class VHALAidlAgent:
                 chunk_note = (
                     f"\nNOTE: This is chunk {info} of a large spec. "
                     "Generate IVehicle/IVehicleCallback/VehiclePropValue only in chunk 1/N. "
-                    "Always generate VehiclePropertyAdas.aidl with THIS chunk's properties.\n"
+                    f"Always generate {self.enum_name}.aidl with THIS chunk's properties.\n"
                 )
         except Exception:
             pass
@@ -101,12 +126,12 @@ class VHALAidlAgent:
             "- IVehicle.aidl: standard interface (get, set, registerCallback, unregisterCallback)\n"
             "- IVehicleCallback.aidl: onPropertyEvent(in VehiclePropValue)\n"
             "- VehiclePropValue.aidl: parcelable with all standard fields\n"
-            "- VehiclePropertyAdas.aidl: MUST contain @Backing(type=\"int\") enum with ALL spec properties\n\n"
-            f"VSS PROPERTIES TO INCLUDE IN VehiclePropertyAdas.aidl:\n{props_text}\n\n"
-            "VehiclePropertyAdas.aidl example structure:\n"
+            f"- {self.enum_name}.aidl: MUST contain @Backing(type=\"int\") enum with ALL spec properties\n\n"
+            f"VSS PROPERTIES TO INCLUDE IN {self.enum_name}.aidl:\n{props_text}\n\n"
+            f"{self.enum_name}.aidl example structure:\n"
             "@VintfStability\n"
             '@Backing(type="int")\n'
-            "enum VehiclePropertyAdas {\n"
+            f"enum {self.enum_name} {{\n"
             f"    {first_name} = 0xF0000000,\n"
             f"    {second_name} = 0xF0000001,\n"
             "    // ... continue sequentially\n"
@@ -118,14 +143,14 @@ class VHALAidlAgent:
     # ── Chunked entry point ───────────────────────────────────────────────────
 
     def run(self, plan_text: str) -> bool:
-        print(f"[DEBUG] {self.name}: start")
+        print(f"[DEBUG] {self.name}: start (domain={self.domain})")
         props = self._parse_properties(plan_text)
 
         if not props or len(props) <= self.CHUNK_SIZE:
             return self._run_single(plan_text, "attempt1")
 
         # Large spec: split into CHUNK_SIZE-property batches.
-        # Structural files come from chunk 0; VehiclePropertyAdas is merged.
+        # Structural files come from chunk 0; the domain enum is merged.
         print(
             f"[DEBUG] {self.name}: {len(props)} properties -> "
             f"chunking into batches of {self.CHUNK_SIZE}"
@@ -222,14 +247,14 @@ class VHALAidlAgent:
         return json.dumps(base, separators=(",", ":"))
 
     def _extract_enum_entries(self, raw: str) -> list:
-        """Return the body lines of VehiclePropertyAdas enum from LLM JSON output."""
+        """Return the body lines of this domain's enum from LLM JSON output."""
         try:
             data, _ = parse_json_object(raw.strip())
             if not data:
                 return []
             for item in data.get("files", []):
                 path = (item.get("path") or "").strip()
-                if "VehiclePropertyAdas" in path:
+                if self.enum_name in path:
                     content = item.get("content", "")
                     in_enum = False
                     entries = []
@@ -247,7 +272,8 @@ class VHALAidlAgent:
         return []
 
     def _write_merged_vss_enum(self, entries: list) -> bool:
-        """Write VehiclePropertyAdas.aidl from merged entries, reassigning sequential IDs."""
+        """Write this domain's {enum_name}.aidl from merged entries,
+        reassigning sequential IDs."""
         if not entries:
             return False
         clean = []
@@ -267,15 +293,15 @@ class VHALAidlAgent:
             "package android.hardware.automotive.vehicle;\n\n"
             "@VintfStability\n"
             "@Backing(type=\"int\")\n"
-            "enum VehiclePropertyAdas {\n"
+            f"enum {self.enum_name} {{\n"
             f"{body}\n"
             "}\n"
         )
-        self.writer.write(f"{self.pkg_dir}/VehiclePropertyAdas.aidl", content)
+        self.writer.write(f"{self.pkg_dir}/{self.enum_name}.aidl", content)
         return True
 
     def _write_fallback_vss(self, props: list) -> None:
-        """Write a deterministic VehiclePropertyAdas.aidl from the raw property list."""
+        """Write a deterministic {enum_name}.aidl from the raw property list."""
         lines = []
         for i, p in enumerate(props):
             name = p.get("name", f"PROP_{i}") if isinstance(p, dict) else f"PROP_{i}"
@@ -285,15 +311,15 @@ class VHALAidlAgent:
             "package android.hardware.automotive.vehicle;\n\n"
             "@VintfStability\n"
             "@Backing(type=\"int\")\n"
-            "enum VehiclePropertyAdas {\n"
+            f"enum {self.enum_name} {{\n"
             f"{body}\n"
             "}\n"
         )
-        self.writer.write(f"{self.pkg_dir}/VehiclePropertyAdas.aidl", content)
+        self.writer.write(f"{self.pkg_dir}/{self.enum_name}.aidl", content)
 
     def _try_write_structural(self, raw: str) -> bool:
-        """Write only the 3 structural AIDL files (not VehiclePropertyAdas)."""
-        structural = [f for f in self.required_files if "VehiclePropertyAdas" not in f]
+        """Write only the 3 structural AIDL files (not this domain's enum)."""
+        structural = [f for f in self.required_files if self.enum_name not in f]
         try:
             data, _ = parse_json_object(raw.strip())
             if not data:
@@ -406,7 +432,7 @@ class VHALAidlAgent:
             "package android.hardware.automotive.vehicle;\n\n"
             "@VintfStability\n"
             "@Backing(type=\"int\")\n"
-            "enum VehiclePropertyAdas {\n"
+            f"enum {self.enum_name} {{\n"
             "    VEHICLE_PROP_PLACEHOLDER = 0xF0000000,\n"
             "}\n"
         )
@@ -414,7 +440,7 @@ class VHALAidlAgent:
             (f"{self.pkg_dir}/IVehicle.aidl", iv),
             (f"{self.pkg_dir}/IVehicleCallback.aidl", cb),
             (f"{self.pkg_dir}/VehiclePropValue.aidl", vp),
-            (f"{self.pkg_dir}/VehiclePropertyAdas.aidl", vss),
+            (f"{self.pkg_dir}/{self.enum_name}.aidl", vss),
         ]:
             self.writer.write(path, content)
 
@@ -422,6 +448,7 @@ class VHALAidlAgent:
 def generate_vhal_aidl(
     plan_or_spec: Union[str, Dict[str, Any], Any],
     output_root: str = "output/.llm_draft/latest",
+    domain: str = "Adas",
 ) -> bool:
     if isinstance(plan_or_spec, str):
         plan_text = plan_or_spec
@@ -433,4 +460,4 @@ def generate_vhal_aidl(
         except Exception:
             plan_text = "{}"
 
-    return VHALAidlAgent(output_root=output_root).run(plan_text)
+    return VHALAidlAgent(output_root=output_root, domain=domain).run(plan_text)

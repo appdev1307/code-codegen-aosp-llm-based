@@ -15,13 +15,32 @@ class VHALServiceAgent:
     # Max properties per LLM call — avoids 1200s timeouts on 32B models
     CHUNK_SIZE = 12
 
-    def __init__(self, output_root: str = "output/.llm_draft/latest"):
+    def __init__(self, output_root: str = "output/.llm_draft/latest",
+                 domain: str = "Adas"):
+        """
+        domain: which VSS domain this instance generates the C++ service
+        for. Determines impl_cpp/ids_header filenames.
+
+        Bug this fixes: self.impl_cpp / self.ids_header were previously
+        hardcoded to "VehicleHalService.cpp" / "VssPropertyIds.h" —
+        completely generic, no domain reference at all (not even
+        "Adas", unlike the AIDL agent's equally-buggy hardcoding). Every
+        domain in the sequential multi-domain loop wrote to the exact
+        same two paths, each overwriting the previous domain's output
+        via PromoteDraftAgent's copy step — only the last domain
+        processed survived to final output. See vhal_aidl_agent.py's
+        docstring for the full mechanism (same root cause, mirrored
+        here for the C++ side).
+        """
         self.name = "VHAL C++ Service Agent (VSS-aware + strong prompt)"
         self.output_root = output_root
         self.writer = SafeWriter(self.output_root)
         self.raw_dir = Path(self.output_root)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.report_path = Path(self.output_root) / "VHAL_SERVICE_VALIDATE_REPORT.json"
+
+        self.domain = (domain or "Adas").strip() or "Adas"
+        self.domain_cap = self.domain.capitalize()
 
         self.system_prompt = (
             "You are an expert Android Automotive OS (AAOS) Vehicle HAL engineer.\n"
@@ -38,8 +57,9 @@ class VHALServiceAgent:
         )
 
         self.base = "hardware/interfaces/automotive/vehicle/impl"
-        self.impl_cpp = f"{self.base}/VehicleHalService.cpp"
-        self.ids_header = f"{self.base}/VssPropertyIds.h"
+        self.impl_cpp = f"{self.base}/VehicleHalService{self.domain_cap}.cpp"
+        self.ids_header = f"{self.base}/VssPropertyIds{self.domain_cap}.h"
+        self.impl_cpp_basename = f"VehicleHalService{self.domain_cap}.cpp"
 
         self.required_files = [self.impl_cpp, self.ids_header]
 
@@ -89,7 +109,7 @@ ScopedAStatus getAllPropConfigs(std::vector<VehiclePropConfig>* _aidl_return) ov
         return f"""\
 You are an expert AAOS Vehicle HAL developer using AIDL NDK backend (Android 14/15 style).
 
-Generate high-quality, realistic implementation of VehicleHalService.cpp + VssPropertyIds.h
+Generate high-quality, realistic implementation of {self.impl_cpp_basename} + {self.ids_header.split('/')[-1]}
 
 MANDATORY REQUIREMENTS — you MUST implement ALL of these:
 
@@ -101,7 +121,7 @@ MANDATORY REQUIREMENTS — you MUST implement ALL of these:
    #include <aidl/android/hardware/automotive/vehicle/VehicleArea.h>
    #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyAccess.h>
    #include <aidl/android/hardware/automotive/vehicle/VehiclePropertyChangeMode.h>
-   #include "VssPropertyIds.h"
+   #include "{self.ids_header.split('/')[-1]}"
    #include <fstream>
    #include <string>
    #include <sys/stat.h>
@@ -168,7 +188,7 @@ MANDATORY REQUIREMENTS — you MUST implement ALL of these:
    - sample rates: 0–10 Hz typical
    - area: GLOBAL (0)
 
-8. Generate VssPropertyIds.h with constexpr int32_t for every property (sequential vendor IDs 0xF0000000+)
+8. Generate {self.ids_header.split('/')[-1]} with constexpr int32_t for every property (sequential vendor IDs 0xF0000000+)
 
 VSS PROPERTIES YOU MUST SUPPORT:
 {prop_summary}
@@ -181,8 +201,8 @@ FULL VSS YAML / SPEC:
 Output ONLY valid JSON with exactly two files:
 {{
   "files": [
-    {{"path": "hardware/interfaces/automotive/vehicle/impl/VehicleHalService.cpp", "content": "..."}},
-    {{"path": "hardware/interfaces/automotive/vehicle/impl/VssPropertyIds.h", "content": "..."}}
+    {{"path": "{self.impl_cpp}", "content": "..."}},
+    {{"path": "{self.ids_header}", "content": "..."}}
   ]
 }}
 
@@ -357,7 +377,7 @@ No explanations. No markdown. Pure JSON only.
             data = json.loads(raw.strip())
             for item in data.get("files", []):
                 path = (item.get("path") or "").strip()
-                if "VehicleHalService.cpp" in path:
+                if self.impl_cpp_basename in path:
                     content = item.get("content", "")
                     read_start = content.find("::readRegister")
                     write_start = content.find("::writeRegister")
@@ -437,7 +457,7 @@ No explanations. No markdown. Pure JSON only.
             data = json.loads(raw.strip())
             for item in data.get("files", []):
                 path = (item.get("path") or "").strip()
-                if "VehicleHalService.cpp" in path:
+                if self.impl_cpp_basename in path:
                     content = item.get("content", "")
                     blocks = []
                     # Extract each "VehiclePropConfig cfg;" block up to push_back
@@ -505,12 +525,13 @@ No explanations. No markdown. Pure JSON only.
         return p
 
     def _write_fallback(self) -> None:
+        cpp_header_include = f'#include "{self.ids_header.split("/")[-1]}"'
         cpp = """// Fallback minimal C++ VHAL implementation
 #include <aidl/android/hardware/automotive/vehicle/BnIVehicle.h>
 #include <aidl/android/hardware/automotive/vehicle/IVehicleCallback.h>
 #include <aidl/android/hardware/automotive/vehicle/VehiclePropValue.h>
 #include <aidl/android/hardware/automotive/vehicle/VehiclePropConfig.h>
-#include "VssPropertyIds.h"
+""" + cpp_header_include + """
 
 namespace aidl::android::hardware::automotive::vehicle {
 
@@ -594,7 +615,8 @@ constexpr int32_t VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENABLED = 0xF000
 # ────────────────────────────────────────────────
 
 def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any],
-                          output_root: str = "output/.llm_draft/latest") -> bool:
+                          output_root: str = "output/.llm_draft/latest",
+                          domain: str = "Adas") -> bool:
     """
     Main entry point for the pipeline / architect_agent.py.
     Converts input to plan_text and runs the agent.
@@ -609,5 +631,5 @@ def generate_vhal_service(plan_or_spec: Union[str, Dict[str, Any], Any],
         except Exception:
             plan_text = "{}"
 
-    agent = VHALServiceAgent(output_root=output_root)
+    agent = VHALServiceAgent(output_root=output_root, domain=domain)
     return agent.run(plan_text)

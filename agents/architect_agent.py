@@ -81,9 +81,9 @@ class ArchitectAgent:
 
         steps = [
             ("Step 1 — AIDL",
-             lambda: generate_vhal_aidl(plan_text, output_root=draft_root)),
+             lambda: generate_vhal_aidl(plan_text, output_root=draft_root, domain=domain)),
             ("Step 2 — C++ Service",
-             lambda: generate_vhal_service(plan_text, output_root=draft_root)),
+             lambda: generate_vhal_service(plan_text, output_root=draft_root, domain=domain)),
             ("Step 3 — Build glue",
              lambda: (generate_vhal_aidl_bp(output_root=str(self.output_root)),
                       generate_vhal_service_build_glue(output_root=str(self.output_root)))),
