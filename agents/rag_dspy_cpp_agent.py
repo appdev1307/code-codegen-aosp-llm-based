@@ -828,7 +828,46 @@ class RAGDSPyCppAgent:
         return out  # dict with header, impl, main_service, android_bp
 
     def _generate(self, domain: str, properties: str,
-                  aosp_context: str = "", **kwargs) -> str:
-        """Called by C4 retry engine."""
+                  aosp_context: str = "", prop_list: list = None,
+                  aidl_dir: str = "", **kwargs) -> str:
+        """Called by C4 retry engine.
+
+        BUG THIS FIXES: previously this always called self.inner._generate()
+        — a single-shot regeneration of the ENTIRE domain in one LLM call —
+        regardless of domain size. For large domains (BODY=84,
+        POWERTRAIN=120, CABIN=168 properties), this meant retry attempts
+        bypassed the chunked path entirely (the same path run() correctly
+        uses for primary generation, specifically to avoid max_tokens
+        truncation — see CHUNK_SIZE docstring above). A retry triggered
+        by the CPP↔AIDL name-consistency gate would frequently produce a
+        WORSE-scoring single-shot regeneration than the original chunked
+        output, so `if score > best_score` never fired and the retry
+        loop kept re-writing the original (still name-inconsistent)
+        content on every attempt — observed empirically: BODY domain
+        retry never converged in 3 attempts, with attempt 3 scoring
+        LOWER (0.797) than the original (1.000 structurally, but
+        name-inconsistent).
+
+        Fix: when the caller provides `prop_list` (the domain's actual
+        property list — retry callers now pass this) and it exceeds
+        CHUNK_SIZE, route through the SAME generate_chunked() path
+        run() uses, so retry has the same truncation-avoidance and
+        chunk-level self-correction (register-body missing-case retry)
+        as primary generation. Falls back to single-shot _generate()
+        when prop_list isn't provided (backward compatible with any
+        caller not yet updated) or is small enough not to need chunking.
+        """
+        if prop_list and len(prop_list) > CHUNK_SIZE:
+            aidl_marker = "=== Generated AIDL enum"
+            idx = properties.find(aidl_marker)
+            aidl_block = properties[idx:] if idx != -1 else ""
+            result = self.inner.generate_chunked(
+                domain             = domain,
+                prop_list          = prop_list,
+                aidl_block         = aidl_block,
+                enable_chunk_retry = self.enable_chunk_retry,
+                aidl_dir           = aidl_dir,
+            )
+            return result.get("impl", "")
         return self.inner._generate(domain=domain, properties=properties,
                                     aosp_context=aosp_context)

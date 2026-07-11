@@ -809,6 +809,16 @@ def _generate_one_module(
                 gen_kwargs["service_name"] = f"vendor.vss.{domain.lower()}"
             else:
                 gen_kwargs["properties"] = llm_spec
+            if agent_type == "cpp":
+                # Enables RAGDSPyCppAgent._generate() to route large
+                # domains through the chunked path on retry instead of
+                # always falling back to single-shot regeneration —
+                # see that method's docstring for the full rationale
+                # (single-shot retry of an 84+ property domain risks
+                # truncation and can score WORSE than the original,
+                # preventing convergence).
+                gen_kwargs["prop_list"] = module_props
+                gen_kwargs["aidl_dir"] = str(AIDL_DIR)
 
             extra_files = None
             if agent_type == "cpp":
