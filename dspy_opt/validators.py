@@ -1363,6 +1363,89 @@ def validate_markdown(doc: str) -> ValidatorResult:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# C4-ONLY — CPP ↔ AIDL name consistency check
+#
+# NOT wired into validate()/dispatch below on purpose. validate() is the
+# canonical scorer shared across C1–C4 (and used by MIPROv2 optimisation);
+# changing it would silently shift scores for C1/C2/C3, which this project's
+# thesis design keeps out of scope for this check. This function is called
+# ONLY from C4's ValidatorFeedback (multi_main_c4_feedback.py) and C4-minimal's
+# _retry_agent (gen_hal_minimal_c4.py), layered ON TOP of the canonical score
+# as an additional pass/fail gate — it does not alter the canonical score.
+# ═════════════════════════════════════════════════════════════════════════════
+
+_VSS_PROP_REF = re.compile(r"VehicleProperty::([A-Za-z0-9_]+)")
+
+def check_cpp_aidl_name_consistency(cpp_code: str, aidl_dir: str) -> list[str]:
+    """
+    Return the sorted list of VEHICLE_CHILDREN_* names referenced in
+    `cpp_code` (as `VehicleProperty::NAME`) that are NOT defined in any
+    AIDL enum file under `aidl_dir`. Empty list = fully consistent.
+
+    Only checks names with the `VEHICLE_CHILDREN_` prefix — these are
+    the VSS-derived constants unique to this project's generated AIDL.
+    Standard AOSP VehicleProperty members (e.g. PERF_VEHICLE_SPEED)
+    are intentionally excluded from AIDL-consistency scope: they are
+    defined by the AOSP platform, not by this pipeline's generated
+    .aidl files, so absence from aidl_dir's parse result is expected
+    and not an error.
+
+    Reuses VssGlueAgent's proven `_parse_aidl_properties()` parser
+    (via `get_aidl_property_names()`) as the single source of truth —
+    the exact same name set the aggregator (VssVehicleHardware.cpp)
+    and VTS (VtsHalAutomotiveVehicleVss.cpp) already trust.
+    """
+    if not aidl_dir or not cpp_code:
+        return []
+    from agents.vss_glue_agent import get_aidl_property_names
+    aidl_names = get_aidl_property_names(aidl_dir)
+    if not aidl_names:
+        # No parseable AIDL yet (e.g. AIDL agent hasn't run/written this
+        # domain's file) — nothing to check against, don't false-positive.
+        return []
+    referenced = {m for m in _VSS_PROP_REF.findall(cpp_code)
+                  if m.startswith("VEHICLE_CHILDREN_")}
+    return sorted(referenced - aidl_names)
+
+
+def format_cpp_aidl_consistency_feedback(bad_names: list[str], aidl_dir: str) -> str:
+    """
+    Build an LLM-facing feedback message for check_cpp_aidl_name_consistency
+    results, including nearest-match suggestions from the real AIDL name set
+    so the retry has a concrete correction target instead of just "wrong".
+    """
+    if not bad_names:
+        return ""
+    from agents.vss_glue_agent import get_aidl_property_names
+    aidl_names = sorted(get_aidl_property_names(aidl_dir))
+    lines = [
+        "C++/AIDL name consistency errors:",
+        "The following VehicleProperty::* references do not exist in "
+        "any AIDL enum file for this run. Every name you use MUST be "
+        "copied EXACTLY from the AIDL enum — do not shorten, reorder, "
+        "or re-derive VSS path segments yourself.",
+        "",
+    ]
+    for bad in bad_names:
+        # crude nearest-match: longest common prefix length against each AIDL name
+        def _score(a: str) -> int:
+            n = 0
+            for x, y in zip(bad, a):
+                if x != y:
+                    break
+                n += 1
+            return n
+        nearest = sorted(aidl_names, key=_score, reverse=True)[:3]
+        lines.append(f"- '{bad}' is not defined in AIDL.")
+        if nearest:
+            lines.append(f"    Nearest AIDL names: {', '.join(nearest)}")
+    lines.append("")
+    lines.append("Fix: replace each undefined name above with the exact "
+                  "matching AIDL enum constant.")
+    return "\n".join(lines)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Unified dispatch
 # ═════════════════════════════════════════════════════════════════════════════
 

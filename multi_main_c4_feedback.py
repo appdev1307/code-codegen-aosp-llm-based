@@ -67,6 +67,11 @@ def fix_android_layouts(output_dir: str = "output_c4_feedback",
 
 MAX_RETRIES        = 3     # retry attempts per file on validation failure
 OUTPUT_DIR         = Path("output_c4_feedback")
+# Reused by the C4-only CPP↔AIDL name consistency check
+# (dspy_opt.validators.check_cpp_aidl_name_consistency). Same formula
+# already used later for VssGlueAgent's aidl_dir — factored out here so
+# both the per-domain validation sweep and the final glue step agree.
+AIDL_DIR = OUTPUT_DIR / "hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle"
 RESULTS_DIR        = Path("experiments/results")
 TEST_SIGNAL_COUNT  = 500
 VSS_PATH           = "./dataset/vss.json"
@@ -96,15 +101,22 @@ class ValidatorFeedback:
     """
 
     @staticmethod
-    def validate(code: str, agent_type: str) -> tuple[bool, str, float]:
+    def validate(code: str, agent_type: str, aidl_dir: str = "") -> tuple[bool, str, float]:
         """
         Validate code and return (passed, error_message, score).
         error_message is formatted for LLM consumption.
+
+        aidl_dir: C4-only. When agent_type == "cpp" and aidl_dir is
+        given, an additional CPP↔AIDL name-consistency gate runs on
+        top of the canonical structural score (see
+        dspy_opt.validators.check_cpp_aidl_name_consistency). Ignored
+        for all other agent_types — this keeps C1/C2/C3 scoring, which
+        never pass aidl_dir, byte-for-byte unchanged.
         """
         if agent_type == "aidl":
             return ValidatorFeedback._validate_aidl(code)
         elif agent_type == "cpp":
-            return ValidatorFeedback._validate_cpp(code)
+            return ValidatorFeedback._validate_cpp(code, aidl_dir)
         elif agent_type == "selinux":
             return ValidatorFeedback._validate_selinux(code)
         elif agent_type == "build":
@@ -142,23 +154,45 @@ class ValidatorFeedback:
             return (False, msg, 0.3)
 
     @staticmethod
-    def _validate_cpp(code: str) -> tuple[bool, str, float]:
-        """Use canonical validator for consistent scoring with final scorer."""
-        from dspy_opt.validators import validate as canonical_validate
-        result = canonical_validate("cpp", code)
-        if result.ok:
-            return (True, "", result.score)
-        errors = result.errors or []
-        msg = (
-            "C++ VHAL validation errors:\n"
-            + "\n".join(f"- {e}" for e in errors) + "\n\n"
-            "Fix ALL issues. Required for AIDL V3 VHAL:\n"
-            "1. Inherit IVehicleHardware (NOT BnIVehicle)\n"
-            "2. Implement getAllPropertyConfigs(), getValues(), setValues()\n"
-            "3. Use DefaultVehicleHal in main() with AServiceManager_addService\n"
-            "4. No HIDL patterns (HIDL_FETCH_*, Return<>, hidl/ headers)\n"
-            "5. Use aidl:: namespace, not android::hardware::automotive::vehicle::V2_0"
+    @staticmethod
+    def _validate_cpp(code: str, aidl_dir: str = "") -> tuple[bool, str, float]:
+        """Use canonical validator for consistent scoring with final scorer.
+
+        C4-only extension: when aidl_dir is given, also gates on
+        CPP↔AIDL name consistency (dspy_opt.validators.
+        check_cpp_aidl_name_consistency). This gate does NOT alter the
+        canonical structural score returned — only whether `passed` is
+        True, and what feedback is sent back to the LLM on retry.
+        """
+        from dspy_opt.validators import (
+            validate as canonical_validate,
+            check_cpp_aidl_name_consistency,
+            format_cpp_aidl_consistency_feedback,
         )
+        result = canonical_validate("cpp", code)
+
+        bad_names = check_cpp_aidl_name_consistency(code, aidl_dir) if aidl_dir else []
+
+        if result.ok and not bad_names:
+            return (True, "", result.score)
+
+        errors = list(result.errors or [])
+        msg_parts = []
+        if errors:
+            msg_parts.append(
+                "C++ VHAL validation errors:\n"
+                + "\n".join(f"- {e}" for e in errors) + "\n\n"
+                "Fix ALL issues. Required for AIDL V3 VHAL:\n"
+                "1. Inherit IVehicleHardware (NOT BnIVehicle)\n"
+                "2. Implement getAllPropertyConfigs(), getValues(), setValues()\n"
+                "3. Use DefaultVehicleHal in main() with AServiceManager_addService\n"
+                "4. No HIDL patterns (HIDL_FETCH_*, Return<>, hidl/ headers)\n"
+                "5. Use aidl:: namespace, not android::hardware::automotive::vehicle::V2_0"
+            )
+        if bad_names:
+            msg_parts.append(format_cpp_aidl_consistency_feedback(bad_names, aidl_dir))
+
+        msg = "\n\n".join(msg_parts)
         return (False, msg, result.score)
 
     @staticmethod
@@ -338,6 +372,7 @@ class PostValidationRetry:
         gen_kwargs:   dict,
         tracker:      "ThompsonTracker",
         extra_files:  list = None,
+        aidl_dir:     str = "",
     ) -> dict:
         """
         Validate a generated file; retry the agent if it fails.
@@ -348,6 +383,9 @@ class PostValidationRetry:
             agent:       the RAGDSPy sub-agent instance (has _generate + _retrieve)
             gen_kwargs:  kwargs matching agent._generate() signature
             tracker:     Thompson tracker for recording outcomes
+            aidl_dir:    C4-only. Forwarded to ValidatorFeedback.validate()
+                         for agent_type=="cpp" — enables the CPP↔AIDL name
+                         consistency gate. No effect for other agent_types.
 
         Returns:
             dict with attempt count, final score, pass/fail, errors
@@ -373,7 +411,7 @@ class PostValidationRetry:
             extra = "\n".join(
                 p.read_text(errors="ignore") for p in extra_files if p.exists())
             code_to_validate = code + "\n" + extra
-        passed, error_msg, score = ValidatorFeedback.validate(code_to_validate, agent_type)
+        passed, error_msg, score = ValidatorFeedback.validate(code_to_validate, agent_type, aidl_dir=aidl_dir)
 
         best_code  = code
         best_score = score
@@ -435,7 +473,7 @@ class PostValidationRetry:
                     p.read_text(errors="ignore") for p in extra_files if p.exists())
                 code_for_val = new_code + "\n" + extra
             passed, error_msg, score = ValidatorFeedback.validate(
-                code_for_val, agent_type)
+                code_for_val, agent_type, aidl_dir=aidl_dir)
 
             if score > best_score:
                 best_code  = new_code
@@ -701,7 +739,8 @@ def _generate_one_module(
                 code_combined = code + "\n" + extra
             else:
                 code_combined = code
-            passed, _, score = ValidatorFeedback.validate(code_combined, agent_type)
+            passed, _, score = ValidatorFeedback.validate(
+                code_combined, agent_type, aidl_dir=str(AIDL_DIR))
 
             if passed:
                 tracker.record(agent_type, True)
@@ -752,6 +791,7 @@ def _generate_one_module(
                 gen_kwargs=gen_kwargs,
                 tracker=tracker,
                 extra_files=extra_files,
+                aidl_dir=str(AIDL_DIR),
             )
             retry_metrics.append(m)
 
@@ -847,6 +887,7 @@ def _run_support_with_feedback(
                         agent=sub_agent,
                         gen_kwargs=gen_kwargs,
                         tracker=tracker,
+                        aidl_dir=str(AIDL_DIR),
                     )
                     retry_results.append(m)
         else:

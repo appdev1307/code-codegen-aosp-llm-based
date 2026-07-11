@@ -6,6 +6,16 @@ RAG + DSPy (C3) + post-validation retry (C4).
 No backend, android_app, design_doc — saves Colab time.
 For testing VssGlueAgent fix and GCP VM integration.
 
+Orchestration: delegates HAL generation to RAGDSPyArchitectAgent
+(same code path as multi_main_c4_feedback.py) so kwarg wiring
+(esp. aidl_dir → CPP agent) has a single source of truth.  The
+architect additionally writes Android.bp.draft — harmless side
+effect vs an older hand-rolled per-agent loop, downstream code
+ignores it.  Post-validation retry stays inline via _retry_agent
+(mirrors C4 PostValidationRetry.validate_and_retry_file), with a
+C4-only CPP↔AIDL name-consistency gate layered on top of the
+canonical validate() score (see dspy_opt/validators.py).
+
 Usage (Colab cell):
     exec(open('gen_hal_minimal.py').read())
 ══════════════════════════════════════════════════════════════
@@ -18,19 +28,24 @@ sys.path.insert(0, '.')
 # ── Reload validators ──────────────────────────────────────
 import dspy_opt.validators
 importlib.reload(dspy_opt.validators)
-from dspy_opt.validators import validate
+from dspy_opt.validators import (
+    validate,
+    check_cpp_aidl_name_consistency,
+    format_cpp_aidl_consistency_feedback,
+)
 from dspy_opt.metrics    import score_file
 
 # ── ChromaDB singleton ─────────────────────────────────────
 from apply_chroma_fix import *
 
 # ── Agents ─────────────────────────────────────────────────
-from agents.rag_dspy_aidl_agent    import RAGDSPyAIDLAgent
-from agents.rag_dspy_cpp_agent     import RAGDSPyCppAgent
-from agents.rag_dspy_selinux_agent import RAGDSPySELinuxAgent
-from agents.vss_glue_agent         import VssGlueAgent
-from agents.module_planner_agent   import plan_modules_from_spec
-from schemas.yaml_loader           import load_hal_spec_from_yaml_text
+from agents.rag_dspy_architect_agent import RAGDSPyArchitectAgent
+from agents.rag_dspy_aidl_agent      import RAGDSPyAIDLAgent
+from agents.rag_dspy_cpp_agent       import RAGDSPyCppAgent
+from agents.rag_dspy_selinux_agent   import RAGDSPySELinuxAgent
+from agents.vss_glue_agent           import VssGlueAgent
+from agents.module_planner_agent     import plan_modules_from_spec
+from schemas.yaml_loader             import load_hal_spec_from_yaml_text
 
 # ── Config ─────────────────────────────────────────────────
 OUTPUT_DIR       = Path("output_c4_minimal")
@@ -76,13 +91,32 @@ class ModuleSpec:
         return "\n".join(lines)
 
 # ── Retry helper (same logic as C4 PostValidationRetry) ───
-def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None):
+def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None, aidl_dir=""):
     """
     Validate generated file; retry with error feedback if it fails.
     Mirrors C4 PostValidationRetry.validate_and_retry_file().
+
+    aidl_dir: C4-only. When agent_type == "cpp" and aidl_dir is given,
+    layers an additional CPP↔AIDL name-consistency gate on top of the
+    canonical structural score — does not alter the canonical score
+    itself, only whether this function treats the file as passing and
+    what feedback goes back to the LLM. C1/C2/C3 never call this with
+    aidl_dir set, so their scoring is unaffected.
     """
     if not fpath.exists():
         return False, 0.0, 0
+
+    def _check(code_str):
+        """Run canonical validate() + (cpp-only) consistency gate."""
+        r = validate(agent_type, code_str)
+        bad_names = (check_cpp_aidl_name_consistency(code_str, aidl_dir)
+                     if agent_type == "cpp" and aidl_dir else [])
+        ok = r.ok and not bad_names
+        msg = r.errors[0] if r.errors else ("" if ok else "validation failed")
+        if bad_names:
+            consistency_msg = format_cpp_aidl_consistency_feedback(bad_names, aidl_dir)
+            msg = f"{msg}\n\n{consistency_msg}" if msg else consistency_msg
+        return ok, r.score, msg
 
     code = fpath.read_text(encoding="utf-8", errors="ignore")
     code_to_val = code
@@ -90,13 +124,13 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None):
         extra = "\n".join(p.read_text(errors="ignore") for p in extra_files if p.exists())
         code_to_val = code + "\n" + extra
 
-    r = validate(agent_type, code_to_val)
-    if r.ok:
-        return True, r.score, 1
+    ok, score, msg = _check(code_to_val)
+    if ok:
+        return True, score, 1
 
-    best_code, best_score = code, r.score
-    error_msg = r.errors[0] if r.errors else "validation failed"
-    print(f"    ✗ Initial failed (score={r.score:.3f}) — retrying...")
+    best_code, best_score = code, score
+    error_msg = msg or "validation failed"
+    print(f"    ✗ Initial failed (score={score:.3f}) — retrying...")
 
     for attempt in range(2, MAX_RETRIES + 1):
         feedback = (
@@ -129,27 +163,44 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None):
             extra = "\n".join(p.read_text(errors="ignore") for p in extra_files if p.exists())
             code_for_val = new_code + "\n" + extra
 
-        r = validate(agent_type, code_for_val)
-        if r.score > best_score:
-            best_code, best_score = new_code, r.score
+        ok, score, msg = _check(code_for_val)
+        if score > best_score:
+            best_code, best_score = new_code, score
 
-        if r.ok:
+        if ok:
             fpath.write_text(new_code, encoding="utf-8")
-            print(f"    ✓ Passed on attempt {attempt} (score={r.score:.3f})")
-            return True, r.score, attempt
+            print(f"    ✓ Passed on attempt {attempt} (score={score:.3f})")
+            return True, score, attempt
 
-        error_msg = r.errors[0] if r.errors else "validation failed"
-        print(f"    Attempt {attempt}: still failing (score={r.score:.3f})")
+        error_msg = msg or "validation failed"
+        print(f"    Attempt {attempt}: still failing (score={score:.3f})")
 
     # Write best version even if not passing
     fpath.write_text(best_code, encoding="utf-8")
     return False, best_score, MAX_RETRIES
 
-# ── Init agents ────────────────────────────────────────────
+# ── Init: architect (mirrors C4 full — SAME orchestration path) ───
+# Rationale: previously this script instantiated aidl/cpp/selinux agents
+# separately and called `agent.run(...)` per sub-agent.  That bypassed
+# `RAGDSPyArchitectAgent.run()` — the sole owner of `aidl_dir` wiring
+# for the CPP agent (see rag_dspy_architect_agent.py line 359).  Any
+# kwarg architect internally passes but this script forgot to mirror
+# (like `aidl_dir`) silently degraded generation quality.  Fix: delegate
+# to architect entirely so the wiring lives in one place.
 print("══════════════════════════════════════════════════════")
 print("  Minimal HAL: AIDL + CPP + SELinux (RAG+DSPy+Retry)")
 print("══════════════════════════════════════════════════════")
 
+architect = RAGDSPyArchitectAgent(
+    **AGENT_CFG,
+    output_root=str(OUTPUT_DIR),
+    enable_chunk_retry=True,   # C4-minimal: chunk retry ON (mirrors C4 full)
+)
+
+# Sub-agent instances kept ONLY for `_retry_agent` below — its inner
+# `agent._generate(...)` call needs a live agent to bind against for
+# feedback-guided regeneration.  Architect owns primary generation;
+# these are used exclusively by the post-validation retry pass.
 aidl_agent    = RAGDSPyAIDLAgent(**AGENT_CFG)
 cpp_agent     = RAGDSPyCppAgent(enable_chunk_retry=True, **AGENT_CFG)
 selinux_agent = RAGDSPySELinuxAgent(**AGENT_CFG)
@@ -219,11 +270,26 @@ for domain, signal_ids in module_signal_map.items():
     def _rag(agent, query):
         return agent._retrieve(query) if hasattr(agent, '_retrieve') else ""
 
-    # ── AIDL ──────────────────────────────────────────────
+    # ── Primary generation: architect writes all HAL files ────────
+    # Architect handles AIDL → CPP → SELinux → Build in one call,
+    # with correct aidl_dir wiring for the CPP agent's chunked path
+    # (see rag_dspy_architect_agent.py line 359).  Output paths:
+    #   AIDL  → AIDL_OUT / VehicleProperty{Domain}.aidl
+    #   CPP   → CPP_OUT  / VehicleHalService{Domain}.{h,cpp} + VehicleService{Domain}.cpp
+    #   SE    → SE_OUT   / vehicle_hal_{domain}.te
+    #   Build → CPP_OUT  / Android_{domain}.bp.draft   ← side effect, ignored downstream
     try:
-        aidl_code = aidl_agent.run(mspec)
-        fpath = AIDL_OUT / f"VehicleProperty{domain.capitalize()}.aidl"
-        fpath.write_text(aidl_code)
+        architect.run(mspec)
+    except Exception as e:
+        print(f"  [✗] architect.run FAILED for {domain}: {e}")
+        continue
+
+    domain_cap = domain.capitalize()
+
+    # ── Post-validation retry per file (mirrors C4 PostValidationRetry) ──
+    # AIDL
+    try:
+        fpath = AIDL_OUT / f"VehicleProperty{domain_cap}.aidl"
         rag_ctx = _rag(aidl_agent, f"VehicleProperty enum AIDL {domain} android automotive")
         passed, score, attempts = _retry_agent(
             agent=aidl_agent, agent_type="aidl", fpath=fpath,
@@ -234,60 +300,34 @@ for domain, signal_ids in module_signal_map.items():
     except Exception as e:
         print(f"  [✗] aidl    ERROR: {e}")
 
-    # ── CPP ───────────────────────────────────────────────
+    # CPP — retry uses _get_aidl_content(domain) injected into properties
+    # so the raw _generate() path also sees the real enum names on retry.
+    # aidl_dir wired into _retry_agent so the C4-only consistency gate
+    # (check_cpp_aidl_name_consistency) runs on both initial + retry
+    # attempts, rejecting any VehicleProperty::X not defined in AIDL_OUT.
     try:
-        # Inject AIDL content into mspec for CPP agent
-        aidl_content = _get_aidl_content(domain)
-        if aidl_content:
-            # Patch module_spec to include AIDL enum in llm_spec
-            class _PatchedSpec:
-                def __init__(self, spec, extra):
-                    self._spec = spec
-                    self._extra = extra
-                    self.domain = spec.domain
-                    self.properties = spec.properties
-                def to_llm_spec(self):
-                    return self._spec.to_llm_spec() + self._extra
-            patched_spec = _PatchedSpec(mspec, aidl_content)
-        else:
-            patched_spec = mspec
-        # Pass aidl_dir so RAGDSPyCppAgent.run() forwards it to
-        # generate_chunked(), which then routes property names through
-        # _parse_aidl_properties() on the already-written .aidl file.
-        # Without this, aidl_dir defaults to "" and the deterministic
-        # override is skipped entirely — LLM-typed VEHICLE_CHILDREN_*
-        # names leak into VssVehicleHardware.cpp and glue artifacts,
-        # violating the single-source-of-truth invariant.
-        cpp_result = cpp_agent.run(patched_spec, aidl_dir=str(AIDL_OUT))
-        cpp_chunk_retries = cpp_result.get("chunk_retries", 0) if isinstance(cpp_result, dict) else 0
-        print(f"  [CPP] {domain}: cpp_chunk_retries={cpp_chunk_retries}")
-        domain_cap = domain.capitalize()
         impl_fpath = CPP_OUT / f"VehicleHalService{domain_cap}.cpp"
-        # Extract header and impl from dict result
-        if isinstance(cpp_result, dict):
-            if cpp_result.get("header"):
-                (CPP_OUT / f"VehicleHalService{domain_cap}.h").write_text(cpp_result["header"])
-            impl_fpath.write_text(cpp_result.get("impl", ""))
-        else:
-            impl_fpath.write_text(str(cpp_result))
         extra = [CPP_OUT / f"VehicleHalService{domain_cap}.h",
                  CPP_OUT / f"VehicleService{domain_cap}.cpp"]
         rag_ctx = _rag(cpp_agent, f"IVehicleHardware CPP {domain} android automotive vehicle")
+        cpp_chunk_retries = getattr(architect, "last_chunk_retries", 0)
+        print(f"  [CPP] {domain}: cpp_chunk_retries={cpp_chunk_retries}")
         passed, score, attempts = _retry_agent(
             agent=cpp_agent, agent_type="cpp", fpath=impl_fpath,
-            gen_kwargs={"domain": domain, "properties": llm_spec + _get_aidl_content(domain), "aosp_context": rag_ctx},
-            extra_files=extra
+            gen_kwargs={"domain": domain,
+                        "properties": llm_spec + _get_aidl_content(domain),
+                        "aosp_context": rag_ctx},
+            extra_files=extra,
+            aidl_dir=str(AIDL_OUT),
         )
         scores["cpp"].append(score)
         print(f"  [{'✓' if passed else '~'}] cpp     score={score:.3f}  attempts={attempts}")
     except Exception as e:
         print(f"  [✗] cpp     ERROR: {e}")
 
-    # ── SELinux ───────────────────────────────────────────
+    # SELinux
     try:
-        se_code = selinux_agent.run(mspec)
         fpath = SE_OUT / f"vehicle_hal_{domain.lower()}.te"
-        fpath.write_text(se_code)
         rag_ctx = _rag(selinux_agent, f"hal_vehicle SELinux AIDL Android 14 binder {domain}")
         passed, score, attempts = _retry_agent(
             agent=selinux_agent, agent_type="selinux", fpath=fpath,
