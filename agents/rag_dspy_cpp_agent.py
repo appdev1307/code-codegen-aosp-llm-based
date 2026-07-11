@@ -394,6 +394,7 @@ class RagDspyCppAgent:
         if not aidl_dir:
             print(f"  [CPP DEBUG] {domain}: aidl_dir is empty/not passed — override SKIPPED entirely, "
                   f"using prop_list's own names (the original bug path)")
+        real_aidl_names_set = set()
         if aidl_dir:
             import os as _os_diag
             _file_exists = _os_diag.path.exists(_os_diag.path.join(aidl_dir, f"VehicleProperty{domain.capitalize()}.aidl"))
@@ -413,6 +414,7 @@ class RagDspyCppAgent:
                 aidl_dir, file_pattern=f"VehicleProperty{domain.capitalize()}.aidl"
             )
             real_names_for_domain = [p["name"] for p in real_props]
+            real_aidl_names_set = set(real_names_for_domain)
             print(f"  [CPP DEBUG] {domain}: real_names_for_domain_count={len(real_names_for_domain)}")
             if len(real_names_for_domain) == len(prop_list):
                 class _RenamedProp:
@@ -523,7 +525,79 @@ class RagDspyCppAgent:
 
             all_entries.append(chunk_entries.strip())
             import re as _re2
-            chunk_entry_names.append(_re2.findall(r"VehicleProperty::(\w+)", chunk_entries))  # ORDERED list
+            extracted_names = _re2.findall(r"VehicleProperty::(\w+)", chunk_entries)
+
+            # Detect mismatches against the real AIDL enum (deterministic
+            # check, same real_aidl_names_set the override above computed
+            # — this is a lookup, not a guess). The FIX itself stays
+            # LLM-based: mirrors register-body's established narrow-retry
+            # pattern below — ask entries_predictor to regenerate JUST the
+            # mismatched entries, explicitly showing it the correct AIDL
+            # name to copy, rather than deterministically substituting it.
+            #
+            # Why detection-then-LLM-retry instead of the override alone:
+            # the override sets prop_list[j].id to the real name BEFORE
+            # this call, but entries_predictor is a free-text LLM
+            # transcribing long (8-10 segment) nested names and can still
+            # mistranscribe despite being shown the correct value. This
+            # narrow retry gives it a focused second attempt at exactly
+            # the entries that came out wrong — same mechanism already
+            # proven to work for register-body's missing-case recovery.
+            if real_aidl_names_set and enable_chunk_retry:
+                mismatched = [
+                    (j, extracted, chunk[j])
+                    for j, extracted in enumerate(extracted_names)
+                    if extracted not in real_aidl_names_set and j < len(chunk)
+                    and getattr(chunk[j], "id", None) in real_aidl_names_set
+                ]
+                if mismatched:
+                    print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
+                          f"⚠ entries mismatch: {len(mismatched)} name(s) don't match "
+                          f"real AIDL — narrow retry for: "
+                          f"{[m[1] for m in mismatched[:3]]}"
+                          f"{'...' if len(mismatched) > 3 else ''}")
+                    fix_lines = [f"HAL Domain: {domain}",
+                                 f"Properties in this chunk: {len(mismatched)}", ""]
+                    for _, wrong, prop in mismatched:
+                        correct = prop.id
+                        typ    = getattr(prop, "type", "UNKNOWN")
+                        access = getattr(prop, "access", "READ_WRITE")
+                        fix_lines += [
+                            f"- Name: {correct}", f"  Type: {typ}",
+                            f"  Access: {access}", "",
+                        ]
+                    fix_text = "\n".join(fix_lines)
+                    if aidl_block:
+                        fix_text += "\n" + aidl_block
+                    fix_result = self.entries_predictor(
+                        domain       = domain,
+                        properties   = fix_text,
+                        aosp_context = aosp_context,
+                    )
+                    fix_raw = _strip_markdown_fences(getattr(fix_result, "entries", "") or "")
+                    fix_names = _re2.findall(r"VehicleProperty::(\w+)", fix_raw)
+                    recovered = 0
+                    for (j, wrong, prop), new_name in zip(mismatched, fix_names):
+                        if new_name in real_aidl_names_set:
+                            # splice: replace the old (wrong) block's name
+                            # reference with the newly-generated, verified
+                            # entry's block — keep whatever access mode the
+                            # ORIGINAL entry had (structure), only the name
+                            # comes from the retry.
+                            chunk_entries = chunk_entries.replace(wrong, new_name, 1)
+                            extracted_names[j] = new_name
+                            recovered += 1
+                    if recovered:
+                        all_entries[-1] = chunk_entries.strip()
+                        print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
+                              f"✓ narrow retry recovered {recovered}/{len(mismatched)} "
+                              f"correct name(s)")
+                    else:
+                        print(f"  [CPP chunk {chunk_num}/{total_chunks}] "
+                              f"✗ narrow retry did not produce a matching AIDL name — "
+                              f"keeping original (will surface via post-validation)")
+
+            chunk_entry_names.append(extracted_names)  # ORDERED list
 
         merged_entries = "\n".join(all_entries)
 
