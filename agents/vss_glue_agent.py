@@ -241,6 +241,8 @@ def _generate_vss_hardware_cpp(props: list[dict], domains: list[str] = None,
 {domain_includes}
 #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
 #include <android-base/logging.h>
+#include <cstdlib>
+#include <sstream>
 
 namespace android::hardware::automotive::vehicle {{
 using namespace aidl::android::hardware::automotive::vehicle;
@@ -390,7 +392,89 @@ StatusCode VssVehicleHardware::getValues(
     return StatusCode::OK;
 }}
 
-DumpResult VssVehicleHardware::dump(const std::vector<std::string>&) {{ return {{}}; }}
+DumpResult VssVehicleHardware::dump(const std::vector<std::string>& options) {{
+    // Called by DefaultVehicleHal::dump() (real AOSP reference code, unmodified) -- it forwards
+    // `dumpsys ... IVehicle/default --get/--set ...` arguments straight into this method and
+    // prints whatever we put in result.buffer. Previously this returned an empty DumpResult
+    // unconditionally, so `dumpsys --get <id>` produced no visible output at all despite
+    // getValues()/setValues() (used by VTS, confirmed passing 7/7 including VssPropertyRoundTrip)
+    // working correctly -- the debug command path just never reached them. This reuses those
+    // SAME already-verified methods internally instead of a separate implementation.
+    DumpResult result;
+    result.callerShouldDumpState = false;
+    result.refreshPropertyConfigs = false;
+
+    if (options.empty() || options[0] == "--help") {{
+        result.buffer = "VSS VHAL debug commands: --get <propId> | --set <propId> -i <int> | --set <propId> -f <float> | --set <propId> -s <string>";
+        return result;
+    }}
+
+    auto parseId = [](const std::string& s) -> int32_t {{
+        return static_cast<int32_t>(std::strtol(s.c_str(), nullptr, 0));
+    }};
+
+    if (options[0] == "--get" && options.size() >= 2) {{
+        int32_t propId = parseId(options[1]);
+        GetValueRequest req;
+        req.requestId = 1;
+        req.prop.prop = propId;
+        std::vector<GetValueResult> results;
+        StatusCode status = getValues(
+            std::make_shared<const GetValuesCallback>(
+                [&results](std::vector<GetValueResult> r) {{ results = std::move(r); }}),
+            {{req}});
+        if (status != StatusCode::OK || results.empty() || results[0].status != StatusCode::OK) {{
+            result.buffer = "GET FAILED for prop " + options[1];
+            return result;
+        }}
+        const auto& val = results[0].prop.value;
+        std::ostringstream oss;
+        oss << "prop: " << propId << "  int32Values: [";
+        for (size_t i = 0; i < val.int32Values.size(); i++) {{
+            oss << (i ? ", " : "") << val.int32Values[i];
+        }}
+        oss << "]  floatValues: [";
+        for (size_t i = 0; i < val.floatValues.size(); i++) {{
+            oss << (i ? ", " : "") << val.floatValues[i];
+        }}
+        oss << "]  stringValue: '" << val.stringValue << "'";
+        result.buffer = oss.str();
+        return result;
+    }}
+
+    if (options[0] == "--set" && options.size() >= 4) {{
+        int32_t propId = parseId(options[1]);
+        SetValueRequest req;
+        req.requestId = 1;
+        req.value.prop = propId;
+        const std::string& flag = options[2];
+        const std::string& value = options[3];
+        if (flag == "-i") {{
+            req.value.value.int32Values = {{static_cast<int32_t>(std::strtol(value.c_str(), nullptr, 0))}};
+        }} else if (flag == "-f") {{
+            req.value.value.floatValues = {{std::strtof(value.c_str(), nullptr)}};
+        }} else if (flag == "-s") {{
+            req.value.value.stringValue = value;
+        }} else {{
+            result.buffer = "Unknown value flag, use -i or -f or -s";
+            return result;
+        }}
+        std::vector<SetValueResult> results;
+        StatusCode status = setValues(
+            std::make_shared<const SetValuesCallback>(
+                [&results](std::vector<SetValueResult> r) {{ results = std::move(r); }}),
+            {{req}});
+        if (status != StatusCode::OK || results.empty() || results[0].status != StatusCode::OK) {{
+            result.buffer = "SET FAILED for prop " + options[1];
+            return result;
+        }}
+        result.buffer = "SET OK for prop " + options[1];
+        return result;
+    }}
+
+    result.buffer = "Unrecognized command, use --help for usage";
+    return result;
+}}
 StatusCode VssVehicleHardware::checkHealth() {{ return StatusCode::OK; }}
 void VssVehicleHardware::registerOnPropertyChangeEvent(std::unique_ptr<const PropertyChangeCallback>) {{}}
 void VssVehicleHardware::registerOnPropertySetErrorEvent(std::unique_ptr<const PropertySetErrorCallback>) {{}}
