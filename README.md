@@ -825,6 +825,11 @@ grep "automotive.vehicle-V" test/vts/vss_vehicle/Android.bp
 sed -i 's/automotive.vehicle-V[0-9]*-ndk/automotive.vehicle-V3-ndk/' \
     test/vts/vss_vehicle/Android.bp
 
+sed -i '/android.hardware.automotive.vehicle-V3-ndk/a\        "android.hardware.automotive.vehicle.property-V3-ndk",' \
+    test/vts/vss_vehicle/Android.bp
+grep -A5 "shared_libs" test/vts/vss_vehicle/Android.bp
+
+
 # Build VTS
 mmm test/vts/vss_vehicle 
 
