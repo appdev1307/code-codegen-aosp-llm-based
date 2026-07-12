@@ -183,11 +183,9 @@ for col in cols:
 ```bash
 # ── C1: Baseline ───────────────────────────────────────────────
 python multi_main.py
-cp -r output/ output_c1_backup/
 
 # ── C2: Adaptive ───────────────────────────────────────────────
 python multi_main_adaptive.py
-cp -r output_adaptive/ output_adaptive_backup/
 
 # ── DSPy Optimiser (after ChromaDB, before C3) ─────────────────
 # IMPORTANT: delete the stale cpp program first — the signature changed
@@ -199,52 +197,8 @@ rm -rf dspy_opt/saved/cpp_program/
 python dspy_opt/optimizer.py --mipro-auto light --train-size 8 --force
 ls dspy_opt/saved/*/program.json | wc -l   # expect: 12 after full optimizer run
 
-# ChromaDB singleton fix (before C3)
-python apply_chroma_fix.py
-
 # ── C3: RAG + DSPy ─────────────────────────────────────────────
 python multi_main_rag_dspy.py
-cp -r output_rag_dspy/ output_rag_dspy_backup/
-
-# ── C3 Post-run check (run before starting C4) ─────────────────
-# Verifies VssVehicleHardware.cpp is non-empty and AIDL-compliant.
-# If HIDL contamination or empty output is found, fix the cpp agent
-# before spending 4 hours on C4.
-python - << 'PYCHECK'
-import glob, sys
-from pathlib import Path
-
-output_dir = Path("output_rag_dspy")
-cpp_files = (list(output_dir.rglob("VssVehicleHardware.cpp")) +
-             list(output_dir.rglob("VehicleHalService*.cpp")))
-
-if not cpp_files:
-    print("❌ FAIL: No C++ file in output_rag_dspy/ — cpp agent returned empty")
-    sys.exit(1)
-
-HIDL_BANNED  = ["HIDL_FETCH_", "hidl/", "Return<", ".valueType", "BnIVehicle",
-                "BnVehicle"]
-AIDL_REQUIRED = ["IVehicleHardware", "DefaultVehicleHal", "AServiceManager_addService",
-                  "GetValuesCallback", "GetValueRequest", "SetValuesCallback", "SetValueRequest"]
-issues = []
-for f in cpp_files:
-    c = f.read_text(errors="ignore")
-    if len(c.strip()) < 200:
-        issues.append(f"{f.name}: empty")
-    for b in HIDL_BANNED:
-        if b in c: issues.append(f"{f.name}: HIDL artifact '{b}'")
-    for r in AIDL_REQUIRED:
-        if r not in c: issues.append(f"{f.name}: missing '{r}'")
-
-if issues:
-    print("❌ C3 cpp AIDL V3 violations:")
-    for v in issues: print(f"   • {v}")
-    print("Fix before running C4.")
-    sys.exit(1)
-else:
-    print(f"✓ C3 cpp passed AIDL V3 check ({len(cpp_files)} file(s))")
-PYCHECK
-
 # ── C4 Minimal (alternative to full C4) ────────────────────────
 # Faster: generates only AIDL + CPP + SELinux (no architect, no full feedback loop)
 # Output: output_c4_minimal/  — valid input for C5 and apply_aosp14_fixes.sh
@@ -252,7 +206,6 @@ python gen_hal_minimal_c4.py
 
 # ── C4: Feedback Loop ──────────────────────────────────────────
 python multi_main_c4_feedback.py
-cp -r output_c4_feedback/ output_c4_feedback_backup/
 
 # ── C5: VTS + HMI Generation ───────────────────────────────────
 # Reads C4 or C4-minimal output automatically.
@@ -276,7 +229,6 @@ gsutil cp output_c5.zip gs://aosp-thesis-temp/
 ### 4. Analysis & Reporting
 
 ```bash
-python diagnose_outputs.py
 python rescore_all_conditions.py
 python compare_matched.py
 python analyze_final.py
@@ -296,21 +248,6 @@ zip -r thesis_export.zip \
 ---
 
 ## C5 — VTS + HMI Generation
-
-C5 generates VTS tests and the HMI app for the 500 VSS properties. It runs on Colab
-after C4, with no dependency on the Android Build step.
-
-### C5 vs C1-C4
-
-| Aspect | C1-C4 | C5 |
-|--------|-------|-----|
-| Input | VSS signals (1571 leaf signals) | C4 YAML spec + MODULE_PLAN.json |
-| Validation | Compile-time (clang++, checkpolicy) | Runtime (atest on Cuttlefish) |
-| Output | AIDL, C++, SELinux, Android.bp | VTS tests + HMI app |
-| VHAL serving | C3/C4 generates VssVehicleHardware | VssVehicleHardware serves VSS properties |
-| Android Build required | No (Colab only) | No for generation; Yes for VTS execution |
-
-### C5 Run on Colab
 
 ## AOSP Source Tree Validation
 
