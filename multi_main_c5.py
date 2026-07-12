@@ -427,23 +427,20 @@ class VtsGeneratorAgent:
 // by the running Vehicle HAL, and that their property IDs are well-formed.
 
 #include <aidl/android/hardware/automotive/vehicle/IVehicle.h>
-#include <aidl/android/hardware/automotive/vehicle/BnVehicleCallback.h>
 #include <aidl/android/hardware/automotive/vehicle/VehiclePropConfigs.h>
 #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
 #include <android/binder_manager.h>
-#include <android/binder_auto_utils.h>
 #include <gtest/gtest.h>
+#include <IVhalClient.h>
 #include <cstdint>
 #include <cmath>
-#include <chrono>
-#include <condition_variable>
 #include <iostream>
-#include <mutex>
 #include <set>
 #include <vector>
 #include <string>
 
 using namespace aidl::android::hardware::automotive::vehicle;
+using ::android::frameworks::automotive::vhal::IVhalClient;
 
 // VHAL property-ID field masks (group | area | type | index).
 static constexpr uint32_t kGroupMask   = 0xF0000000u;
@@ -472,101 +469,32 @@ static const std::vector<std::string> kVssPropertyAccess = {{
     {access_literal}
 }};
 
-// IVehicle::getValues()/setValues() do NOT return the result directly —
-// they only report whether the request was successfully SUBMITTED. The
-// actual result is delivered later via a separate binder call back into
-// THIS process, onGetValues()/onSetValues(), through a client-supplied
-// IVehicleCallback (see IVehicleCallback.aidl). This class implements
-// that callback and hands the result to whichever thread is blocked
-// waiting for it — turning the async API into an ordinary synchronous
-// call from the test's point of view. This is a DIFFERENT interface
-// from IVehicleHardware's GetValuesCallback/SetValuesCallback (the
-// std::function typedefs used internally by DefaultVehicleHal to talk
-// to the domain VehicleHalService* implementations in-process) — this
-// one crosses a real binder boundary back to the VTS test process.
-class TestVehicleCallback : public BnVehicleCallback {{
- public:
-  std::mutex mtx;
-  std::condition_variable cv;
-  bool responded = false;
-  std::vector<GetValueResult> getResults;
-  std::vector<SetValueResult> setResults;
-
-  ndk::ScopedAStatus onGetValues(const GetValueResults& responses) override {{
-    std::lock_guard<std::mutex> lock(mtx);
-    getResults.insert(getResults.end(), responses.payloads.begin(), responses.payloads.end());
-    responded = true;
-    cv.notify_all();
-    return ndk::ScopedAStatus::ok();
-  }}
-  ndk::ScopedAStatus onSetValues(const SetValueResults& responses) override {{
-    std::lock_guard<std::mutex> lock(mtx);
-    setResults.insert(setResults.end(), responses.payloads.begin(), responses.payloads.end());
-    responded = true;
-    cv.notify_all();
-    return ndk::ScopedAStatus::ok();
-  }}
-  ndk::ScopedAStatus onPropertyEvent(const VehiclePropValues&, int32_t) override {{
-    return ndk::ScopedAStatus::ok();
-  }}
-  ndk::ScopedAStatus onPropertySetError(const VehiclePropErrors&) override {{
-    return ndk::ScopedAStatus::ok();
-  }}
-
-  // Blocks until onGetValues/onSetValues fires, or timeout elapses.
-  // Resets internal "responded" latch for reuse across many calls in
-  // the same test. Returns false on timeout (VHAL never responded).
-  bool waitForResponse(int timeout_ms = 3000) {{
-    std::unique_lock<std::mutex> lock(mtx);
-    bool ok = cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                           [this] {{ return responded; }});
-    responded = false;
-    return ok;
-  }}
-}};
-
-// Synchronous wrapper around the async getValues() — submits the
-// request, blocks for the callback, returns the delivered results.
-// Every getValues() call site below goes through this instead of
-// touching the callback directly.
-static bool doGetValues(const std::shared_ptr<IVehicle>& vehicle,
-                         const std::shared_ptr<TestVehicleCallback>& cb,
-                         const GetValueRequests& reqs,
-                         std::vector<GetValueResult>* outResults) {{
-  cb->getResults.clear();
-  auto status = vehicle->getValues(cb, reqs);
-  if (!status.isOk()) return false;
-  if (!cb->waitForResponse()) return false;
-  *outResults = cb->getResults;
-  return true;
-}}
-
-// Synchronous wrapper around the async setValues() — same pattern as
-// doGetValues() above.
-static bool doSetValues(const std::shared_ptr<IVehicle>& vehicle,
-                         const std::shared_ptr<TestVehicleCallback>& cb,
-                         const SetValueRequests& reqs,
-                         std::vector<SetValueResult>* outResults) {{
-  cb->setResults.clear();
-  auto status = vehicle->setValues(cb, reqs);
-  if (!status.isOk()) return false;
-  if (!cb->waitForResponse()) return false;
-  *outResults = cb->setResults;
-  return true;
-}}
-
 // ── Fixture: connect to the VHAL service ─────────────────────────
+//
+// getValues()/setValues() on the raw IVehicle binder interface do NOT
+// return their result directly — the actual value is delivered later
+// via a client-implemented IVehicleCallback binder callback (see
+// IVehicleCallback.aidl). Rather than hand-roll that callback plumbing
+// here, VssPropertyRoundTrip below uses libvhalclient's IVhalClient —
+// the SAME client library the real AOSP VtsHalAutomotiveVehicle_
+// TargetTest.cpp uses (see source.android.com "Use VHAL with the
+// native client") — which wraps that async complexity into simple
+// getValueSync()/setValueSync() calls. The raw `vehicle` handle below
+// is kept only for getAllPropConfigs()/getPropConfigs(), which ARE
+// synchronous on IVehicle directly and were never part of this fix.
 class VssVhalTest : public ::testing::Test {{
  protected:
   std::shared_ptr<IVehicle> vehicle;
-  std::shared_ptr<TestVehicleCallback> callback;
+  std::shared_ptr<IVhalClient> vhalClient;
   void SetUp() override {{
     const std::string instance = std::string(IVehicle::descriptor) + "/default";
     vehicle = IVehicle::fromBinder(
         ndk::SpAIBinder(AServiceManager_waitForService(instance.c_str())));
     ASSERT_NE(vehicle, nullptr)
         << "IVehicle service not available — is Cuttlefish running?";
-    callback = ndk::SharedRefBase::make<TestVehicleCallback>();
+    vhalClient = IVhalClient::tryCreate();
+    ASSERT_NE(vhalClient, nullptr)
+        << "Failed to create IVhalClient — is Cuttlefish running?";
   }}
 }};
 
@@ -668,66 +596,44 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
 
     if (isReadOnly) {{
       // No writeRegister case exists for READ-only properties by design
-      // (see CppRegisterBodySignature) — only verify getValues() itself
-      // works, not a round trip.
-      GetValueRequests getReqs;
-      GetValueRequest getReq;
-      getReq.requestId = targetProp;
-      getReq.prop.prop = targetProp;
-      getReqs.payloads = {{getReq}};
-
-      std::vector<GetValueResult> getResults;
-      if (!doGetValues(vehicle, callback, getReqs, &getResults) ||
-          getResults.empty() || getResults[0].status != StatusCode::OK) {{
+      // (see CppRegisterBodySignature) — only verify getValueSync()
+      // itself works, not a round trip.
+      auto getResult = vhalClient->getValueSync(*vhalClient->createHalPropValue(targetProp));
+      if (!getResult.ok() || getResult.value() == nullptr) {{
         failed++; failedProps.push_back(targetProp); continue;
       }}
       passed++;
       continue;
     }}
 
-    SetValueRequests setReqs;
-    SetValueRequest setReq;
-    setReq.requestId = targetProp;
-    setReq.value.prop = targetProp;
+    auto propToSet = vhalClient->createHalPropValue(targetProp);
     if (isFloat) {{
-      setReq.value.value.floatValues = {{12.5f}};
+      propToSet->setFloatValues({{12.5f}});
     }} else if (isString) {{
-      setReq.value.value.stringValue = "vts_test_value";
+      propToSet->setStringValue("vts_test_value");
     }} else {{
-      setReq.value.value.int32Values = {{42}};
+      propToSet->setInt32Values({{42}});
     }}
-    setReqs.payloads = {{setReq}};
 
-    std::vector<SetValueResult> setResults;
-    if (!doSetValues(vehicle, callback, setReqs, &setResults) ||
-        setResults.empty() || setResults[0].status != StatusCode::OK) {{
+    auto setResult = vhalClient->setValueSync(*propToSet);
+    if (!setResult.ok()) {{
       failed++; failedProps.push_back(targetProp); continue;
     }}
 
-    GetValueRequests getReqs;
-    GetValueRequest getReq;
-    getReq.requestId = targetProp;
-    getReq.prop.prop = targetProp;
-    getReqs.payloads = {{getReq}};
-
-    std::vector<GetValueResult> getResults;
-    if (!doGetValues(vehicle, callback, getReqs, &getResults) ||
-        getResults.empty() || getResults[0].status != StatusCode::OK) {{
+    auto getResult = vhalClient->getValueSync(*vhalClient->createHalPropValue(targetProp));
+    if (!getResult.ok() || getResult.value() == nullptr) {{
       failed++; failedProps.push_back(targetProp); continue;
     }}
 
-    // .prop is the returned VehiclePropValue; .value is its nested
-    // RawPropValues (see VehiclePropValue.aidl) — the actual scalar
-    // fields (int32Values / floatValues / stringValue) live one level
-    // deeper than a flat VehiclePropValue would suggest.
-    const auto& got = getResults[0].prop.value;
     bool matches;
     if (isFloat) {{
-      matches = !got.floatValues.empty() && std::abs(got.floatValues[0] - 12.5f) < 0.001f;
+      auto vals = getResult.value()->getFloatValues();
+      matches = !vals.empty() && std::abs(vals[0] - 12.5f) < 0.001f;
     }} else if (isString) {{
-      matches = got.stringValue == "vts_test_value";
+      matches = getResult.value()->getStringValue() == "vts_test_value";
     }} else {{
-      matches = !got.int32Values.empty() && got.int32Values[0] == 42;
+      auto vals = getResult.value()->getInt32Values();
+      matches = !vals.empty() && vals[0] == 42;
     }}
 
     if (matches) {{ passed++; }}
@@ -758,13 +664,23 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
         # enum itself (VehicleProperty.h, extended with the 500 generated
         # VSS properties) lives in the separate .property sub-package,
         # built as android.hardware.automotive.vehicle.property-V3-ndk.
-        # Without this second dependency, VtsHalAutomotiveVehicleVss.cpp's
-        # #include <aidl/.../VehicleProperty.h> fails with "file not found"
-        # even though the main interface lib built and linked fine.
+        # Without this second dependency, #include <.../VehicleProperty.h>
+        # fails with "file not found" even though the main interface lib
+        # built and linked fine.
+        #
+        # libvhalclient + vhalclient_defaults: the getValueSync()/
+        # setValueSync() calls in VssPropertyRoundTrip come from
+        # libvhalclient (IVhalClient.h) — the same client library real
+        # AOSP's VtsHalAutomotiveVehicle_TargetTest.cpp uses instead of
+        # hand-implementing the IVehicleCallback binder callback that
+        # getValues()/setValues() actually deliver results through. The
+        # vhalclient_defaults default provides this library's own
+        # include paths and transitive dependencies.
         property_ndk_lib = f"android.hardware.automotive.vehicle.property-{VHAL_NDK_VERSION}-ndk"
         return f"""// AUTO-GENERATED by C5 pipeline
 cc_test {{
     name: "VtsHalAutomotiveVehicleVss",
+    defaults: ["vhalclient_defaults"],
     srcs: ["VtsHalAutomotiveVehicleVss.cpp"],
     shared_libs: [
         "libbase",
@@ -774,6 +690,7 @@ cc_test {{
     ],
     static_libs: [
         "libgtest",
+        "libvhalclient",
     ],
     test_suites: ["vts", "general-tests"],
     test_config: "VtsHalAutomotiveVehicleVss.xml",
