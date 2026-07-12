@@ -609,6 +609,7 @@ clean_verify
 ~/apply_aosp14_fixes.sh ~/output_c4_minimal ~/aosp-14-auto
 
 # [2] Update API dumps
+rm -fr out/
 m android.hardware.automotive.vehicle-update-api
 m android.hardware.automotive.vehicle.property-update-api
 
@@ -631,6 +632,16 @@ m android.hardware.automotive.vehicle.property-V3-ndk
 grep "VEHICLE_CHILDREN" out/soong/.intermediates/hardware/interfaces/automotive/vehicle/aidl_property/android.hardware.automotive.vehicle.property-V3-ndk-source/gen/include/aidl/android/hardware/automotive/vehicle/VehicleProperty.h | head -3
 
 # [8] Build VSS service
+sed -i 's/#define LOG_TAG "VssVhal"/#undef LOG_TAG\n#define LOG_TAG "VssVhal"/' \
+    hardware/interfaces/automotive/vehicle/aidl/impl/vss/VssVehicleService.cpp
+# remove manually code below from bool VehicleHalServiceBody::readRegister(int32_t propId, VehiclePropValue& out) const { in file hardware/interfaces/automotive/vehicle/aidl/impl/vss/VehicleHalServiceBody.cpp
+#case static_cast<int32_t>(VehicleProperty::VEHICLE_CHILDREN_CABIN_CHILDREN_SEAT_CHILDREN_ROW2_CHILDREN_DRIVERSIDE_CHILDREN_SWITCH_CHILDREN_ISUPENGAGED): {
+#    std::ifstream f(registerPath(propId));
+#    if (!f.good()) { out.prop = propId; out.value.int32Values = {0}; return true; }
+#    int32_t v = 0; f >> v;
+#    out.prop = propId; out.value.int32Values = {v};
+#    return true;
+#}
 m android.hardware.automotive.vehicle@V3-vss-service
 
 # [9] Full build
