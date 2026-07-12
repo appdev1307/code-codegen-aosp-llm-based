@@ -427,13 +427,18 @@ class VtsGeneratorAgent:
 // by the running Vehicle HAL, and that their property IDs are well-formed.
 
 #include <aidl/android/hardware/automotive/vehicle/IVehicle.h>
+#include <aidl/android/hardware/automotive/vehicle/BnVehicleCallback.h>
 #include <aidl/android/hardware/automotive/vehicle/VehiclePropConfigs.h>
 #include <aidl/android/hardware/automotive/vehicle/VehicleProperty.h>
 #include <android/binder_manager.h>
+#include <android/binder_auto_utils.h>
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <cmath>
+#include <chrono>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
 #include <set>
 #include <vector>
 #include <string>
@@ -467,16 +472,101 @@ static const std::vector<std::string> kVssPropertyAccess = {{
     {access_literal}
 }};
 
+// IVehicle::getValues()/setValues() do NOT return the result directly —
+// they only report whether the request was successfully SUBMITTED. The
+// actual result is delivered later via a separate binder call back into
+// THIS process, onGetValues()/onSetValues(), through a client-supplied
+// IVehicleCallback (see IVehicleCallback.aidl). This class implements
+// that callback and hands the result to whichever thread is blocked
+// waiting for it — turning the async API into an ordinary synchronous
+// call from the test's point of view. This is a DIFFERENT interface
+// from IVehicleHardware's GetValuesCallback/SetValuesCallback (the
+// std::function typedefs used internally by DefaultVehicleHal to talk
+// to the domain VehicleHalService* implementations in-process) — this
+// one crosses a real binder boundary back to the VTS test process.
+class TestVehicleCallback : public BnVehicleCallback {{
+ public:
+  std::mutex mtx;
+  std::condition_variable cv;
+  bool responded = false;
+  std::vector<GetValueResult> getResults;
+  std::vector<SetValueResult> setResults;
+
+  ndk::ScopedAStatus onGetValues(const GetValueResults& responses) override {{
+    std::lock_guard<std::mutex> lock(mtx);
+    getResults.insert(getResults.end(), responses.payloads.begin(), responses.payloads.end());
+    responded = true;
+    cv.notify_all();
+    return ndk::ScopedAStatus::ok();
+  }}
+  ndk::ScopedAStatus onSetValues(const SetValueResults& responses) override {{
+    std::lock_guard<std::mutex> lock(mtx);
+    setResults.insert(setResults.end(), responses.payloads.begin(), responses.payloads.end());
+    responded = true;
+    cv.notify_all();
+    return ndk::ScopedAStatus::ok();
+  }}
+  ndk::ScopedAStatus onPropertyEvent(const VehiclePropValues&, int32_t) override {{
+    return ndk::ScopedAStatus::ok();
+  }}
+  ndk::ScopedAStatus onPropertySetError(const VehiclePropErrors&) override {{
+    return ndk::ScopedAStatus::ok();
+  }}
+
+  // Blocks until onGetValues/onSetValues fires, or timeout elapses.
+  // Resets internal "responded" latch for reuse across many calls in
+  // the same test. Returns false on timeout (VHAL never responded).
+  bool waitForResponse(int timeout_ms = 3000) {{
+    std::unique_lock<std::mutex> lock(mtx);
+    bool ok = cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                           [this] {{ return responded; }});
+    responded = false;
+    return ok;
+  }}
+}};
+
+// Synchronous wrapper around the async getValues() — submits the
+// request, blocks for the callback, returns the delivered results.
+// Every getValues() call site below goes through this instead of
+// touching the callback directly.
+static bool doGetValues(const std::shared_ptr<IVehicle>& vehicle,
+                         const std::shared_ptr<TestVehicleCallback>& cb,
+                         const GetValueRequests& reqs,
+                         std::vector<GetValueResult>* outResults) {{
+  cb->getResults.clear();
+  auto status = vehicle->getValues(cb, reqs);
+  if (!status.isOk()) return false;
+  if (!cb->waitForResponse()) return false;
+  *outResults = cb->getResults;
+  return true;
+}}
+
+// Synchronous wrapper around the async setValues() — same pattern as
+// doGetValues() above.
+static bool doSetValues(const std::shared_ptr<IVehicle>& vehicle,
+                         const std::shared_ptr<TestVehicleCallback>& cb,
+                         const SetValueRequests& reqs,
+                         std::vector<SetValueResult>* outResults) {{
+  cb->setResults.clear();
+  auto status = vehicle->setValues(cb, reqs);
+  if (!status.isOk()) return false;
+  if (!cb->waitForResponse()) return false;
+  *outResults = cb->setResults;
+  return true;
+}}
+
 // ── Fixture: connect to the VHAL service ─────────────────────────
 class VssVhalTest : public ::testing::Test {{
  protected:
   std::shared_ptr<IVehicle> vehicle;
+  std::shared_ptr<TestVehicleCallback> callback;
   void SetUp() override {{
     const std::string instance = std::string(IVehicle::descriptor) + "/default";
     vehicle = IVehicle::fromBinder(
         ndk::SpAIBinder(AServiceManager_waitForService(instance.c_str())));
     ASSERT_NE(vehicle, nullptr)
         << "IVehicle service not available — is Cuttlefish running?";
+    callback = ndk::SharedRefBase::make<TestVehicleCallback>();
   }}
 }};
 
@@ -586,10 +676,9 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
       getReq.prop.prop = targetProp;
       getReqs.payloads = {{getReq}};
 
-      GetValueResults getResults;
-      auto getStatus = vehicle->getValues(getReqs, &getResults);
-      if (!getStatus.isOk() || getResults.payloads.empty() ||
-          getResults.payloads[0].status != StatusCode::OK) {{
+      std::vector<GetValueResult> getResults;
+      if (!doGetValues(vehicle, callback, getReqs, &getResults) ||
+          getResults.empty() || getResults[0].status != StatusCode::OK) {{
         failed++; failedProps.push_back(targetProp); continue;
       }}
       passed++;
@@ -609,10 +698,9 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
     }}
     setReqs.payloads = {{setReq}};
 
-    SetValueResults setResults;
-    auto setStatus = vehicle->setValues(setReqs, &setResults);
-    if (!setStatus.isOk() || setResults.payloads.empty() ||
-        setResults.payloads[0].status != StatusCode::OK) {{
+    std::vector<SetValueResult> setResults;
+    if (!doSetValues(vehicle, callback, setReqs, &setResults) ||
+        setResults.empty() || setResults[0].status != StatusCode::OK) {{
       failed++; failedProps.push_back(targetProp); continue;
     }}
 
@@ -622,14 +710,17 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
     getReq.prop.prop = targetProp;
     getReqs.payloads = {{getReq}};
 
-    GetValueResults getResults;
-    auto getStatus = vehicle->getValues(getReqs, &getResults);
-    if (!getStatus.isOk() || getResults.payloads.empty() ||
-        getResults.payloads[0].status != StatusCode::OK) {{
+    std::vector<GetValueResult> getResults;
+    if (!doGetValues(vehicle, callback, getReqs, &getResults) ||
+        getResults.empty() || getResults[0].status != StatusCode::OK) {{
       failed++; failedProps.push_back(targetProp); continue;
     }}
 
-    const auto& got = getResults.payloads[0].prop.value;
+    // .prop is the returned VehiclePropValue; .value is its nested
+    // RawPropValues (see VehiclePropValue.aidl) — the actual scalar
+    // fields (int32Values / floatValues / stringValue) live one level
+    // deeper than a flat VehiclePropValue would suggest.
+    const auto& got = getResults[0].prop.value;
     bool matches;
     if (isFloat) {{
       matches = !got.floatValues.empty() && std::abs(got.floatValues[0] - 12.5f) < 0.001f;
@@ -660,6 +751,17 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
         # AOSP 14 auto cuttlefish). Hardcoding V4 here caused a runtime link
         # failure: "library android.hardware.automotive.vehicle-V4-ndk.so not
         # found". Sourced from VHAL_NDK_VERSION so it tracks the target.
+        #
+        # PROPERTY_NDK_LIB is a SEPARATE Soong module from VEHICLE_NDK_LIB —
+        # android.hardware.automotive.vehicle-V3-ndk is the main IVehicle
+        # interface package (IVehicle.h, VehiclePropConfigs.h); the property
+        # enum itself (VehicleProperty.h, extended with the 500 generated
+        # VSS properties) lives in the separate .property sub-package,
+        # built as android.hardware.automotive.vehicle.property-V3-ndk.
+        # Without this second dependency, VtsHalAutomotiveVehicleVss.cpp's
+        # #include <aidl/.../VehicleProperty.h> fails with "file not found"
+        # even though the main interface lib built and linked fine.
+        property_ndk_lib = f"android.hardware.automotive.vehicle.property-{VHAL_NDK_VERSION}-ndk"
         return f"""// AUTO-GENERATED by C5 pipeline
 cc_test {{
     name: "VtsHalAutomotiveVehicleVss",
@@ -668,6 +770,7 @@ cc_test {{
         "libbase",
         "libbinder_ndk",
         "{VEHICLE_NDK_LIB}",
+        "{property_ndk_lib}",
     ],
     static_libs: [
         "libgtest",
