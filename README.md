@@ -581,6 +581,8 @@ sed -i 's/#define LOG_TAG "VssVhal"/#undef LOG_TAG\n#define LOG_TAG "VssVhal"/' 
 #}
 m android.hardware.automotive.vehicle@V3-vss-service
 
+m android.hardware.automotive.vehicle-V3-ndk
+
 # [9] Full build
 m -j$(nproc)
 m -j$(nproc) initbootimage bootimage
@@ -777,7 +779,7 @@ adb remount
 adb sync
 
 # NDK part
-adb push out/target/product/vsoc_x86_64_only/symbols/vendor/lib64/android.hardware.automotive.vehicle-V3-ndk.so /vendor/lib64/
+adb push out/target/product/vsoc_x86_64_only/system/lib64/android.hardware.automotive.vehicle-V3-ndk.so /system/lib64/
 # SDK park
 adb push out/target/product/vsoc_x86_64_only/vendor/bin/hw/android.hardware.automotive.vehicle@V3-vss-service /vendor/bin/hw/
 
