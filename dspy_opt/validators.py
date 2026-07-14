@@ -263,7 +263,16 @@ _CPP_VHAL_STUBS = """\
 #include <functional>
 #include <optional>
 
-namespace android::hardware::automotive::vehicle {
+// AIDL-generated data types live in aidl::android::hardware::automotive::
+// vehicle in real AOSP (confirmed against the actual VehiclePropValue.aidl /
+// GetValueRequest.aidl / IVehicleCallback.aidl sources) — NOT in the plain
+// android::hardware::automotive::vehicle namespace. Real generated code
+// relies on this via `using namespace aidl::android::hardware::automotive::
+// vehicle;`. Declaring these WITHOUT the aidl:: wrapper meant that
+// using-directive failed with "undeclared identifier 'aidl'", which made
+// clang abort before reaching ANY semantic check on VehicleProperty::X
+// expressions — including duplicate-case-value detection.
+namespace aidl::android::hardware::automotive::vehicle {
     struct VehiclePropValue {
         int32_t prop = 0;
         int32_t areaId = 0;
@@ -307,6 +316,14 @@ namespace android::hardware::automotive::vehicle {
     // when assigned via designated initializers.
     enum VehiclePropertyAccess     { NONE = 0, READ = 1, WRITE = 2, READ_WRITE = 3 };
     enum VehiclePropertyChangeMode { STATIC = 0, ON_CHANGE = 1, CONTINUOUS = 2 };
+}
+
+// IVehicleHardware is NOT AIDL-generated — it's a reference-implementation
+// C++ interface AOSP defines directly in android::hardware::automotive::
+// vehicle. Its method signatures use the AIDL types above, brought into
+// scope here exactly as real IVehicleHardware.h / VehicleHalTypes.h do.
+namespace android::hardware::automotive::vehicle {
+    using namespace aidl::android::hardware::automotive::vehicle;
 
     using GetValuesCallback         = std::function<void(std::vector<GetValueResult>)>;
     using SetValuesCallback         = std::function<void(std::vector<SetValueResult>)>;
@@ -331,6 +348,7 @@ namespace android::hardware::automotive::vehicle {
     };
 }
 using namespace android::hardware::automotive::vehicle;
+using namespace aidl::android::hardware::automotive::vehicle;
 // ────────────────────────────────────────────────────────────────────────────
 """
 
@@ -349,25 +367,32 @@ _CPP_VHAL_STUBS_LINE_COUNT = _CPP_VHAL_STUBS.count("\n") + 1
 # "does this name actually exist" check is a separate, stronger
 # concern handled by CppVehicleAssertions' AIDL cross-check in
 # dspy_opt/hal_signatures.py, not by this syntax-only validator.
-_USED_AIDL_CONSTANT_RE_TEMPLATE = r'VehicleProperty{domain}::(\w+)'
+_USED_AIDL_CONSTANT_RE_TEMPLATE = r'VehicleProperty::(\w+)'
 
 
 def _build_aidl_enum_stub(code: str, domain: str) -> str:
-    """Build a VehicleProperty{domain} enum stub containing every
-    constant name `code` actually references (via
-    VehicleProperty{domain}::NAME), each given a distinct placeholder
-    value. This guarantees the stub always satisfies whatever names
-    the real generated code uses — unlike a single fixed placeholder
-    constant, which only worked when the code happened to reference
-    exactly one (made-up) name.
+    """Build a VehicleProperty enum stub containing every constant name
+    `code` actually references (via VehicleProperty::NAME), each given
+    a distinct placeholder value. This guarantees the stub always
+    satisfies whatever names the real generated code uses.
+
+    Uses the PLAIN, unqualified `VehicleProperty` enum name — matching
+    what real generated code actually references — NOT a domain-suffixed
+    `VehicleProperty{domain}`. The project's real AIDL architecture
+    merges every domain's properties into ONE combined VehicleProperty
+    enum, so code always writes `VehicleProperty::X`, never
+    `VehicleProperty{Domain}::X`, regardless of which domain-specific
+    .aidl FILE the #include line names.
 
     This is NOT a check for whether those names are real AIDL property
     names (that's CppVehicleAssertions' job, which has the actual
     generated .aidl content to cross-check against) — it only needs to
-    make `static_cast<int32_t>(VehicleProperty{domain}::X)` compile
-    syntactically for whatever X appears in the code being validated.
+    make `static_cast<int32_t>(VehicleProperty::X)` compile
+    syntactically for whatever X appears in the code being validated,
+    so clang can proceed to its own native semantic checks (duplicate
+    case value among them) on the rest of the file.
     """
-    usage_re = re.compile(_USED_AIDL_CONSTANT_RE_TEMPLATE.format(domain=re.escape(domain)))
+    usage_re = re.compile(_USED_AIDL_CONSTANT_RE_TEMPLATE)
     names = sorted(set(usage_re.findall(code)))
     if not names:
         names = ["_VALIDATOR_PLACEHOLDER_DO_NOT_USE"]
@@ -376,7 +401,7 @@ def _build_aidl_enum_stub(code: str, domain: str) -> str:
         "#pragma once\n"
         "#include <cstdint>\n"
         f"namespace aidl::android::hardware::automotive::vehicle {{\n"
-        f"enum class VehicleProperty{domain} : int32_t {{\n"
+        f"enum class VehicleProperty : int32_t {{\n"
         f"{body}\n"
         "};\n"
         "}\n"
@@ -626,16 +651,24 @@ def validate_cpp(code: str) -> ValidatorResult:
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    # Filter error lines that are from the stub prelude
+    # Filter error lines that are from stub/scaffolding files, keeping
+    # everything reported against combined.cpp (the real code under
+    # test). Filename-based, not line-number-based: a line-number
+    # threshold assumes any error at a "low" line number must be a
+    # stub-file error — but combined.cpp has its own independent line
+    # numbering starting at 1 (it's a separate file, not appended after
+    # the stub), so a genuine error on e.g. combined.cpp's line 33 was
+    # incorrectly discarded whenever the stub prelude itself happened
+    # to be >= 33 lines long, silently hiding real errors as a side
+    # effect of how long the stub was.
     real_errors = []
     for line in stderr.splitlines():
         if "error:" not in line.lower():
             continue
-        m = re.search(r":(\d+):", line)
-        if m and int(m.group(1)) <= _CPP_VHAL_STUBS_LINE_COUNT:
-            continue    # skip stub lines
         if "Stubs injected" in line:
             continue
+        if "combined.cpp" not in line:
+            continue    # error is in a stub/scaffolding file, not the real code
         real_errors.append(line)
 
     if not real_errors:

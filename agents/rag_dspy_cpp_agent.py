@@ -935,10 +935,38 @@ class RAGDSPyCppAgent:
             aidl_marker = "=== Generated AIDL enum"
             idx = properties.find(aidl_marker)
             aidl_block = properties[idx:] if idx != -1 else ""
+
+            # Extract the validation-error feedback the retry engine
+            # prepended to `properties` (see _retry_agent /
+            # PostValidationRetry.validate_and_retry_file — both build
+            # `properties` as "=== CRITICAL: FIX THESE VALIDATION
+            # ERRORS FIRST ===\n<feedback>\n=== END ERRORS ===\n\n
+            # === ORIGINAL PROPERTIES ===\n<original>"). Previously
+            # this whole string was scanned ONLY for aidl_block and
+            # then discarded — meaning a retry triggered by e.g. a
+            # duplicate-case-value error regenerated the domain with
+            # NO knowledge that anything needed fixing, from the same
+            # prop_list as the original attempt. Passing it through as
+            # extra_context wires it into the SAME mechanism
+            # generate_chunked() already uses to inject context into
+            # entries_predictor/register_body_predictor's prompts (see
+            # `if extra_context: aosp_context = extra_context + ...`
+            # below) — the retry now actually tells the LLM what broke
+            # last time, instead of blindly resampling.
+            error_marker = "=== CRITICAL: FIX THESE VALIDATION ERRORS FIRST ==="
+            error_end_marker = "=== END ERRORS ==="
+            error_feedback = ""
+            if error_marker in properties:
+                start = properties.find(error_marker)
+                end = properties.find(error_end_marker, start)
+                if end != -1:
+                    error_feedback = properties[start:end + len(error_end_marker)]
+
             result = self.inner.generate_chunked(
                 domain             = domain,
                 prop_list          = prop_list,
                 aidl_block         = aidl_block,
+                extra_context      = error_feedback,
                 enable_chunk_retry = self.enable_chunk_retry,
                 aidl_dir           = aidl_dir,
             )
