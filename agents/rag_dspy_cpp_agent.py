@@ -654,6 +654,21 @@ class RagDspyCppAgent:
                     elif cases_text[pos] == "}":
                         depth -= 1
                     pos += 1
+                if name in kept_names:
+                    # The LLM repeated a case for this property WITHIN
+                    # this single generation call (observed with very
+                    # long, deeply-nested names — e.g. Body's ISUPENGAGED
+                    # case appearing twice in one readRegister() output).
+                    # kept_names (a set) would silently dedupe this match
+                    # with no visible effect, masking that kept_blocks (a
+                    # list) was about to carry the duplicate straight
+                    # into the final switch statement — a real compile-
+                    # blocking "duplicate case value" error that the
+                    # missing-case retry loop above never catches, since
+                    # it only checks case coverage (this name IS
+                    # present, just twice), never per-name uniqueness.
+                    # Skip every repeat, keep the first occurrence only.
+                    continue
                 kept_blocks.append(cases_text[m.start():pos])
                 kept_names.add(name)
             return "\n".join(kept_blocks), kept_names
