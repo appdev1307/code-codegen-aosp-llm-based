@@ -133,6 +133,13 @@ public:
 
 private:
     std::vector<int32_t> mPropIds;
+    // name -> propId, built alongside mPropIds in the constructor from
+    // the SAME real AIDL enum values (VehicleProperty::{name}) — not a
+    // separately maintained/re-derived table. Lets dump()'s --get/--set
+    // accept a property NAME directly (e.g. "dumpsys ... --get
+    // VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENGAGED") instead of
+    // requiring the caller to look up the hex ID first.
+    std::unordered_map<std::string, int32_t> mPropNames;
     // propId -> domain index (matches the ordering used when
     // mPropDomainIdx is populated in the constructor). Lets
     // getValues/setValues route each request to the ONE domain
@@ -178,7 +185,8 @@ def _generate_vss_hardware_cpp(props: list[dict], domains: list[str] = None,
     # enum, the build fails immediately instead of silently using a
     # possibly-stale numeric value from a separate encode_prop_id() copy.
     init_lines = "\n    ".join(
-        f"mPropIds.push_back(static_cast<int32_t>(VehicleProperty::{p['name']}));"
+        f'mPropIds.push_back(static_cast<int32_t>(VehicleProperty::{p["name"]})); '
+        f'mPropNames["{p["name"]}"] = static_cast<int32_t>(VehicleProperty::{p["name"]});'
         for p in props
     )
 
@@ -405,11 +413,21 @@ DumpResult VssVehicleHardware::dump(const std::vector<std::string>& options) {{
     result.refreshPropertyConfigs = false;
 
     if (options.empty() || options[0] == "--help") {{
-        result.buffer = "VSS VHAL debug commands: --get <propId> | --set <propId> -i <int> | --set <propId> -f <float> | --set <propId> -s <string>";
+        result.buffer = "VSS VHAL debug commands: --get <propId|NAME> | --set <propId|NAME> -i <int> | --set <propId|NAME> -f <float> | --set <propId|NAME> -s <string>";
         return result;
     }}
 
-    auto parseId = [](const std::string& s) -> int32_t {{
+    // Accepts EITHER a property NAME (e.g.
+    // "VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENGAGED", looked up
+    // in mPropNames — built from the same real AIDL enum values as
+    // mPropIds, not a separately maintained table) OR a numeric ID
+    // (hex "0x..." or decimal), so callers don't have to look up the
+    // hex ID by hand before every dumpsys call.
+    auto parseId = [this](const std::string& s) -> int32_t {{
+        auto it = mPropNames.find(s);
+        if (it != mPropNames.end()) {{
+            return it->second;
+        }}
         return static_cast<int32_t>(std::strtol(s.c_str(), nullptr, 0));
     }};
 
