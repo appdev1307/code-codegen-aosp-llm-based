@@ -461,6 +461,8 @@ class PostValidationRetry:
         tag = agent_type.upper()
         print(f"    [C4 {tag}] ✗ Initial validation failed "
               f"(score={score:.3f}) — entering retry loop...")
+        for line in (error_msg or "").splitlines()[:6]:
+            print(f"        {line}")
 
         # ── Retry loop: re-generate with error feedback ───────────
         for attempt in range(2, self.max_retries + 1):
@@ -527,6 +529,8 @@ class PostValidationRetry:
                 f"Attempt {attempt}: {error_msg[:200]}")
             print(f"    [C4 {tag}] ✗ Attempt {attempt} failed "
                   f"(score={score:.3f}) — retrying...")
+            for line in (error_msg or "").splitlines()[:6]:
+                print(f"        {line}")
 
         # ── All retries exhausted — keep best version ─────────────
         if best_score > score:
