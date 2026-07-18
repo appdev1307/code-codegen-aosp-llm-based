@@ -147,6 +147,8 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None, aidl_di
     best_code, best_score = code, score
     error_msg = msg or "validation failed"
     print(f"    ✗ Initial failed (score={score:.3f}) — retrying...")
+    for line in error_msg.splitlines()[:6]:
+        print(f"        {line}")
 
     for attempt in range(2, MAX_RETRIES + 1):
         feedback = (
@@ -190,6 +192,8 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None, aidl_di
 
         error_msg = msg or "validation failed"
         print(f"    Attempt {attempt}: still failing (score={score:.3f})")
+        for line in error_msg.splitlines()[:6]:
+            print(f"        {line}")
 
     # Write best version even if not passing
     fpath.write_text(best_code, encoding="utf-8")
