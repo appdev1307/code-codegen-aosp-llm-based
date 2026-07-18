@@ -452,8 +452,19 @@ def _reorder_class_decl_first(code: str) -> str:
 
 
 _SELF_INCLUDE_RE = re.compile(r'#include\s*"([^"]+\.h)"')
+# Domain suffix is OPTIONAL (\w*, not \w+): real generated code's #include
+# line is `<aidl/.../VehicleProperty.h>` — the SAME plain, unqualified
+# filename as the enum type name itself (VehicleProperty::X, confirmed
+# fixed earlier in _USED_AIDL_CONSTANT_RE_TEMPLATE) — not a domain-
+# suffixed `VehiclePropertyAdas.h`. Requiring \w+ (1+ chars) meant this
+# regex never matched the plain filename at all, so no stub file was
+# ever created for it, and clang failed immediately with "fatal error:
+# ... VehicleProperty.h file not found" — BEFORE reaching any real
+# semantic check on the code. This is why validate_cpp() returned a
+# CONSTANT failure across every retry attempt regardless of what the
+# LLM generated: the failure was in stub resolution, not in the code.
 _AIDL_INCLUDE_RE = re.compile(
-    r'#include\s*<aidl/android/hardware/automotive/vehicle/(VehicleProperty(\w+))\.h>'
+    r'#include\s*<aidl/android/hardware/automotive/vehicle/(VehicleProperty(\w*))\.h>'
 )
 
 
