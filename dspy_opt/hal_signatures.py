@@ -103,6 +103,7 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
        #include <memory>
        #include <mutex>
        #include <string>
+       #include <cstdlib>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
@@ -214,7 +215,36 @@ class ModernCppVehicleHardwareSignature(dspy.Signature):
            return StatusCode::OK;
        }
 
-       DumpResult VehicleHalService{Domain}::dump(const std::vector<std::string>&) { return {}; }
+       DumpResult VehicleHalService{Domain}::dump(const std::vector<std::string>& options) {
+           // Reuses THIS domain's own readRegister/writeRegister (already
+           // implemented above for getValues/setValues) — dumpsys calls
+           // into this via the Aggregator, which resolves --get/--set's
+           // property NAME or ID down to a numeric propId and the
+           // correct domain BEFORE dispatching here, so this only needs
+           // to handle a plain numeric propId, not name resolution.
+           DumpResult result;
+           if (options.size() < 2 || (options[0] != "--get" && options[0] != "--set")) {
+               result.buffer = "Usage: --get <propId> | --set <propId> -i <int>";
+               return result;
+           }
+           int32_t propId = static_cast<int32_t>(strtol(options[1].c_str(), nullptr, 0));
+           if (options[0] == "--get") {
+               VehiclePropValue v;
+               if (!readRegister(propId, v)) { result.buffer = "GET FAILED"; return result; }
+               result.buffer = v.value.int32Values.empty() ? "value: (empty)"
+                   : "value: " + std::to_string(v.value.int32Values[0]);
+               return result;
+           }
+           if (options.size() < 4 || options[2] != "-i") {
+               result.buffer = "Usage: --set <propId> -i <int>";
+               return result;
+           }
+           VehiclePropValue v;
+           v.prop = propId;
+           v.value.int32Values = {static_cast<int32_t>(strtol(options[3].c_str(), nullptr, 0))};
+           result.buffer = writeRegister(propId, v) ? "SET OK" : "SET FAILED";
+           return result;
+       }
        StatusCode VehicleHalService{Domain}::checkHealth() { return StatusCode::OK; }
        void VehicleHalService{Domain}::registerOnPropertyChangeEvent(
                std::unique_ptr<const PropertyChangeCallback>) {}
@@ -281,6 +311,7 @@ class CppSkeletonSignature(dspy.Signature):
        #include <memory>
        #include <mutex>
        #include <string>
+       #include <cstdlib>
 
        namespace android::hardware::automotive::vehicle {
        using namespace aidl::android::hardware::automotive::vehicle;
@@ -379,7 +410,36 @@ class CppSkeletonSignature(dspy.Signature):
            return StatusCode::OK;
        }
 
-       DumpResult VehicleHalService{Domain}::dump(const std::vector<std::string>&) { return {}; }
+       DumpResult VehicleHalService{Domain}::dump(const std::vector<std::string>& options) {
+           // Reuses THIS domain's own readRegister/writeRegister (already
+           // implemented above for getValues/setValues) — dumpsys calls
+           // into this via the Aggregator, which resolves --get/--set's
+           // property NAME or ID down to a numeric propId and the
+           // correct domain BEFORE dispatching here, so this only needs
+           // to handle a plain numeric propId, not name resolution.
+           DumpResult result;
+           if (options.size() < 2 || (options[0] != "--get" && options[0] != "--set")) {
+               result.buffer = "Usage: --get <propId> | --set <propId> -i <int>";
+               return result;
+           }
+           int32_t propId = static_cast<int32_t>(strtol(options[1].c_str(), nullptr, 0));
+           if (options[0] == "--get") {
+               VehiclePropValue v;
+               if (!readRegister(propId, v)) { result.buffer = "GET FAILED"; return result; }
+               result.buffer = v.value.int32Values.empty() ? "value: (empty)"
+                   : "value: " + std::to_string(v.value.int32Values[0]);
+               return result;
+           }
+           if (options.size() < 4 || options[2] != "-i") {
+               result.buffer = "Usage: --set <propId> -i <int>";
+               return result;
+           }
+           VehiclePropValue v;
+           v.prop = propId;
+           v.value.int32Values = {static_cast<int32_t>(strtol(options[3].c_str(), nullptr, 0))};
+           result.buffer = writeRegister(propId, v) ? "SET OK" : "SET FAILED";
+           return result;
+       }
        StatusCode VehicleHalService{Domain}::checkHealth() { return StatusCode::OK; }
        void VehicleHalService{Domain}::registerOnPropertyChangeEvent(
                std::unique_ptr<const PropertyChangeCallback>) {}

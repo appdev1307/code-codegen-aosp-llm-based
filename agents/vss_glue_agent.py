@@ -161,6 +161,14 @@ private:
     StatusCode dispatchSetValues(int domainIdx,
                                  const std::vector<SetValueRequest>& subReqs,
                                  std::vector<SetValueResult>* outResults);
+    // Routes a dumpsys --get/--set command to the ONE domain service that
+    // owns the target property, after this class has resolved the
+    // caller's NAME-or-numeric-ID argument down to a plain numeric propId
+    // (see dump() below) — mirrors dispatchGetValues/dispatchSetValues.
+    // The actual --get/--set handling logic lives in each domain
+    // service's OWN dump() (LLM-generated, reusing that domain's own
+    // readRegister/writeRegister), not here — this method only routes.
+    DumpResult dispatchDump(int domainIdx, const std::vector<std::string>& options) const;
 };
 } // namespace android::hardware::automotive::vehicle
 """
@@ -240,6 +248,11 @@ def _generate_vss_hardware_cpp(props: list[dict], domains: list[str] = None,
         f'{"if" if i == 0 else "else if"} (domainIdx == {i}) {{ '
         f'{cls} svc; return svc.setValues(std::make_shared<const SetValuesCallback>('
         f'[outResults](std::vector<SetValueResult> r) {{ *outResults = std::move(r); }}), subReqs); }}'
+        for i, (d, cls) in enumerate(domain_class_map.items())
+    )
+    dump_dispatch_chain = "\n    ".join(
+        f'{"if" if i == 0 else "else if"} (domainIdx == {i}) {{ '
+        f'{cls} svc; return svc.dump(options); }}'
         for i, (d, cls) in enumerate(domain_class_map.items())
     )
 
@@ -401,96 +414,67 @@ StatusCode VssVehicleHardware::getValues(
 }}
 
 DumpResult VssVehicleHardware::dump(const std::vector<std::string>& options) {{
-    // Called by DefaultVehicleHal::dump() (real AOSP reference code, unmodified) -- it forwards
-    // `dumpsys ... IVehicle/default --get/--set ...` arguments straight into this method and
-    // prints whatever we put in result.buffer. Previously this returned an empty DumpResult
-    // unconditionally, so `dumpsys --get <id>` produced no visible output at all despite
-    // getValues()/setValues() (used by VTS, confirmed passing 7/7 including VssPropertyRoundTrip)
-    // working correctly -- the debug command path just never reached them. This reuses those
-    // SAME already-verified methods internally instead of a separate implementation.
+    // Called by DefaultVehicleHal::dump() (real AOSP reference code,
+    // unmodified) -- it forwards `dumpsys ... IVehicle/default --get/
+    // --set ...` arguments straight into this method. This is a THIN
+    // DISPATCHER only: it resolves the caller's NAME-or-numeric-ID
+    // argument to a numeric propId (reusing mPropNames, the same real
+    // AIDL-derived table getValues/setValues already trust) and looks
+    // up which domain owns it (mPropDomainIdx, same as
+    // dispatchGetValues/dispatchSetValues) -- then hands the ORIGINAL
+    // --get/--set command straight to THAT domain's OWN dump().
+    //
+    // The actual --get/--set LOGIC (reading/writing the property) is
+    // NOT implemented here. It lives in each domain service's own
+    // dump(), which is LLM-generated code reusing that domain's own
+    // readRegister/writeRegister -- the same code path already
+    // exercised by getValues/setValues and confirmed working via VTS's
+    // VssPropertyRoundTrip. Implementing the get/set logic directly in
+    // this Aggregator (instead of dispatching to the domain) would mean
+    // the debug-command capability was provided entirely by hand-
+    // written infrastructure code with zero LLM contribution, which
+    // is not a valid measurement of what this thesis's C1-C4 pipeline
+    // actually generates.
     DumpResult result;
     result.callerShouldDumpState = false;
     result.refreshPropertyConfigs = false;
 
     if (options.empty() || options[0] == "--help") {{
-        result.buffer = "VSS VHAL debug commands: --get <propId|NAME> | --set <propId|NAME> -i <int> | --set <propId|NAME> -f <float> | --set <propId|NAME> -s <string>";
+        result.buffer = "VSS VHAL debug commands: --get <propId|NAME> | --set <propId|NAME> -i <int>";
+        return result;
+    }}
+    if ((options[0] != "--get" && options[0] != "--set") || options.size() < 2) {{
+        result.buffer = "Unrecognized command, use --help for usage";
         return result;
     }}
 
-    // Accepts EITHER a property NAME (e.g.
-    // "VEHICLE_CHILDREN_ADAS_CHILDREN_ABS_CHILDREN_ISENGAGED", looked up
-    // in mPropNames — built from the same real AIDL enum values as
-    // mPropIds, not a separately maintained table) OR a numeric ID
-    // (hex "0x..." or decimal), so callers don't have to look up the
-    // hex ID by hand before every dumpsys call.
-    auto parseId = [this](const std::string& s) -> int32_t {{
-        auto it = mPropNames.find(s);
-        if (it != mPropNames.end()) {{
-            return it->second;
-        }}
-        return static_cast<int32_t>(std::strtol(s.c_str(), nullptr, 0));
-    }};
+    // Resolve NAME-or-ID -> numeric propId once, here, since only the
+    // Aggregator has the full cross-domain mPropNames table; individual
+    // domains only need to handle a plain numeric ID (see contract).
+    auto it = mPropNames.find(options[1]);
+    int32_t propId = (it != mPropNames.end())
+        ? it->second
+        : static_cast<int32_t>(std::strtol(options[1].c_str(), nullptr, 0));
 
-    if (options[0] == "--get" && options.size() >= 2) {{
-        int32_t propId = parseId(options[1]);
-        GetValueRequest req;
-        req.requestId = 1;
-        req.prop.prop = propId;
-        std::vector<GetValueResult> results;
-        StatusCode status = getValues(
-            std::make_shared<const GetValuesCallback>(
-                [&results](std::vector<GetValueResult> r) {{ results = std::move(r); }}),
-            {{req}});
-        if (status != StatusCode::OK || results.empty() || results[0].status != StatusCode::OK) {{
-            result.buffer = "GET FAILED for prop " + options[1];
-            return result;
-        }}
-        const auto& val = results[0].prop.value;
-        std::ostringstream oss;
-        oss << "prop: " << propId << "  int32Values: [";
-        for (size_t i = 0; i < val.int32Values.size(); i++) {{
-            oss << (i ? ", " : "") << val.int32Values[i];
-        }}
-        oss << "]  floatValues: [";
-        for (size_t i = 0; i < val.floatValues.size(); i++) {{
-            oss << (i ? ", " : "") << val.floatValues[i];
-        }}
-        oss << "]  stringValue: '" << val.stringValue << "'";
-        result.buffer = oss.str();
+    auto domIt = mPropDomainIdx.find(propId);
+    if (domIt == mPropDomainIdx.end()) {{
+        result.buffer = "Unknown property: " + options[1];
         return result;
     }}
 
-    if (options[0] == "--set" && options.size() >= 4) {{
-        int32_t propId = parseId(options[1]);
-        SetValueRequest req;
-        req.requestId = 1;
-        req.value.prop = propId;
-        const std::string& flag = options[2];
-        const std::string& value = options[3];
-        if (flag == "-i") {{
-            req.value.value.int32Values = {{static_cast<int32_t>(std::strtol(value.c_str(), nullptr, 0))}};
-        }} else if (flag == "-f") {{
-            req.value.value.floatValues = {{std::strtof(value.c_str(), nullptr)}};
-        }} else if (flag == "-s") {{
-            req.value.value.stringValue = value;
-        }} else {{
-            result.buffer = "Unknown value flag, use -i or -f or -s";
-            return result;
-        }}
-        std::vector<SetValueResult> results;
-        StatusCode status = setValues(
-            std::make_shared<const SetValuesCallback>(
-                [&results](std::vector<SetValueResult> r) {{ results = std::move(r); }}),
-            {{req}});
-        if (status != StatusCode::OK || results.empty() || results[0].status != StatusCode::OK) {{
-            result.buffer = "SET FAILED for prop " + options[1];
-            return result;
-        }}
-        result.buffer = "SET OK for prop " + options[1];
-        return result;
-    }}
+    // Rewrite options[1] to the resolved numeric propId (as a decimal
+    // string) before handing off, so the domain-level dump() -- which
+    // only parses a plain numeric ID, not names -- gets a value it can
+    // actually strtol().
+    std::vector<std::string> domainOptions = options;
+    domainOptions[1] = std::to_string(propId);
+    return dispatchDump(domIt->second, domainOptions);
+}}
 
-    result.buffer = "Unrecognized command, use --help for usage";
+DumpResult VssVehicleHardware::dispatchDump(int domainIdx, const std::vector<std::string>& options) const {{
+    {dump_dispatch_chain}
+    DumpResult result;
+    result.buffer = "Internal error: unknown domainIdx";
     return result;
 }}
 StatusCode VssVehicleHardware::checkHealth() {{ return StatusCode::OK; }}
