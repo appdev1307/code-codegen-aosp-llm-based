@@ -775,6 +775,11 @@ adb -s 0.0.0.0:6520 push \
     $(find $ANDROID_PRODUCT_OUT -name "android.hardware.automotive.vehicle-V3-ndk.so" | head -1) \
     /data/local/tmp/VtsHalAutomotiveVehicleVss/x86_64/
 
+# if not work
+adb root 
+adb remount
+adb sync    
+
 ```
 
 ### Step 8 — Build VTS, Deploy VssVehicleHardware, Run Tests
