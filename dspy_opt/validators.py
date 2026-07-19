@@ -672,6 +672,40 @@ def validate_cpp(code: str) -> ValidatorResult:
     # incorrectly discarded whenever the stub prelude itself happened
     # to be >= 33 lines long, silently hiding real errors as a side
     # effect of how long the stub was.
+    code_lines = code.splitlines()
+    _line_num_re = re.compile(r"combined\.cpp:(\d+):")
+
+    def _enclosing_property_name(line_no: int) -> str:
+        """Walk backward from a clang error's reported line to the
+        nearest enclosing `case static_cast<int32_t>(VehicleProperty::X)`
+        or `.prop = static_cast<int32_t>(VehicleProperty::X)` — i.e.
+        which property's case/config block the error actually occurred
+        inside, regardless of what KIND of error it is (duplicate case,
+        wrong field name, type mismatch, etc).
+
+        Why this matters beyond just this validator: generate_chunked()'s
+        surgical retry (rag_dspy_cpp_agent.py) maps errors back to a
+        specific chunk by scanning the error text for a quoted,
+        ALL-CAPS property name (duplicate case value 'X', 'X' is not
+        defined in AIDL both already produce one naturally) — but a
+        clang error like "no member named 'intValue'" never mentions a
+        property name at all, so that chunk-mapping had NO name to find
+        and silently fell back to full-domain regeneration for every
+        error type except those two. Appending the enclosing property
+        name here means EVERY clang error now carries one, without
+        needing per-error-type special-casing on the retry side.
+        """
+        name_re = re.compile(
+            r"(?:case\s+static_cast<int32_t>\(|\.prop\s*=\s*static_cast<int32_t>\()"
+            r"VehicleProperty::(\w+)\)"
+        )
+        # 0-indexed list, clang line numbers are 1-indexed
+        for i in range(min(line_no, len(code_lines)) - 1, -1, -1):
+            m = name_re.search(code_lines[i])
+            if m:
+                return m.group(1)
+        return ""
+
     real_errors = []
     for line in stderr.splitlines():
         if "error:" not in line.lower():
@@ -680,6 +714,15 @@ def validate_cpp(code: str) -> ValidatorResult:
             continue
         if "combined.cpp" not in line:
             continue    # error is in a stub/scaffolding file, not the real code
+        m = _line_num_re.search(line)
+        if m:
+            prop_name = _enclosing_property_name(int(m.group(1)))
+            # Skip appending if this exact name is already quoted in the
+            # line (e.g. "duplicate case value 'X'" already has it) —
+            # avoids redundant clutter; harmless either way if it does
+            # duplicate, since the retry-side regex just needs ONE match.
+            if prop_name and f"'{prop_name}'" not in line:
+                line = f"{line}  [property: '{prop_name}']"
         real_errors.append(line)
 
     if not real_errors:
