@@ -757,29 +757,17 @@ adb shell logcat -d | grep -i "vss-service\|V3-vss" | tail -10
 adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
 # Expected: Vehicle HAL backend: AIDL
 
-# List all available properties with their IDs
-adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list
-
 adb -s 0.0.0.0:6520 shell getenforce
 # Expected: Enforcing
 
-adb -s 0.0.0.0:6520 shell lshal | grep automotive.vehicle
-# Verify IVehicle/default is registered
+# List all available properties with their IDs
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default
 
-# Tìm library trên host
-find $ANDROID_PRODUCT_OUT -name "android.hardware.automotive.vehicle-V3-ndk.so" 2>/dev/null | head -3
+# Set giá trị
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --set VEHICLE_CHILDREN_CABIN_CHILDREN_HVAC_CHILDREN_STATION_CHILDREN_ROW1_CHILDREN_DRIVER_CHILDREN_TEMPERATURE -i 25
 
-# Push lên device
-adb -s 0.0.0.0:6520 shell mkdir -p /data/local/tmp/VtsHalAutomotiveVehicleVss/x86_64/
-adb -s 0.0.0.0:6520 push \
-    $(find $ANDROID_PRODUCT_OUT -name "android.hardware.automotive.vehicle-V3-ndk.so" | head -1) \
-    /data/local/tmp/VtsHalAutomotiveVehicleVss/x86_64/
-
-# if not work
-adb root 
-adb remount
-adb sync    
-
+# Get lại
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --get VEHICLE_CHILDREN_CABIN_CHILDREN_HVAC_CHILDREN_STATION_CHILDREN_ROW1_CHILDREN_DRIVER_CHILDREN_TEMPERATURE
 ```
 
 ### Step 8 — Build VTS, Deploy VssVehicleHardware, Run Tests
@@ -813,6 +801,11 @@ mmm test/vts/vss_vehicle
 
 # Verify binary built
 find out/target/product/vsoc_x86_64_only -name "VtsHalAutomotiveVehicleVss" 2>/dev/null
+
+# if not work
+adb root 
+adb remount
+adb sync   
 ```
 
 #### 8b — Deploy VssVehicleHardware on Cuttlefish
