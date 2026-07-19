@@ -1141,11 +1141,33 @@ class RAGDSPyCppAgent:
                 if end != -1:
                     error_feedback = properties[start:end + len(error_end_marker)]
 
+            # Shrink the per-call chunk size on retry when the error has
+            # no quoted property name to target (e.g. "Unbalanced braces
+            # (78 open vs 73 close) — output ... cut off mid-statement by
+            # a token limit"). These errors are NOT name-attributable —
+            # surgical retry (chunks_needing_regen in generate_chunked)
+            # correctly finds nothing to target and falls back to a full
+            # regenerate at the SAME chunk_size as before, which risks
+            # hitting the same output-length limit again for domains
+            # with long, deeply-nested property names (observed
+            # directly: CHASSIS retried twice under the standard
+            # CHUNK_SIZE and got truncated both times). Requesting fewer
+            # properties per LLM call reduces expected output length per
+            # call, lowering (not eliminating — this is a token-budget
+            # constraint, not a logic bug an LLM can just "remember not
+            # to do") the chance of truncation on the retry attempt.
+            retry_chunk_size = CHUNK_SIZE
+            if error_feedback and not re.search(r"'[A-Z][A-Z0-9_]*'", error_feedback):
+                retry_chunk_size = max(4, CHUNK_SIZE // 2)
+                print(f"  [CPP retry] {domain}: error has no targetable property name "
+                      f"— shrinking chunk_size {CHUNK_SIZE} → {retry_chunk_size} for this attempt")
+
             result = self.inner.generate_chunked(
                 domain             = domain,
                 prop_list          = prop_list,
                 aidl_block         = aidl_block,
                 extra_context      = error_feedback,
+                chunk_size         = retry_chunk_size,
                 enable_chunk_retry = self.enable_chunk_retry,
                 aidl_dir           = aidl_dir,
                 previous_full_code = previous_code,
