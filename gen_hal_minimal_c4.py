@@ -144,7 +144,21 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None, aidl_di
     if ok:
         return True, score, 1
 
+    def _err_count(ok_flag, msg_text):
+        # Proxy for "how broken is this attempt" beyond the numeric score,
+        # which score_content()'s rubric does not reduce for consistency-
+        # check failures (a file with 1 bad name and a file with 0 bad
+        # names can both score 1.000). A fully-passing attempt sorts as
+        # 0 errors; otherwise count distinct reported problem lines.
+        if ok_flag:
+            return 0
+        if not msg_text:
+            return 1
+        return max(1, msg_text.count(" is not defined in AIDL.") + msg_text.count("error:"))
+
     best_code, best_score = code, score
+    best_ok = ok
+    best_errs = _err_count(ok, msg)
     error_msg = msg or "validation failed"
     print(f"    ✗ Initial failed (score={score:.3f}) — retrying...")
     for line in error_msg.splitlines()[:6]:
@@ -165,6 +179,15 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None, aidl_di
             + gen_kwargs.get("properties", "")
         )
         retry_kwargs["aosp_context"] = gen_kwargs.get("aosp_context", "")
+        # Pass the best-so-far code so a chunked CPP retry can regenerate
+        # ONLY the chunk(s) the reported error actually belongs to and
+        # reuse every other chunk's already-working code verbatim —
+        # see RAGDSPyCppAgent._generate's previous_code docstring for
+        # the full rationale (full-domain regeneration is probabilistic
+        # per attempt, not a surgical patch; observed directly in
+        # production fixing one chunk's error while a different,
+        # unrelated chunk failed a new way on the same attempt).
+        retry_kwargs["previous_code"] = best_code
 
         try:
             new_code = agent._generate(**retry_kwargs)
@@ -182,8 +205,13 @@ def _retry_agent(agent, agent_type, fpath, gen_kwargs, extra_files=None, aidl_di
             code_for_val = new_code + "\n" + extra
 
         ok, score, msg = _check(code_for_val)
-        if score > best_score:
-            best_code, best_score = new_code, score
+        errs = _err_count(ok, msg)
+        # Prefer strictly fewer remaining errors first (closer to passing),
+        # falling back to score only when error counts tie — this is what
+        # actually distinguishes attempts that all score 1.000 under the
+        # rubric but differ in whether the consistency/clang gate passes.
+        if (errs < best_errs) or (errs == best_errs and score > best_score):
+            best_code, best_score, best_ok, best_errs = new_code, score, ok, errs
 
         if ok:
             fpath.write_text(new_code, encoding="utf-8")

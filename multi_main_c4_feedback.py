@@ -457,6 +457,20 @@ class PostValidationRetry:
             tracker.record(agent_type, True)
             return metrics
 
+        def _err_count(ok_flag, msg_text):
+            # Proxy for "how broken is this attempt" beyond the numeric
+            # score, which the structural rubric does not reduce for
+            # consistency-check failures (a file with 1 bad name and a
+            # file with 0 bad names can both score 1.000 structurally).
+            if ok_flag:
+                return 0
+            if not msg_text:
+                return 1
+            return max(1, msg_text.count(" is not defined in AIDL.") + msg_text.count("error:"))
+
+        best_ok   = passed
+        best_errs = _err_count(passed, error_msg)
+
         metrics["errors_by_attempt"].append(f"Initial: {error_msg[:200]}")
         tag = agent_type.upper()
         print(f"    [C4 {tag}] ✗ Initial validation failed "
@@ -491,6 +505,12 @@ class PostValidationRetry:
             )
             # Keep aosp_context clean — only AOSP reference, no error pollution
             retry_kwargs["aosp_context"] = gen_kwargs.get("aosp_context", "")
+            # Best-so-far code, for agents that support surgical per-chunk
+            # retry (currently: RAGDSPyCppAgent — see its _generate
+            # docstring). Harmless no-op for every other agent_type: the
+            # shared _generate(**kwargs) base in rag_dspy_mixin.py accepts
+            # and ignores unrecognised kwargs.
+            retry_kwargs["previous_code"] = best_code
             try:
                 new_code = agent._generate(**retry_kwargs)
             except Exception as e:
@@ -511,9 +531,16 @@ class PostValidationRetry:
             passed, error_msg, score = ValidatorFeedback.validate(
                 code_for_val, agent_type, aidl_dir=aidl_dir)
 
-            if score > best_score:
-                best_code  = new_code
-                best_score = score
+            errs = _err_count(passed, error_msg)
+            # Prefer strictly fewer remaining errors first (closer to
+            # passing), falling back to score only when error counts tie
+            # — score_content()'s rubric alone can't distinguish "1 bad
+            # name" from "0 bad names" when both structurally score
+            # 1.000, so a plain `score > best_score` comparison could
+            # keep an EARLIER, MORE broken attempt forever whenever every
+            # retry ties on score (observed directly in production).
+            if (errs < best_errs) or (errs == best_errs and score > best_score):
+                best_code, best_score, best_ok, best_errs = new_code, score, passed, errs
 
             if passed:
                 # Write the fixed version back

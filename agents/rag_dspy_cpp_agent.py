@@ -340,6 +340,38 @@ class RagDspyCppAgent:
             text += "\n" + aidl_block
         return text
 
+    def _call_predictor_safely(self, predictor, **kwargs):
+        """Call a DSPy predictor (entries_predictor / register_body_predictor)
+        and return its result, or None if the call raised an exception.
+
+        Observed in production: a generation run into a degenerate
+        repetition loop (the LM repeated the same ~15 cases dozens of
+        times, some with a doubled '_CHILDREN_CHILDREN_' prefix variant)
+        and never reached the JSON's closing fields before exhausting its
+        output budget -- DSPy's JSONAdapter then raised "failed to parse
+        the LM response" / "Expected ... [reasoning, read_cases,
+        write_cases] ... Actual ... [reasoning, read_cases]". That
+        exception propagated all the way out of generate_chunked(),
+        uncaught, past every retry mechanism in this file, and was only
+        ever caught by rag_dspy_architect_agent.py's outermost per-
+        sub-agent try/except -- which has ZERO retry, just logs "CPP →
+        FAILED" and moves on, silently dropping the ENTIRE domain's CPP
+        output (0 attempts recorded downstream, not even 1).
+
+        Converting the exception to None here lets it flow into the
+        SAME existing missing-entries / missing-case retry loops that
+        already exist for the "generated too few names" case -- a
+        parse failure is treated identically to "produced 0 usable
+        results this attempt", which those loops are already built to
+        retry, rather than requiring a second, parallel retry mechanism.
+        """
+        try:
+            return predictor(**kwargs)
+        except Exception as e:
+            print(f"    ⚠ predictor call raised {type(e).__name__}: "
+                  f"{str(e)[:200]} — treating as empty result for this attempt")
+            return None
+
     def generate_chunked(
         self,
         domain:        str,
@@ -349,6 +381,7 @@ class RagDspyCppAgent:
         chunk_size:    int = CHUNK_SIZE,
         enable_chunk_retry: bool = False,
         aidl_dir:      str = "",
+        previous_full_code: str = "",
     ) -> dict:
         """Chunked counterpart to generate(), for domains with more
         properties than reliably fit in one LLM call without hitting
@@ -468,12 +501,13 @@ class RagDspyCppAgent:
             chunk_entries = ""
             if enable_chunk_retry:
                 for attempt in range(1, MAX_CHUNK_RETRIES + 2):
-                    entries_result = self.entries_predictor(
+                    entries_result = self._call_predictor_safely(
+                        self.entries_predictor,
                         domain       = domain,
                         properties   = chunk_properties_text,
                         aosp_context = aosp_context,
                     )
-                    raw = _strip_markdown_fences(getattr(entries_result, "entries", "") or "")
+                    raw = _strip_markdown_fences(getattr(entries_result, "entries", "") or "") if entries_result else ""
                     generated_count = raw.count("static_cast<int32_t>")
                     expected_count  = len(chunk)
 
@@ -516,12 +550,13 @@ class RagDspyCppAgent:
                         chunk_entries = raw
             else:
                 # C3 path: no retry — single shot per chunk, by design.
-                entries_result = self.entries_predictor(
+                entries_result = self._call_predictor_safely(
+                    self.entries_predictor,
                     domain       = domain,
                     properties   = chunk_properties_text,
                     aosp_context = aosp_context,
                 )
-                chunk_entries = _strip_markdown_fences(getattr(entries_result, "entries", "") or "")
+                chunk_entries = _strip_markdown_fences(getattr(entries_result, "entries", "") or "") if entries_result else ""
 
             all_entries.append(chunk_entries.strip())
             import re as _re2
@@ -673,10 +708,83 @@ class RagDspyCppAgent:
                 kept_names.add(name)
             return "\n".join(kept_blocks), kept_names
 
+        # ── Surgical retry: determine which chunk(s) an error actually
+        # belongs to, so a retry can reuse every OTHER chunk's already-
+        # working code verbatim instead of re-rolling the whole domain.
+        #
+        # Observed directly in production (CABIN, 3 full-domain retry
+        # attempts): attempt 1 failed on a duplicate case in property A;
+        # attempt 2 fixed A but introduced an unrelated wrong-field-name
+        # error in property B; attempt 3 fixed B but reintroduced a
+        # duplicate case for property C. Each attempt re-rolls ALL 14
+        # chunks, so fixing one chunk's problem does nothing to prevent
+        # an unrelated chunk from independently failing differently on
+        # the same attempt — probabilistic, not surgical.
+        #
+        # This extracts every quoted identifier from extra_context (the
+        # error feedback text — see _generate()'s error_marker parsing)
+        # and maps each one to the chunk index whose property slice
+        # contains it. Chunks with NO reported error are left out of
+        # chunks_needing_regen entirely and, if previous_full_code is
+        # available, get their cases copied forward unchanged rather
+        # than regenerated.
+        chunks_needing_regen: set[int] = set()
+        if previous_full_code and extra_context:
+            reported_names = set(re.findall(r"'([A-Z][A-Z0-9_]*)'", extra_context))
+            if reported_names:
+                for i in range(0, len(prop_list), chunk_size):
+                    chunk_idx = i // chunk_size
+                    chunk_prop_names = {
+                        getattr(p, "name", None) or getattr(p, "signal_name", None) or str(p)
+                        for p in prop_list[i:i + chunk_size]
+                    }
+                    if chunk_prop_names & reported_names:
+                        chunks_needing_regen.add(chunk_idx)
+                if chunks_needing_regen:
+                    total_chunks_for_log = (len(prop_list) + chunk_size - 1) // chunk_size
+                    print(f"  [CPP surgical retry] {domain}: error(s) traced to "
+                          f"{len(chunks_needing_regen)}/{total_chunks_for_log} chunk(s) "
+                          f"{sorted(chunks_needing_regen)} — reusing all other chunks' "
+                          f"previous output unchanged")
+                else:
+                    # Couldn't map any reported name to a chunk (e.g. the
+                    # error references something outside this domain, or
+                    # a generic clang error with no quoted identifier) —
+                    # safe fallback: regenerate everything, exactly as
+                    # before this fix existed.
+                    print(f"  [CPP surgical retry] {domain}: could not map reported "
+                          f"error(s) to a specific chunk — falling back to full regenerate")
+
+        def _reuse_chunk_cases(chunk_props) -> tuple[str, str]:
+            """Extract this chunk's read/write cases from previous_full_code
+            by property-NAME membership (not by text position — chunk
+            boundaries aren't preserved in the final merged/spliced
+            output), reusing the same case-block-with-brace-matching scan
+            _filter_cases_to_allowed_names already uses elsewhere."""
+            names = {
+                getattr(p, "name", None) or getattr(p, "signal_name", None) or str(p)
+                for p in chunk_props
+            }
+            rw_names = {
+                (getattr(p, "name", None) or getattr(p, "signal_name", None) or str(p))
+                for p in chunk_props
+                if str(getattr(p, "access", "")).upper() in ("READ_WRITE", "WRITE")
+            }
+            read_text, _  = _filter_cases_to_allowed_names(previous_full_code, names)
+            write_text, _ = _filter_cases_to_allowed_names(previous_full_code, rw_names)
+            return read_text, write_text
+
         all_read_cases, all_write_cases = [], []
         for i in range(0, len(prop_list), chunk_size):
             chunk = prop_list[i:i + chunk_size]
             chunk_idx = i // chunk_size
+
+            if previous_full_code and chunks_needing_regen and chunk_idx not in chunks_needing_regen:
+                reused_read, reused_write = _reuse_chunk_cases(chunk)
+                all_read_cases.append(reused_read.strip())
+                all_write_cases.append(reused_write.strip())
+                continue
+
             chunk_properties_text = self._build_chunk_properties_text(domain, chunk, aidl_block)
 
             # Ground truth for names: what entries_predictor ACTUALLY wrote
@@ -709,13 +817,14 @@ class RagDspyCppAgent:
                 retry_properties_text = chunk_properties_text
 
                 for attempt in range(1, MAX_CHUNK_RETRIES + 2):
-                    body_result = self.register_body_predictor(
+                    body_result = self._call_predictor_safely(
+                        self.register_body_predictor,
                         domain       = domain,
                         properties   = retry_properties_text,
                         aosp_context = aosp_context,
                     )
-                    raw_read  = _strip_markdown_fences(getattr(body_result, "read_cases", "") or "")
-                    raw_write = _strip_markdown_fences(getattr(body_result, "write_cases", "") or "")
+                    raw_read  = _strip_markdown_fences(getattr(body_result, "read_cases", "") or "") if body_result else ""
+                    raw_write = _strip_markdown_fences(getattr(body_result, "write_cases", "") or "") if body_result else ""
                     new_read_text,  new_read_names  = _filter_cases_to_allowed_names(raw_read, chunk_names)
                     new_write_text, new_write_names = _filter_cases_to_allowed_names(raw_write, chunk_rw_names)
 
@@ -795,21 +904,58 @@ class RagDspyCppAgent:
                               f"still missing {len((chunk_names - kept_read_names_accum) | (chunk_rw_names - kept_write_names_accum))}")
             else:
                 # C3 path: no retry — single shot per chunk, by design.
-                body_result = self.register_body_predictor(
+                body_result = self._call_predictor_safely(
+                    self.register_body_predictor,
                     domain       = domain,
                     properties   = chunk_properties_text,
                     aosp_context = aosp_context,
                 )
-                raw_read  = _strip_markdown_fences(getattr(body_result, "read_cases", "") or "")
-                raw_write = _strip_markdown_fences(getattr(body_result, "write_cases", "") or "")
+                raw_read  = _strip_markdown_fences(getattr(body_result, "read_cases", "") or "") if body_result else ""
+                raw_write = _strip_markdown_fences(getattr(body_result, "write_cases", "") or "") if body_result else ""
                 read_cases_text, _  = _filter_cases_to_allowed_names(raw_read, chunk_names)
                 write_cases_text, _ = _filter_cases_to_allowed_names(raw_write, chunk_rw_names)
 
             all_read_cases.append(read_cases_text.strip())
             all_write_cases.append(write_cases_text.strip())
 
-        merged_read_cases  = "\n".join(all_read_cases)
-        merged_write_cases = "\n".join(all_write_cases)
+        def _dedup_across_chunks(cases_text: str) -> str:
+            """Remove duplicate `case` blocks that survived per-chunk dedup
+            because they came from DIFFERENT, independent chunk-generation
+            calls — e.g. chunk covering properties 1-14 and chunk covering
+            properties 141-154 each independently emitting a case for the
+            SAME property name (observed directly: a name appearing 3
+            times across widely separated line ranges in one real Cabin
+            output, ~1000 lines apart — clearly 3 separate LLM calls, not
+            one call repeating itself).
+
+            _filter_cases_to_allowed_names' `if name in kept_names`
+            dedup only ever sees ONE chunk's raw text per call — kept_names
+            is reinitialised fresh every call, so it structurally cannot
+            detect a name that chunk A and chunk B both (correctly, from
+            each chunk's own local perspective) produced. This runs ONCE,
+            here, on the FULLY MERGED text after every chunk has already
+            contributed its cases — the only point where the complete
+            picture actually exists.
+            """
+            kept_blocks, kept_names = [], set()
+            for m in re.finditer(r"case\s+static_cast<int32_t>\(VehicleProperty::(\w+)\)\s*:\s*\{", cases_text):
+                name = m.group(1)
+                depth = 1
+                pos = m.end()
+                while depth > 0 and pos < len(cases_text):
+                    if cases_text[pos] == "{":
+                        depth += 1
+                    elif cases_text[pos] == "}":
+                        depth -= 1
+                    pos += 1
+                if name in kept_names:
+                    continue
+                kept_blocks.append(cases_text[m.start():pos])
+                kept_names.add(name)
+            return "\n".join(kept_blocks)
+
+        merged_read_cases  = _dedup_across_chunks("\n".join(all_read_cases))
+        merged_write_cases = _dedup_across_chunks("\n".join(all_write_cases))
 
         _READ_PLACEHOLDER  = "/*__READ_CASES_PLACEHOLDER__*/"
         _WRITE_PLACEHOLDER = "/*__WRITE_CASES_PLACEHOLDER__*/"
@@ -918,7 +1064,7 @@ class RAGDSPyCppAgent:
 
     def _generate(self, domain: str, properties: str,
                   aosp_context: str = "", prop_list: list = None,
-                  aidl_dir: str = "", **kwargs) -> str:
+                  aidl_dir: str = "", previous_code: str = "", **kwargs) -> str:
         """Called by C4 retry engine.
 
         BUG THIS FIXES: previously this always called self.inner._generate()
@@ -945,6 +1091,24 @@ class RAGDSPyCppAgent:
         as primary generation. Falls back to single-shot _generate()
         when prop_list isn't provided (backward compatible with any
         caller not yet updated) or is small enough not to need chunking.
+
+        SECOND BUG THIS FIXES (previous_code param): even with the fix
+        above, every retry still regenerated ALL chunks from scratch —
+        observed directly in production (CABIN, 3 attempts): attempt 1
+        failed on a duplicate case in one property, attempt 2 fixed that
+        but introduced an UNRELATED error (wrong field name) in a
+        DIFFERENT property, attempt 3 fixed THAT but reintroduced a
+        duplicate case for a THIRD, different property. Full-domain
+        regeneration is probabilistic per attempt, not a surgical patch —
+        fixing one chunk's issue does not prevent a completely
+        independent chunk from failing differently on the same retry.
+
+        When `previous_code` (the PRIOR attempt's full generated code) is
+        given, this identifies which chunk(s) the reported error(s)
+        actually belong to and passes that to generate_chunked() so ONLY
+        those chunks are regenerated — every other chunk's
+        already-working code is reused verbatim from previous_code,
+        rather than re-rolled and risking a brand new, unrelated failure.
         """
         if prop_list and len(prop_list) > CHUNK_SIZE:
             aidl_marker = "=== Generated AIDL enum"
@@ -984,6 +1148,7 @@ class RAGDSPyCppAgent:
                 extra_context      = error_feedback,
                 enable_chunk_retry = self.enable_chunk_retry,
                 aidl_dir           = aidl_dir,
+                previous_full_code = previous_code,
             )
             return result.get("impl", "")
         return self.inner._generate(domain=domain, properties=properties,
