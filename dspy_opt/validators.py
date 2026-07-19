@@ -586,33 +586,36 @@ def validate_cpp(code: str) -> ValidatorResult:
     # CppRegisterBodySignature), so write_count < config_count is
     # often correct, not a defect.
     config_section = code[:code.find("::readRegister")] if "::readRegister" in code else code
-    config_count = config_section.count("static_cast<int32_t>(VehicleProperty::")
     read_section_start = code.find("::readRegister")
     read_section_end = code.find("::writeRegister") if "::writeRegister" in code else len(code)
     read_section = code[read_section_start:read_section_end] if read_section_start >= 0 else ""
-    read_case_count = len(re.findall(r"case\s+static_cast<int32_t>\(VehicleProperty::", read_section))
-    if config_count > 0 and read_case_count < config_count:
-        # Identify the SPECIFIC missing names, not just a count — a bare
-        # "2 properties missing" message has no quoted identifier for
-        # generate_chunked()'s surgical retry to match against (its
-        # chunk-mapping regex looks for quoted ALL-CAPS names — see
-        # rag_dspy_cpp_agent.py), so a retry triggered by this message
-        # alone always fell back to regenerating every chunk in the
-        # domain, exactly like a name it can't find. Computing the set
-        # difference here — same names either used in config or not, no
-        # extra regex needed — gives the retry a real, targeted list to
-        # act on instead of "somewhere in there, 2 are missing".
-        config_names = set(re.findall(
-            r"static_cast<int32_t>\(VehicleProperty::(\w+)\)", config_section))
-        read_names = set(re.findall(
-            r"case\s+static_cast<int32_t>\(VehicleProperty::(\w+)\)", read_section))
-        missing_names = sorted(config_names - read_names)
+
+    # Set-based from the start — NOT a raw substring/regex match count.
+    # A plain `config_section.count(...)` counts EVERY occurrence of the
+    # pattern anywhere in config_section (which spans the whole file up
+    # to ::readRegister, including comments, declarations, anything
+    # else that happens to mention the same text) — that raw count can
+    # come out HIGHER than the true number of distinct configured
+    # properties whenever the pattern appears more than once for the
+    # same name (e.g. once in the real config entry, once incidentally
+    # elsewhere), which previously caused this check to fire ("168 vs
+    # 167, missing 1") while the name-based check below found NO real
+    # gap — an empty "Missing case(s) for:" list on a message claiming
+    # something was missing. Deriving both the trigger and the reported
+    # numbers from the same set of unique names eliminates that
+    # possible mismatch by construction: they can no longer disagree.
+    config_names = set(re.findall(
+        r"static_cast<int32_t>\(VehicleProperty::(\w+)\)", config_section))
+    read_names = set(re.findall(
+        r"case\s+static_cast<int32_t>\(VehicleProperty::(\w+)\)", read_section))
+    missing_names = sorted(config_names - read_names)
+    if config_names and missing_names:
         missing_list = ", ".join(f"'{n}'" for n in missing_names[:10])
         return ValidatorResult(
             ok=False, score=0.3, tool=tool,
-            errors=[f"getAllPropertyConfigs() declares {config_count} properties "
-                    f"but readRegister() only has {read_case_count} case(s) — "
-                    f"{config_count - read_case_count} propert(y/ies) will always "
+            errors=[f"getAllPropertyConfigs() declares {len(config_names)} properties "
+                    f"but readRegister() only has {len(read_names)} case(s) — "
+                    f"{len(missing_names)} propert(y/ies) will always "
                     f"return INVALID_ARG from getValues(), even though the file "
                     f"compiles and links cleanly. Missing case(s) for: {missing_list}"])
 
