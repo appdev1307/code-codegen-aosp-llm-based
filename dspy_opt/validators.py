@@ -592,13 +592,29 @@ def validate_cpp(code: str) -> ValidatorResult:
     read_section = code[read_section_start:read_section_end] if read_section_start >= 0 else ""
     read_case_count = len(re.findall(r"case\s+static_cast<int32_t>\(VehicleProperty::", read_section))
     if config_count > 0 and read_case_count < config_count:
+        # Identify the SPECIFIC missing names, not just a count — a bare
+        # "2 properties missing" message has no quoted identifier for
+        # generate_chunked()'s surgical retry to match against (its
+        # chunk-mapping regex looks for quoted ALL-CAPS names — see
+        # rag_dspy_cpp_agent.py), so a retry triggered by this message
+        # alone always fell back to regenerating every chunk in the
+        # domain, exactly like a name it can't find. Computing the set
+        # difference here — same names either used in config or not, no
+        # extra regex needed — gives the retry a real, targeted list to
+        # act on instead of "somewhere in there, 2 are missing".
+        config_names = set(re.findall(
+            r"static_cast<int32_t>\(VehicleProperty::(\w+)\)", config_section))
+        read_names = set(re.findall(
+            r"case\s+static_cast<int32_t>\(VehicleProperty::(\w+)\)", read_section))
+        missing_names = sorted(config_names - read_names)
+        missing_list = ", ".join(f"'{n}'" for n in missing_names[:10])
         return ValidatorResult(
             ok=False, score=0.3, tool=tool,
             errors=[f"getAllPropertyConfigs() declares {config_count} properties "
                     f"but readRegister() only has {read_case_count} case(s) — "
                     f"{config_count - read_case_count} propert(y/ies) will always "
                     f"return INVALID_ARG from getValues(), even though the file "
-                    f"compiles and links cleanly"])
+                    f"compiles and links cleanly. Missing case(s) for: {missing_list}"])
 
     clang = _tool("clang++") or _tool("clang")
     if not clang:
