@@ -734,32 +734,6 @@ cd ~/aosp-14-auto && source build/envsetup.sh && lunch aosp_cf_x86_64_auto-trunk
 adb devices
 # Expected: 0.0.0.0:6520  device
 adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
-adb -s 0.0.0.0:6520 shell ls /vendor/bin/hw/ | grep vss
-adb -s 0.0.0.0:6520 shell ls /vendor/etc/init/ | grep vehicle
-
-adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
-# Expected: Vehicle HAL backend: AIDL
-
-# List all available properties with their IDs
-adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list
-
-adb -s 0.0.0.0:6520 shell getenforce
-# Expected: Enforcing
-
-adb -s 0.0.0.0:6520 shell lshal | grep automotive.vehicle
-# Verify IVehicle/default is registered
-
-# Tìm library trên host
-find $ANDROID_PRODUCT_OUT -name "android.hardware.automotive.vehicle-V3-ndk.so" 2>/dev/null | head -3
-
-# Push lên device
-adb -s 0.0.0.0:6520 shell mkdir -p /data/local/tmp/VtsHalAutomotiveVehicleVss/x86_64/
-adb -s 0.0.0.0:6520 push \
-    $(find $ANDROID_PRODUCT_OUT -name "android.hardware.automotive.vehicle-V3-ndk.so" | head -1) \
-    /data/local/tmp/VtsHalAutomotiveVehicleVss/x86_64/
-
-
-
 adb root
 adb shell vdc checkpoint commitChanges
 adb remount
@@ -779,16 +753,21 @@ adb shell start vendor.vehicle-hal-vss
 sleep 5
 
 # Verify và run VTS
-adb shell ps -AZ | grep vss-service
-adb shell logcat -c
-
 adb shell logcat -d | grep -i "vss-service\|V3-vss" | tail -10
-adb shell ls /data/tombstones/ | tail -5
-adb shell cat /data/tombstones/tombstone_00 | head -50
+adb -s 0.0.0.0:6520 shell cmd car_service get-vhal-backend
+# Expected: Vehicle HAL backend: AIDL
 
-atest VtsHalAutomotiveVehicleVss 2>/dev/null &
-sleep 5
-adb shell logcat -d | grep -i "vss\|vehicle\|prop" | tail -30
+# List all available properties with their IDs
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --list
+
+adb -s 0.0.0.0:6520 shell getenforce
+# Expected: Enforcing
+
+adb -s 0.0.0.0:6520 shell lshal | grep automotive.vehicle
+# Verify IVehicle/default is registered
+
+# Tìm library trên host
+find $ANDROID_PRODUCT_OUT -name "android.hardware.automotive.vehicle-V3-ndk.so" 2>/dev/null | head -3
 ```
 
 ### Step 8 — Build VTS, Deploy VssVehicleHardware, Run Tests
