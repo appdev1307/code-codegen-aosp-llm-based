@@ -725,16 +725,6 @@ ls -lh ~/cuttlefish/instances/cvd-1/*.img
 launch_cvd --noresume \
     --cpus=8 --memory_mb=8192 \
     --gpu_mode=guest_swiftshader 
-
-adb -s 0.0.0.0:6520 wait-for-device && echo "✓ ready"
-
-adb logcat -b all | grep -iE "panic|fatal|abort|crash|SIGABRT|reboot" | head -20
-
-adb shell getprop sys.boot_completed                 # 1
-adb shell ls /vendor/bin/hw/ | grep -i vehicle       # @V3-vss-service, no emulator
-adb root
-adb shell ps -AZ | grep vss-service                  # u:r:hal_vehicle_vss:s0  (correct domain)
-adb shell service list | grep automotive.vehicle     # IVehicle/default present
 ```
 
 ```bash
