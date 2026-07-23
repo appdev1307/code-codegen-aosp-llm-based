@@ -607,10 +607,20 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
     }}
 
     auto propToSet = vhalClient->createHalPropValue(targetProp);
+    const bool isBoolean = (realType == "BOOLEAN");
     if (isFloat) {{
       propToSet->setFloatValues({{12.5f}});
     }} else if (isString) {{
       propToSet->setStringValue("vts_test_value");
+    }} else if (isBoolean) {{
+      // A BOOLEAN property's only valid states are 0/1. Writing an
+      // out-of-domain stimulus (e.g. 42) and requiring it back verbatim
+      // would fail any implementation that legitimately normalises
+      // booleans on read (v ? 1 : 0) — normalisation is correct HAL
+      // semantics for a BOOLEAN, not a persistence fault. Use a valid
+      // in-domain stimulus so the test measures persistence, not
+      // whether the implementation happens to echo invalid input.
+      propToSet->setInt32Values({{1}});
     }} else {{
       propToSet->setInt32Values({{42}});
     }}
@@ -632,8 +642,9 @@ TEST_F(VssVhalTest, VssPropertyRoundTrip) {{
     }} else if (isString) {{
       matches = getResult.value()->getStringValue() == "vts_test_value";
     }} else {{
+      const int32_t expected = isBoolean ? 1 : 42;
       auto vals = getResult.value()->getInt32Values();
-      matches = !vals.empty() && vals[0] == 42;
+      matches = !vals.empty() && vals[0] == expected;
     }}
 
     if (matches) {{ passed++; }}
