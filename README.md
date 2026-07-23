@@ -763,10 +763,13 @@ adb -s 0.0.0.0:6520 shell getenforce
 # List all available properties with their IDs
 adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default
 
-# SET — dùng DOORCOUNT (INT32, có thật trong bộ 500)
-adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --set VEHICLE_CHILDREN_CABIN_CHILDREN_DOORCOUNT -i 4
-# GET lại
-adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --get VEHICLE_CHILDREN_CABIN_CHILDREN_DOORCOUNT
+# INT READ_WRITE — kỳ vọng: SET OK, rồi value: 3
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --set VEHICLE_CHILDREN_POWEROPTIMIZELEVEL -i 3
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --get VEHICLE_CHILDREN_POWEROPTIMIZELEVEL
+
+# BOOLEAN READ_WRITE — kỳ vọng: SET OK, rồi value: 1
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --set VEHICLE_CHILDREN_ADAS_CHILDREN_EBA_CHILDREN_ISENABLED -i 1
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --get VEHICLE_CHILDREN_ADAS_CHILDREN_EBA_CHILDREN_ISENABLED
 
 rm -fr ./test_200_signals.sh
 curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/test_200_signals.sh
