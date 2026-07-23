@@ -763,11 +763,11 @@ adb -s 0.0.0.0:6520 shell getenforce
 # List all available properties with their IDs
 adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default
 
-# Set giá trị
-adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --set VEHICLE_CHILDREN_CABIN_CHILDREN_HVAC_CHILDREN_STATION_CHILDREN_ROW1_CHILDREN_DRIVER_CHILDREN_TEMPERATURE -i 25
+# SET — dùng DOORCOUNT (INT32, có thật trong bộ 500)
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --set VEHICLE_CHILDREN_CABIN_CHILDREN_DOORCOUNT -i 4
 
-# Get lại
-adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --get VEHICLE_CHILDREN_CABIN_CHILDREN_HVAC_CHILDREN_STATION_CHILDREN_ROW1_CHILDREN_DRIVER_CHILDREN_TEMPERATURE
+# GET lại
+adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --get VEHICLE_CHILDREN_CABIN_CHILDREN_DOORCOUNT
 ```
 
 ### Step 8 — Build VTS, Deploy VssVehicleHardware, Run Tests
