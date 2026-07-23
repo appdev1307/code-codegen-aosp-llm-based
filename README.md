@@ -765,9 +765,13 @@ adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default
 
 # SET — dùng DOORCOUNT (INT32, có thật trong bộ 500)
 adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --set VEHICLE_CHILDREN_CABIN_CHILDREN_DOORCOUNT -i 4
-
 # GET lại
 adb shell dumpsys android.hardware.automotive.vehicle.IVehicle/default --get VEHICLE_CHILDREN_CABIN_CHILDREN_DOORCOUNT
+
+rm -fr ./test_200_signals.sh
+curl -O https://raw.githubusercontent.com/appdev1307/code-codegen-aosp-llm-based/main/test_200_signals.sh
+chmod +x ./test_200_signals.sh
+
 ```
 
 ### Step 8 — Build VTS, Deploy VssVehicleHardware, Run Tests
