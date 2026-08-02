@@ -49,11 +49,11 @@ C3/C4 generate a from-scratch `IVehicleHardware` implementation that wraps insid
 
 | Condition | Script | Description | Avg Score |
 |-----------|--------|-------------|-----------|
-| C1 Baseline | `multi_main.py` | Vanilla LLM generation | 0.817 |
-| C2 Adaptive | `multi_main_adaptive.py` | Thompson Sampling prompt selection | 0.803 |
-| C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | 0.796 * |
-| C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop | pending * |
-| C4 Minimal | `gen_hal_minimal_c4.py` | Lightweight C4 (AIDL+CPP+SELinux only) | aidl=1.050, cpp=1.000, selinux=1.000 |
+| C1 Baseline | `multi_main.py` | Vanilla LLM generation |  |
+| C2 Adaptive | `multi_main_adaptive.py` | Thompson Sampling prompt selection |  |
+| C3 RAG+DSPy | `multi_main_rag_dspy.py` | RAG context + DSPy optimised prompts | |
+| C4 Feedback | `multi_main_c4_feedback.py` | C3 + post-validation retry loop |  |
+| C4 Minimal | `gen_hal_minimal_c4.py` | Lightweight C4 (AIDL+CPP+SELinux only) |  |
 
 \* Scores from current re-run with fixed pipeline (cpp metric, architect 4-file output, build agent V3-ndk).
 | C5 VTS+HMI | `multi_main_c5.py` | VTS test + HMI app; reads from C4/C4-minimal output | — |
