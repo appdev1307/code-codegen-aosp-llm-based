@@ -54,6 +54,132 @@ def encode_prop_id(raw_index, vss_type):
 
 ---
 
+## 0b. AIDL versioning — "strict" interface stability
+
+VHAL là **stable AIDL** (structured AIDL) chạy qua ranh giới system↔vendor, nên AOSP áp một bộ luật versioning nghiêm ngặt. Đây là lý do **không thể "sinh AIDL tùy ý"** — code phải tuân đúng contract ổn định, và cũng là một trong các thách thức chính mà thesis nêu ở §1.2.
+
+### Vì sao gọi là "strict"
+
+```
+android.hardware.automotive.vehicle-V3      ← interface có SỐ VERSION
+        │
+        ├─ @VintfStability      → interface nằm trong Vendor Interface (VINTF),
+        │                          bắt buộc backward-compatible qua system↔vendor
+        ├─ @Backing(type="int") → kiểu nền của enum là 1 phần của contract,
+        │                          KHÔNG được đổi sau khi phát hành
+        └─ aidl_api/<iface>/<version>/ + .hash
+                 → snapshot API bị "đóng băng"; Soong so khớp .aidl hiện tại với
+                   snapshot. Nếu khác mà frozen:true  ⇒  BUILD FAIL
+```
+
+**Luật cốt lõi của stable AIDL:**
+
+| Được phép | KHÔNG được (khi đã frozen) |
+|-----------|-----------------------------|
+| Thêm enum constant / method **mới** ở version mới | Sửa hoặc xóa method, field, enum đã có |
+| Nâng version mới (V3 → V4) | Đổi thứ tự field, đổi `@Backing` type |
+| Thêm vendor property trong dải VENDOR | Đổi giá trị ID của property đã phát hành |
+
+### Cơ chế đóng băng (freeze)
+
+- Mỗi module `aidl_interface` trong Soong có field `frozen`.
+- `frozen: true` → build chạy **api-freeze check**: hash của `.aidl` hiện tại phải trùng snapshot trong `aidl_api/`. Lệch ⇒ lỗi kiểu *"AIDL API change detected / hash mismatch"*.
+- `frozen: false` → cho phép thay đổi, bỏ qua freeze check.
+- **Project dùng `frozen: false`** vì mục đích nghiên cứu (liên tục sinh property mới). Freeze chỉ cần khi publish một stable vendor API cho bên thứ ba tiêu thụ — không phải mục tiêu của thesis.
+
+### Vì sao đây là thách thức cho LLM sinh code
+
+1. **Phải sinh đúng pattern enum-of-constants** — KHÔNG được sinh `interface IVehicleAdas { getX(); setX(); }` hay `parcelable AbsConfig {...}`. VehicleProperty là **enum**; thêm method/interface = phá stable contract, Soong stability check sẽ fail. Luật này được **ép cứng trong prompt** của AIDL agent (`agents/vhal_aidl_agent.py:59`): *"Generate ONLY a {enum}.aidl enum file — do NOT generate IVehicle.aidl, IVehicleCallback.aidl, or VehiclePropValue.aidl (these already exist in AOSP)"* và *"must be ADDITIVE to the existing AOSP tree, not a replacement"*.
+2. **`@VintfStability` + `@Backing(type="int")` bắt buộc có** — thiếu thì Soong coi là *unstable* AIDL và không cho vào VINTF.
+3. **Property mới phải nằm dải VENDOR (`0x20000000`)** để *mở rộng* mà không đụng vào enum `SYSTEM` đã đóng băng của AOSP. Nếu chèn vào enum SYSTEM sẽ đổi hash ⇒ fail freeze check, hoặc trùng ID với property chuẩn.
+4. **Đồng bộ 3 nơi:** `Android.bp` (khai `stability: "vintf"`, `version`, `frozen`) ↔ **VINTF manifest** (khai đúng version) ↔ **service** (implement đúng version). Lệch version ⇒ HAL **không đăng ký được lúc runtime** dù đã build qua.
+
+> Tier-1 (AIDL parse trên Colab) **không bắt** được các lỗi này — nó chỉ check cú pháp. Chỉ Tier-2 (`aidl --structured --stability vintf` + Soong + VINTF trên Cuttlefish) mới phát hiện lỗi freeze/hash/version. Đây chính là lý do phải có validation 2 tầng (§7).
+
+### Bằng chứng trong repo (đã đối chiếu source)
+
+| Điểm | File · dòng | Nội dung thực tế |
+|------|-------------|-------------------|
+| Annotation stable | `gen_hal_minimal_c4.py:504-505` | sinh `@VintfStability` + `@Backing(type="int")` |
+| Enum-only, additive | `agents/vhal_aidl_agent.py:59,62-64` | *"Generate ONLY … enum"*, *"do NOT generate IVehicle.aidl…"*, *"no HIDL V2_0"*, *"ADDITIVE … not a replacement"* |
+| Android.bp stable | `gen_hal_minimal_c4.py:431-446` | `stability: "vintf"`, `frozen: false`, `versions_with_info: [{version:"1"},{version:"2"}]` |
+| VINTF fragment | `agents/vhal_service_build_agent.py:183-197` | `vintf_fragments:[…]` + `<hal format="aidl"> … <instance>default</instance>` |
+
+### Điểm hay bị hỏi
+
+| Câu hỏi | Trả lời ngắn |
+|---------|----------------|
+| "Strict AIDL versioning" nghĩa là gì? | Interface stable có số version + API đóng băng; đã phát hành thì chỉ được *thêm*, không *sửa/xóa* |
+| Sao pipeline sinh enum chứ không interface có getter/setter? | VehicleProperty là stable enum; thêm method sẽ phá contract & fail Soong stability check |
+| Vì sao property mới đặt ở dải VENDOR? | Để mở rộng mà không sửa enum SYSTEM đã đóng băng (tránh đổi hash / trùng ID chuẩn) |
+| `frozen: false` có phải "gian lận" không? | Không — freeze chỉ bắt buộc khi publish stable API; nghiên cứu sinh property liên tục nên để `false` là đúng |
+| Tại sao Tier-1 không đủ, phải cần Tier-2? | AIDL parse chỉ check cú pháp; freeze/hash/VINTF-version chỉ Soong (Tier-2) mới kiểm được |
+
+---
+
+## 0c. AIDL enum được LLM sinh thế nào — qua 4 điều kiện (C1–C4)
+
+**Lõi chung mọi điều kiện** (`agents/vhal_aidl_agent.py` — `VHALAidlAgent`): C1–C4 dùng chung phần parse → encode → write; C2/C3/C4 chỉ *bọc thêm* một lớp ngoài.
+
+```
+spec module (danh sách property)
+      │
+      ▼  prompt: package android.hardware.automotive.vehicle,
+      │          @VintfStability, @Backing(type="int"),
+      │          CHỈ enum (no IVehicle/parcelable), additive, no HIDL
+call_llm()  ──►  JSON {"files":[{path, content}]}    (+ vòng repair JSON nội bộ)
+      │
+      ▼
+_parse_properties()  →  encode ID = VENDOR(0x20000000)|GLOBAL|TYPE|index
+      │                  (_aaos_encode → 0x212… BOOLEAN / 0x214… INT …)
+      ▼
+SafeWriter  →  <Enum>.aidl   (vd. VehiclePropertyChassis.aidl)
+```
+
+Mấu chốt: **`RAGDSPyAIDLAgent` kế thừa `VHALAidlAgent`** (`agents/rag_dspy_mixin.py:18`) → C3/C4 tái dùng đúng lõi parse/encode/write và **fallback** về baseline nếu DSPy lỗi. Base model **giữ nguyên** Qwen2.5-Coder-32B ở cả 4 điều kiện — khác biệt điểm số **chỉ** do lớp prompt/RAG/feedback.
+
+**LLM đề xuất, encoder chốt ID (cả 4 điều kiện):** LLM chỉ sinh *tên property + annotation + thân enum*; **giá trị ID KHÔNG lấy từ LLM**. Pipeline *đóng dấu* lại ID 32-bit canonical: `_aaos_encode` (`rag_dspy_aidl_agent.py:102,259` — literal *"Force… / override whatever value the LLM emitted"*) cho C3/C4, và `VssGlueAgent._build_full_prop_id` (`vss_glue_agent.py:35-40`, đọc `.aidl` sinh ra làm *single source of truth* qua `_parse_aidl_properties`) cho cả pipeline. Hai hàm mã hoá **giống hệt nhau** → không có ID bịa hay đụng độ ở bất kỳ điều kiện nào. C1 còn có **deterministic fallback**: nếu LLM trả 0 entry → `_write_fallback_vss` viết enum thẳng từ danh sách property (`vhal_aidl_agent.py:191,231`).
+
+### Khác nhau giữa 4 điều kiện
+
+| ĐK | Agent (nguồn) | Thêm gì so với lõi baseline |
+|----|---------------|------------------------------|
+| **C1** Baseline | `generate_vhal_aidl` (`architect_agent.py:83` → `vhal_aidl_agent.py`, `CHUNK_SIZE=15`) | Prompt tĩnh, `prompt_variant="default"`. **Không** RAG/DSPy/retry. 1 lần generate (có repair JSON nội bộ) |
+| **C2** Adaptive | Lõi baseline + `adaptive_components/` | Chọn **chunk-size** cho domain lớn bằng **Beta Thompson Sampling** (`chunk_size_optimizer.py`) và **prompt-variant** bằng **UCB+ε-greedy** (`prompt_selector.py`); outcome (score≥0.8) cập nhật tracker. Vẫn không RAG/DSPy |
+| **C3** RAG+DSPy | `RAGDSPyAIDLAgent` (`rag_dspy_aidl_agent.py`, `CHUNK_SIZE=60`) | (1) **Retrieve** ví dụ `.aidl` thật từ ChromaDB `aosp_aidl` → `aosp_context`; (2) chạy **DSPy program đã MIPROv2-optimize** (`dspy_opt/saved`, output field `aidl_code`) có context nhúng vào; fallback baseline nếu DSPy fail |
+| **C4** Feedback | `RAGDSPyAIDLAgent` + `PostValidationRetry` | Y hệt C3, **thêm** vòng **Generate→Validate→Retry**: `_validate_aidl` (Python AIDL grammar parser, `validators.py:127`) fail ⇒ nối lỗi vào context, regen, tối đa **`MAX_RETRIES=3`**, giữ bản điểm cao nhất |
+
+**Thang tăng dần:** C1 (prompt tĩnh) → C2 (chọn prompt/chunk thích nghi) → C3 (+ ground bằng AIDL thật + prompt tối ưu) → C4 (+ sửa theo lỗi validator).
+
+### So sánh nhanh C1–C4 (sinh AIDL enum)
+
+| | LLM sinh thân enum | Prompt tĩnh | RAG grounding | DSPy/MIPROv2 | Validator retry | ID canonical + fallback |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **C1** Baseline | ✅ | ✅ | — | — | — | ✅ |
+| **C2** Adaptive | ✅ | ✅ (chọn variant) | — | — | — | ✅ |
+| **C3** RAG+DSPy | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **C4** Feedback | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+→ Cùng LLM (Qwen2.5-Coder-32B) và cùng "enum-only contract" ở cả 4; C1 là mức sàn không có trợ lực, C4 là đầy đủ. LLM luôn sinh thân enum; ID luôn được encoder đóng dấu.
+
+### Vì sao AIDL của C3/C4 đạt điểm tối đa (khớp Table 8/9)
+
+- **C3 nhảy vọt**: retrieve `.aidl` thật + DSPy prompt → model thấy **đúng pattern property/ID** trong tree AOSP thay vì đoán → *coverage* 0.5896 → 0.7920. Per-agent `aidl`: 0.9536 (C1/C2) → **1.0000** (C3).
+- **C4 thêm ít cho AIDL**: validator feedback chủ yếu sửa **syntax/C++**; enum AIDL vốn đã đúng từ C3 nên `aidl` giữ **1.0000** ở C4 (mức tăng của C4 dồn vào C++).
+
+### Điểm hay bị hỏi
+
+| Câu hỏi | Trả lời ngắn |
+|---------|----------------|
+| 4 điều kiện có đổi base model không? | Không — cùng Qwen2.5-Coder-32B; chỉ đổi lớp prompt/RAG/feedback |
+| C2 "adaptive" chọn gì cho AIDL? | Chunk-size (Beta TS) + prompt-variant (UCB+ε-greedy); **không** RAG |
+| C3 lấy context ở đâu? | ChromaDB collection `aosp_aidl` — ví dụ `.aidl` thật đã lọc HIDL |
+| DSPy lỗi ở C3/C4 thì sao? | Fallback về generation baseline của `VHALAidlAgent` |
+| C4 retry AIDL bằng gì? | `_validate_aidl` (AIDL grammar parser); fail ⇒ nối lỗi vào prompt, tối đa 3 lần |
+| Vì sao C3/C4 đều dùng chung 1 agent? | `RAGDSPyAIDLAgent` **kế thừa** `VHALAidlAgent`; C4 = C3 + vòng retry |
+
+---
+
 ## 1. Pipeline tổng thể
 
 ### 1.1. Block diagram end-to-end
@@ -143,8 +269,7 @@ code-codegen-aosp-llm-based/
                     │             ▼                       │
                     │  Cross-encoder rerank (bge-reranker)│
                     │             ▼                       │
-                    │  Layer-2 HIDL path filter           │
-                    │  Layer-3 score ×0.5 penalty         │
+                    │  HIDL path filter (residual drop)   │
                     │             ▼                       │
                     │  top-k (DEFAULT_TOP_K=6)            │
                     │  format // Example i | file | score │
@@ -164,6 +289,8 @@ max_chars_per_chunk = 1500   # was 800 — signatures truncated
 RERANKER_MODEL      = "BAAI/bge-reranker-base"
 ```
 
+> Nguồn (đã đối chiếu): `rag/aosp_retriever.py:43-46` (`DEFAULT_TOP_K`, `MIN_SCORE_THRESHOLD`, embedding, reranker), `:192` (`max_chars_per_chunk`); `rag/aosp_indexer.py:32-33` (`CHUNK_SIZE_WORDS=400`, `OVERLAP=50`), `:92` (`hnsw:space=cosine`); 7 collections trong `COLLECTION_DEFS`.
+
 ### 2.3. Ba kênh retrieval — khi nào cái nào thắng
 
 | Kênh | Cơ chế | Bắt được gì | Hạn chế |
@@ -172,17 +299,24 @@ RERANKER_MODEL      = "BAAI/bge-reranker-base"
 | **BM25** | TF-IDF-style keyword | Tên hàm/type **chính xác** | Yếu với paraphrase |
 | **Cross-encoder** | Encode cặp (query, doc) cùng lúc | Ranking chính xác hơn bi-encoder | Chậm → chỉ rerank top-N |
 
-### 2.4. HIDL filter 3 lớp
+### 2.4. HIDL filter — path-only, 2 tầng hard-drop
+
+Code hiện tại lọc HIDL **hoàn toàn bằng path** (content-keyword đã tắt "by design"), qua hai tầng — đều là **hard DROP**, không có soft penalty:
 
 ```
-Layer 1 (index-time)  ── hard DROP theo path (/hidl/, /1.0/, /2.0/, …)
-Layer 2 (parse-time)  ── hard DROP residual HIDL paths còn sót
-Layer 3 (score-time)  ── soft PENALTY score × 0.5 nếu còn legacy reference nhẹ
+Index-time   (rag/aosp_indexer.py:47-56)   ── DROP theo path pattern:
+               /1.0/ /2.0/ /3.0/ /4.0/  /hidl/ /hidl-generated/
+               /vehicle/2.0/  /v2_0/ /v1_0/ /v3_0/ …
+               HIDL_CONTENT_KEYWORDS = []   # tắt keyword-filter CHỦ ĐÍCH
+Retrieve-time (rag/aosp_retriever.py:237-248, 271-276)
+               ── DROP các chunk residual còn path HIDL sót lại
 ```
 
-**Vì sao lọc path, không keyword?** Keyword dễ false-positive (comment nói “migrated from HIDL”). Path versioned HIDL là tín hiệu chắc hơn trong tree AOSP.
+**Vì sao lọc path, không keyword?** Keyword dễ false-positive (comment "migrated from HIDL"). Trong tree AOSP, HIDL nằm trọn trong thư mục versioned (`.../2.0/`, `/hidl/`) nên lọc path là *exact & complete* — đúng như comment trong `aosp_indexer.py:38-42`.
 
 **Hậu quả nếu bỏ filter:** LLM học pattern HIDL deprecated → AIDL Android 14 **compile fail**.
+
+> ⚠️ **Lưu ý paper ↔ code (dễ bị hỏi):** Hình 3 trong paper vẽ "3-layer HIDL filter" (gồm 1 lớp reranker penalty ×0.5). Bản **code đã hợp nhất về path-only hard-drop** (index + retrieve) làm cổng chặn *"single, authoritative"* — **không còn nhánh score ×0.5** trong code hiện tại. Nếu hội đồng hỏi: trả lời "thiết kế 3 lớp; code chốt lại path-only vì exact hơn và đủ để chặn 100% HIDL".
 
 ---
 
@@ -268,6 +402,8 @@ score(v)       = success_rate(v) + 0.1 · uncertainty(v)
 ε-greedy: 10% random explore, 90% argmax score
 ```
 
+> Nguồn: `adaptive_components/prompt_selector.py:173-185` (`uncertainty = np.sqrt(...)`; `score = success_rate + 0.1*uncertainty`; epsilon-greedy). Beta Thompson Sampling **riêng** dùng cho chọn **chunk-size** ở `adaptive_components/chunk_size_optimizer.py` (đúng ghi chú "TS áp cho chunk-size, không phải prompt-variant").
+
 - `success_rate` theo **bucket** số property (tiny/small/medium/large/xlarge)
 - Success threshold composite ≥ 0.8
 
@@ -334,7 +470,7 @@ Domain với N properties
                   └──▶ Generate lại
 ```
 
-### 6.2. Năm hard-fail check *trước* clang (`validate_cpp`)
+### 6.2. Năm hard-fail check *trước* clang (`_validate_cpp` · `dspy_opt/validators.py:192`)
 
 | # | Check | Bắt gì | Vì sao clang không đủ |
 |---|--------|--------|------------------------|
@@ -363,6 +499,8 @@ map name → chunk_idx
 ```
 
 **Tại sao không đưa `previous_full_code` vào prompt?** Tránh phình token; prompt retry vẫn nhỏ bằng lần generate đầu.
+
+> Nguồn: `dspy_opt/validators.py:697` (`_enclosing_property_name` — dò ngược error-line → property); `agents/rag_dspy_cpp_agent.py:711-758` (`chunks_needing_regen`, `_reuse_chunk_cases` — chỉ regen chunk lỗi, copy nguyên chunk sạch); `MAX_RETRIES = 3` ở `multi_main_c4_feedback.py:68`.
 
 ---
 
