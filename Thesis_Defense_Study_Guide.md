@@ -323,22 +323,173 @@ else:
 # 6. module.save("dspy_opt/saved/<agent>_program/")  → program.json
 ```
 
-**MIPROv2 bên trong làm gì (3 pha search):**
-1. **Bootstrap demos** — chạy prompt hiện tại trên trainset, giữ output điểm cao làm few-shot.
-2. **Propose instruction candidates** — LLM tự viết lại câu instruction (có thể khác docstring gốc trong Signature).
-3. **Bayesian trial search** — thử tổ hợp (instruction × demo-set), chọn cặp metric cao nhất.
+**MIPROv2 bên trong làm gì (3 pha search) — minh họa chi tiết:**
 
-**Config thật:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Pha 1: Bootstrap demos                                         │
+│  Pha 2: Propose instruction candidates                          │
+│  Pha 3: Bayesian trial search (instruction × demo-set)          │
+│                         ↓                                       │
+│  Lưu program.json = (instruction tối ưu + demo-set tối ưu)      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Pha 1 — Bootstrap few-shot demos (giải thích chi tiết, không mơ hồ)
+
+**Trả lời thẳng: “Chạy prompt gốc trên trainset ra cái gì?”**
+
+→ **Ra code do LLM tự sinh** (C++ / AIDL / SELinux / … tùy agent), **không** ra điểm số, **không** ra file mẫu có sẵn.
+
+| | Nội dung |
+|---|----------|
+| **Input** (có trong trainset) | `domain`, `properties`, `aosp_context` — **không** có đáp án vàng |
+| **Prompt gốc** | docstring Signature + 3 field input ở trên (chưa có few-shot) |
+| **Output** | code HAL thật, vd. `case VehicleProperty::DOOR_ISOPEN: { readRegister(...); }` + field `reasoning` (ChainOfThought) |
+| **Bước tiếp** | metric chấm cặp (input → output vừa sinh); score cao → **giữ làm demo**, score thấp → bỏ |
+
+Tóm lại: chạy prompt gốc = **generate thử** trên từng example; metric lọc output nào đủ tốt để dùng làm few-shot sau này.
+
+---
+
+**Mục tiêu pha này:** thu thập vài cặp (input → output) mà model *hiện tại* (chưa optimise) đã sinh ra **tốt theo metric** — dùng làm few-shot example cho các lần generate sau. Không cần người gán nhãn đúng/sai.
+
+**Trainset trông như thế nào?**  
+Mỗi example chỉ có **input**, không có “đáp án vàng”:
 ```python
-MIPRO_AUTO_SETTING   = "medium"
+# TrainingSetBuilder.build() — dspy.Example
+Ex1 = {
+  "domain":       "Body",
+  "properties":   "- Name: VEHICLE_BODY_DOOR_ISOPEN\n  Type: BOOLEAN\n  Access: READ_WRITE",
+  "aosp_context": "### AOSP Reference\n// Example from VehicleHardware.cpp ...",
+}
+# KHÔNG có field "aidl_code" / "cpp_impl" đúng sẵn
+```
+
+**“Chạy prompt gốc” nghĩa là gì — từng bước:**
+
+```
+Bước A. Lấy module chưa optimise
+        module = CppHALModule()   # dspy.ChainOfThought(CppSignature)
+        # instruction lúc này = docstring trong Signature
+        #   "Generate C++ readRegister/writeRegister cases for domain..."
+        # demos = []  (chưa có few-shot)
+
+Bước B. Chọn 1 example từ trainset, gọi predictor
+        pred = module(
+            domain=Ex1.domain,
+            properties=Ex1.properties,
+            aosp_context=Ex1.aosp_context,
+        )
+        # Bên trong DSPy:
+        #   build prompt = instruction + (chưa có demo) + input fields
+        #   gửi Ollama (Qwen2.5-Coder, temperature≈0.25)
+        #   parse JSON/text → pred.cpp_impl, pred.reasoning, ...
+
+Bước C. Metric chấm — KHÔNG so với file mẫu
+        score = metric_cpp(Ex1, pred)
+        # = 0.35*structural + 0.45*syntax(clang) + 0.20*coverage
+        # structural: có #include, class, getAllPropertyConfigs, không HIDL?
+        # syntax:     clang++ -fsyntax-only có error không?
+        # coverage:   tên DOOR_ISOPEN có xuất hiện trong output không?
+
+Bước D. Quyết định giữ / bỏ
+        if score đủ cao (vd. ≥ metric_threshold hoặc top theo số lượng cần):
+            GIỮ cặp (Ex1.inputs → pred.outputs) làm bootstrapped demo
+        else:
+            BỎ — thử example khác từ trainset
+```
+
+**Ví dụ số cụ thể (agent cpp, 1 example):**
+
+| Thành phần | Nội dung |
+|------------|----------|
+| **Input đưa vào LLM** | domain=`Body`, properties=`DOOR_ISOPEN (BOOLEAN, READ_WRITE)`, aosp_context=chunk `IVehicleHardware.h` |
+| **Prompt gốc** | docstring Signature + input ở trên (chưa có few-shot) |
+| **Output LLM sinh** | `case static_cast<int32_t>(VehicleProperty::DOOR_ISOPEN): { ... readRegister(...); }` |
+| **Metric chấm** | struct=0.90 (đủ keyword AOSP), syntax=1.0 (clang pass), coverage=1.0 (có `DOOR_ISOPEN`) → **score = 0.35×0.9 + 0.45×1.0 + 0.20×1.0 = 0.965** |
+| **Quyết định** | 0.965 cao → **GIỮ** thành demo: “khi input Body/DOOR_ISOPEN thì output phải giống đoạn case này” |
+
+Nếu LLM sinh thiếu `case`, hoặc dùng HIDL `Return<>`, hoặc clang fail → score thấp (vd. 0.4) → **bỏ**, lấy Ex2 thử tiếp.
+
+**Kết quả pha 1:**
+- `MAX_BOOTSTRAPPED_DEMOS=1` → mỗi candidate set chỉ cần **1** demo tốt (ít LLM call).
+- Đồng thời lấy thêm `max_labeled_demos=2` example **chỉ input** (không output) từ trainset để bổ sung context.
+- Demo đã bootstrap = bằng chứng “model *đã từng* làm đúng bài này” — khác gold label do người viết sẵn.
+
+**Vì sao không cần gold label?**  
+Metric tự chấm cấu trúc/cú pháp/coverage. “Đúng” = compile được + đủ pattern AOSP + cover property — đủ để lọc demo chất lượng cho few-shot, không cần file C++ mẫu viết tay.
+
+#### Pha 2 — Propose instruction candidates
+LLM *khác* (prompt_model, cùng Qwen2.5-Coder) được giao nhiệm vụ **viết lại instruction**, không sinh code HAL.
+
+Proposer nhận 4 nguồn grounding:
+1. **Dataset summary** — tóm tắt trainset (domain nào, type property phổ biến…)
+2. **Program summary** — cấu trúc Signature/Module (trừ khi `program_aware_proposer=False` như project đang set)
+3. **Bootstrapped demos** từ Pha 1 — ví dụ input/output thật
+4. **Random tip** — “be creative”, “be concise”, “focus on edge cases”… để đa dạng không gian instruction
+
+```
+Signature docstring gốc (hal_signatures.py):
+  "Generate C++ VehicleHardware implementation for the given domain..."
+
+→ Proposer có thể viết thành:
+  "You are an AAOS VHAL engineer. Emit ONLY the readRegister/writeRegister
+   switch cases. Match AOSP IVehicleHardware signatures exactly. Never use
+   HIDL patterns. Each property must map to a real file I/O path..."
+```
+→ Instruction cuối **có thể khác hẳn** docstring trong source — đây là lý do gọi “optimised program”, tách biệt khỏi code Signature.
+
+Project set `program_aware_proposer=False` → proposer **không** đọc source code module khi viết instruction (giảm phụ thuộc cấu trúc code, tập trung vào data + tip).
+
+#### Pha 3 — Bayesian trial search
+Không brute-force mọi cặp. Dùng **Bayesian Optimization** (surrogate model, kiểu Tree-structured Parzen Estimator / Optuna):
+
+```
+candidates:
+  instructions = [I₀=docstring gốc, I₁, I₂, … Iₖ]     # từ Pha 2
+  demo_sets    = [D₀, D₁, … Dₘ]                       # từ Pha 1
+
+for trial in 1..num_trials:          # auto="medium" → DSPy tự chọn ~20–36
+    # Surrogate model đề xuất cặp (Iᵢ, Dⱼ) có kỳ vọng score cao
+    program.predictor.instruction = Iᵢ
+    program.predictor.demos       = Dⱼ
+    score = mean( metric_fn(ex, program(ex)) for ex in minibatch )
+    # Cập nhật surrogate: “cặp này tốt/xấu”
+return cặp (I*, D*) điểm cao nhất trên full valset
+```
+
+- Mỗi trial = 1 lần gắn instruction + demo → chạy metric trên minibatch train/val.
+- Surrogate học dần: instruction nào + demo nào tương tác tốt → trial sau ưu tiên vùng đó (explore/exploit).
+- `auto="medium"` tự tính `num_candidates` / `num_trials` nội bộ; **không** được truyền `max_bootstrapped_demos` cùng lúc với `auto=` (raise ValueError).
+
+**Minh họa số (agent cpp, giả định):**
+| Trial | Instruction | Demo-set | Minibatch score |
+|-------|-------------|----------|-----------------|
+| 1 | I₀ (gốc) | D₀ | 0.78 |
+| 2 | I₁ (chi tiết AOSP) | D₀ | 0.85 |
+| 3 | I₁ | D₁ (coverage cao) | **0.91** ← best so far |
+| … | … | … | … |
+| 24 | I₂ | D₁ | 0.88 |
+
+→ Lưu `program.json` chứa instruction I₁ + demos D₁.
+
+#### Config thật trong project
+```python
+MIPRO_AUTO_SETTING     = "medium"
 MAX_BOOTSTRAPPED_DEMOS = 1
 MAX_LABELED_DEMOS      = 2
 DEFAULT_TRAIN_SIZE     = 2
 MIPRO_SKIP_AGENTS      = {"aidl", "design_doc", "selinux", "build"}
-# cpp KHÔNG skip — chạy full MIPROv2
+# cpp KHÔNG skip — chạy full MIPROv2 (~20–36 LLM calls)
+# ceiling agents → LabeledFewShot(k=2) chỉ ~2 calls
 ```
 
-**Điểm hay bị hỏi:** MIPROv2 là **black-box search** trên prompt (không gradient, không đụng trọng số model). Metric function = structural score từ `validators.py`, không cần gold-standard label.
+**Điểm hay bị hỏi:**
+- MIPROv2 = **black-box search** trên prompt (không gradient, không đụng trọng số model).
+- Metric = structural score từ `validators.py` — **không cần gold-standard label**.
+- Instruction trong `program.json` có thể **khác** docstring Signature — lúc inference `load()` ghi đè instruction đã optimise.
+- `program_aware_proposer=False` trong project → proposer không đọc code module khi propose.
 
 ### 3.3. Kiến trúc lưu trữ — Signature vs Compiled Program
 
