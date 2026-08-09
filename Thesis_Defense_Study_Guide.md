@@ -1,32 +1,26 @@
 # Tài liệu kỹ thuật — LLM-Based Code Generation for AAOS VHAL
 
-**Repo:** https://github.com/appdev1307/code-codegen-aosp-llm-based  
-**Target:** Android 14 (API 34) · Qwen2.5-Coder-32B (Ollama)  
 *Phần A: Kiến trúc & thuật toán (advanced). Phần B: Kiến thức nền AI/LLM (basic).*
 
 ---
 
 # PHẦN A — KIẾN TRÚC & THUẬT TOÁN
 
-## 0. VHAL Property ID — cấu trúc bit 32-bit
+## 0. VHAL Property ID — cấu trúc bit 32-bit thật
+
+Đây là kiến thức AOSP nền tảng, hay bị hỏi sâu vì liên quan trực tiếp tới "vì sao property phải encode đúng mới hoạt động":
 
 ```
 Property ID (32-bit) = group (0xF0000000) | area (0x0F000000) | type (0x00FF0000) | index (0x0000FFFF)
 ```
 
-```
-┌────────────┬────────────┬────────────┬────────────────┐
-│   GROUP    │    AREA    │    TYPE    │     INDEX      │
-│  4 bits    │  4 bits    │  8 bits    │    16 bits     │
-│ 31 … 28    │ 27 … 24    │ 23 … 16    │   15 … 0       │
-└────────────┴────────────┴────────────┴────────────────┘
-```
-
-**Giá trị project dùng** (`multi_main_c5.py` / AIDL agent `_aaos_encode`):
+**Giá trị thật project dùng** (`multi_main_c5.py::encode_prop_id`):
 
 ```python
-VSS_GROUP = 0x20000000   # VehiclePropertyGroup::VENDOR
-VSS_AREA  = 0x01000000   # VehicleArea::GLOBAL
+VSS_GROUP = 0x20000000   # VehiclePropertyGroup::VENDOR — bắt buộc cho property tự định nghĩa,
+                          #   không phải property chuẩn AOSP (những cái đó dùng group SYSTEM=0x10000000)
+VSS_AREA  = 0x01000000   # VehicleArea::GLOBAL — property không gắn với 1 vùng vật lý cụ thể
+                          #   (khác property như cửa sổ/ghế — những cái đó cần area riêng cho từng cửa/ghế)
 VSS_TYPE_BITS = {
     "STRING":  0x00100000,
     "BOOLEAN": 0x00200000,
@@ -36,663 +30,639 @@ VSS_TYPE_BITS = {
 }
 
 def encode_prop_id(raw_index, vss_type):
-    if raw_index & 0xF0000000:          # đã là full ID
+    if raw_index & 0xF0000000:          # đã là ID đầy đủ — giữ nguyên
         return raw_index
     type_bits = VSS_TYPE_BITS.get(vss_type.upper(), 0x00400000)
     return VSS_GROUP | VSS_AREA | type_bits | (raw_index & 0xFFFF)
 ```
 
-**Ví dụ:** `0x21204010` = `VENDOR | GLOBAL | BOOLEAN | index 0x4010`.
+**Vì sao KHÔNG thể dùng index trần (VD `0x1000`) làm property ID:** thiếu hết group/area/type bits → VHAL coi là ID không hợp lệ ngay từ bước validate config → property **âm thầm không đăng ký được**, không có lỗi rõ ràng, chỉ đơn giản là biến mất khỏi danh sách property khả dụng.
 
-**Điểm hay bị hỏi**
+**Vì sao type phải nằm TRONG chính property ID, không phải field riêng:** `VehiclePropConfig` (struct AIDL thật) không có field "type" độc lập — VHAL và `CarPropertyManager` đọc type bằng cách **mask ra đúng 8 bit type** từ property ID. Đây là lý do bug "encode sai type bits" gây lỗi kiểu dữ liệu ở tầng framework, không phải lỗi compile.
 
-| Câu hỏi | Trả lời ngắn |
-|---------|----------------|
-| Sao không dùng index trần `0x1000`? | Thiếu group/area/type → VHAL coi ID không hợp lệ, property **âm thầm không đăng ký** |
-| Sao type nằm trong ID, không field riêng? | `VehiclePropConfig` không có field type độc lập; framework **mask 8 bit type** từ property ID |
-| SYSTEM vs VENDOR group? | Property chuẩn AOSP = `SYSTEM (0x10000000)`; property tự định nghĩa từ VSS = `VENDOR (0x20000000)` |
-
----
-
-## 0b. AIDL versioning — "strict" interface stability
-
-VHAL là **stable AIDL** (structured AIDL) chạy qua ranh giới system↔vendor, nên AOSP áp một bộ luật versioning nghiêm ngặt. Đây là lý do **không thể "sinh AIDL tùy ý"** — code phải tuân đúng contract ổn định, và cũng là một trong các thách thức chính mà thesis nêu ở §1.2.
-
-### Vì sao gọi là "strict"
-
-```
-android.hardware.automotive.vehicle-V3      ← interface có SỐ VERSION
-        │
-        ├─ @VintfStability      → interface nằm trong Vendor Interface (VINTF),
-        │                          bắt buộc backward-compatible qua system↔vendor
-        ├─ @Backing(type="int") → kiểu nền của enum là 1 phần của contract,
-        │                          KHÔNG được đổi sau khi phát hành
-        └─ aidl_api/<iface>/<version>/ + .hash
-                 → snapshot API bị "đóng băng"; Soong so khớp .aidl hiện tại với
-                   snapshot. Nếu khác mà frozen:true  ⇒  BUILD FAIL
-```
-
-**Luật cốt lõi của stable AIDL:**
-
-| Được phép | KHÔNG được (khi đã frozen) |
-|-----------|-----------------------------|
-| Thêm enum constant / method **mới** ở version mới | Sửa hoặc xóa method, field, enum đã có |
-| Nâng version mới (V3 → V4) | Đổi thứ tự field, đổi `@Backing` type |
-| Thêm vendor property trong dải VENDOR | Đổi giá trị ID của property đã phát hành |
-
-### Cơ chế đóng băng (freeze)
-
-- Mỗi module `aidl_interface` trong Soong có field `frozen`.
-- `frozen: true` → build chạy **api-freeze check**: hash của `.aidl` hiện tại phải trùng snapshot trong `aidl_api/`. Lệch ⇒ lỗi kiểu *"AIDL API change detected / hash mismatch"*.
-- `frozen: false` → cho phép thay đổi, bỏ qua freeze check.
-- **Project dùng `frozen: false`** vì mục đích nghiên cứu (liên tục sinh property mới). Freeze chỉ cần khi publish một stable vendor API cho bên thứ ba tiêu thụ — không phải mục tiêu của thesis.
-
-### Vì sao đây là thách thức cho LLM sinh code
-
-1. **Phải sinh đúng pattern enum-of-constants** — KHÔNG được sinh `interface IVehicleAdas { getX(); setX(); }` hay `parcelable AbsConfig {...}`. VehicleProperty là **enum**; thêm method/interface = phá stable contract, Soong stability check sẽ fail. Luật này được **ép cứng trong prompt** của AIDL agent (`agents/vhal_aidl_agent.py:59`): *"Generate ONLY a {enum}.aidl enum file — do NOT generate IVehicle.aidl, IVehicleCallback.aidl, or VehiclePropValue.aidl (these already exist in AOSP)"* và *"must be ADDITIVE to the existing AOSP tree, not a replacement"*.
-2. **`@VintfStability` + `@Backing(type="int")` bắt buộc có** — thiếu thì Soong coi là *unstable* AIDL và không cho vào VINTF.
-3. **Property mới phải nằm dải VENDOR (`0x20000000`)** để *mở rộng* mà không đụng vào enum `SYSTEM` đã đóng băng của AOSP. Nếu chèn vào enum SYSTEM sẽ đổi hash ⇒ fail freeze check, hoặc trùng ID với property chuẩn.
-4. **Đồng bộ 3 nơi:** `Android.bp` (khai `stability: "vintf"`, `version`, `frozen`) ↔ **VINTF manifest** (khai đúng version) ↔ **service** (implement đúng version). Lệch version ⇒ HAL **không đăng ký được lúc runtime** dù đã build qua.
-
-> Tier-1 (AIDL parse trên Colab) **không bắt** được các lỗi này — nó chỉ check cú pháp. Chỉ Tier-2 (`aidl --structured --stability vintf` + Soong + VINTF trên Cuttlefish) mới phát hiện lỗi freeze/hash/version. Đây chính là lý do phải có validation 2 tầng (§7).
-
-### Bằng chứng trong repo (đã đối chiếu source)
-
-| Điểm | File · dòng | Nội dung thực tế |
-|------|-------------|-------------------|
-| Annotation stable | `gen_hal_minimal_c4.py:504-505` | sinh `@VintfStability` + `@Backing(type="int")` |
-| Enum-only, additive | `agents/vhal_aidl_agent.py:59,62-64` | *"Generate ONLY … enum"*, *"do NOT generate IVehicle.aidl…"*, *"no HIDL V2_0"*, *"ADDITIVE … not a replacement"* |
-| Android.bp stable | `gen_hal_minimal_c4.py:431-446` | `stability: "vintf"`, `frozen: false`, `versions_with_info: [{version:"1"},{version:"2"}]` |
-| VINTF fragment | `agents/vhal_service_build_agent.py:183-197` | `vintf_fragments:[…]` + `<hal format="aidl"> … <instance>default</instance>` |
-
-### Điểm hay bị hỏi
-
-| Câu hỏi | Trả lời ngắn |
-|---------|----------------|
-| "Strict AIDL versioning" nghĩa là gì? | Interface stable có số version + API đóng băng; đã phát hành thì chỉ được *thêm*, không *sửa/xóa* |
-| Sao pipeline sinh enum chứ không interface có getter/setter? | VehicleProperty là stable enum; thêm method sẽ phá contract & fail Soong stability check |
-| Vì sao property mới đặt ở dải VENDOR? | Để mở rộng mà không sửa enum SYSTEM đã đóng băng (tránh đổi hash / trùng ID chuẩn) |
-| `frozen: false` có phải "gian lận" không? | Không — freeze chỉ bắt buộc khi publish stable API; nghiên cứu sinh property liên tục nên để `false` là đúng |
-| Tại sao Tier-1 không đủ, phải cần Tier-2? | AIDL parse chỉ check cú pháp; freeze/hash/VINTF-version chỉ Soong (Tier-2) mới kiểm được |
-
----
-
-## 0c. AIDL enum được LLM sinh thế nào — qua 4 điều kiện (C1–C4)
-
-**Lõi chung mọi điều kiện** (`agents/vhal_aidl_agent.py` — `VHALAidlAgent`): C1–C4 dùng chung phần parse → encode → write; C2/C3/C4 chỉ *bọc thêm* một lớp ngoài.
-
-```
-spec module (danh sách property)
-      │
-      ▼  prompt: package android.hardware.automotive.vehicle,
-      │          @VintfStability, @Backing(type="int"),
-      │          CHỈ enum (no IVehicle/parcelable), additive, no HIDL
-call_llm()  ──►  JSON {"files":[{path, content}]}    (+ vòng repair JSON nội bộ)
-      │
-      ▼
-_parse_properties()  →  encode ID = VENDOR(0x20000000)|GLOBAL|TYPE|index
-      │                  (_aaos_encode → 0x212… BOOLEAN / 0x214… INT …)
-      ▼
-SafeWriter  →  <Enum>.aidl   (vd. VehiclePropertyChassis.aidl)
-```
-
-Mấu chốt: **`RAGDSPyAIDLAgent` kế thừa `VHALAidlAgent`** (`agents/rag_dspy_mixin.py:18`) → C3/C4 tái dùng đúng lõi parse/encode/write và **fallback** về baseline nếu DSPy lỗi. Base model **giữ nguyên** Qwen2.5-Coder-32B ở cả 4 điều kiện — khác biệt điểm số **chỉ** do lớp prompt/RAG/feedback.
-
-**LLM đề xuất, encoder chốt ID (cả 4 điều kiện):** LLM chỉ sinh *tên property + annotation + thân enum*; **giá trị ID KHÔNG lấy từ LLM**. Pipeline *đóng dấu* lại ID 32-bit canonical: `_aaos_encode` (`rag_dspy_aidl_agent.py:102,259` — literal *"Force… / override whatever value the LLM emitted"*) cho C3/C4, và `VssGlueAgent._build_full_prop_id` (`vss_glue_agent.py:35-40`, đọc `.aidl` sinh ra làm *single source of truth* qua `_parse_aidl_properties`) cho cả pipeline. Hai hàm mã hoá **giống hệt nhau** → không có ID bịa hay đụng độ ở bất kỳ điều kiện nào. C1 còn có **deterministic fallback**: nếu LLM trả 0 entry → `_write_fallback_vss` viết enum thẳng từ danh sách property (`vhal_aidl_agent.py:191,231`).
-
-### Khác nhau giữa 4 điều kiện
-
-| ĐK | Agent (nguồn) | Thêm gì so với lõi baseline |
-|----|---------------|------------------------------|
-| **C1** Baseline | `generate_vhal_aidl` (`architect_agent.py:83` → `vhal_aidl_agent.py`, `CHUNK_SIZE=15`) | Prompt tĩnh, `prompt_variant="default"`. **Không** RAG/DSPy/retry. 1 lần generate (có repair JSON nội bộ) |
-| **C2** Adaptive | Lõi baseline + `adaptive_components/` | Chọn **chunk-size** cho domain lớn bằng **Beta Thompson Sampling** (`chunk_size_optimizer.py`) và **prompt-variant** bằng **UCB+ε-greedy** (`prompt_selector.py`); outcome (score≥0.8) cập nhật tracker. Vẫn không RAG/DSPy |
-| **C3** RAG+DSPy | `RAGDSPyAIDLAgent` (`rag_dspy_aidl_agent.py`, `CHUNK_SIZE=60`) | (1) **Retrieve** ví dụ `.aidl` thật từ ChromaDB `aosp_aidl` → `aosp_context`; (2) chạy **DSPy program đã MIPROv2-optimize** (`dspy_opt/saved`, output field `aidl_code`) có context nhúng vào; fallback baseline nếu DSPy fail |
-| **C4** Feedback | `RAGDSPyAIDLAgent` + `PostValidationRetry` | Y hệt C3, **thêm** vòng **Generate→Validate→Retry**: `_validate_aidl` (Python AIDL grammar parser, `validators.py:127`) fail ⇒ nối lỗi vào context, regen, tối đa **`MAX_RETRIES=3`**, giữ bản điểm cao nhất |
-
-**Thang tăng dần:** C1 (prompt tĩnh) → C2 (chọn prompt/chunk thích nghi) → C3 (+ ground bằng AIDL thật + prompt tối ưu) → C4 (+ sửa theo lỗi validator).
-
-### So sánh nhanh C1–C4 (sinh AIDL enum)
-
-| | LLM sinh thân enum | Prompt tĩnh | RAG grounding | DSPy/MIPROv2 | Validator retry | ID canonical + fallback |
-|------|:---:|:---:|:---:|:---:|:---:|:---:|
-| **C1** Baseline | ✅ | ✅ | — | — | — | ✅ |
-| **C2** Adaptive | ✅ | ✅ (chọn variant) | — | — | — | ✅ |
-| **C3** RAG+DSPy | ✅ | ✅ | ✅ | ✅ | — | ✅ |
-| **C4** Feedback | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-
-→ Cùng LLM (Qwen2.5-Coder-32B) và cùng "enum-only contract" ở cả 4; C1 là mức sàn không có trợ lực, C4 là đầy đủ. LLM luôn sinh thân enum; ID luôn được encoder đóng dấu.
-
-### Vì sao AIDL của C3/C4 đạt điểm tối đa (khớp Table 8/9)
-
-- **C3 nhảy vọt**: retrieve `.aidl` thật + DSPy prompt → model thấy **đúng pattern property/ID** trong tree AOSP thay vì đoán → *coverage* 0.5896 → 0.7920. Per-agent `aidl`: 0.9536 (C1/C2) → **1.0000** (C3).
-- **C4 thêm ít cho AIDL**: validator feedback chủ yếu sửa **syntax/C++**; enum AIDL vốn đã đúng từ C3 nên `aidl` giữ **1.0000** ở C4 (mức tăng của C4 dồn vào C++).
-
-### Điểm hay bị hỏi
-
-| Câu hỏi | Trả lời ngắn |
-|---------|----------------|
-| 4 điều kiện có đổi base model không? | Không — cùng Qwen2.5-Coder-32B; chỉ đổi lớp prompt/RAG/feedback |
-| C2 "adaptive" chọn gì cho AIDL? | Chunk-size (Beta TS) + prompt-variant (UCB+ε-greedy); **không** RAG |
-| C3 lấy context ở đâu? | ChromaDB collection `aosp_aidl` — ví dụ `.aidl` thật đã lọc HIDL |
-| DSPy lỗi ở C3/C4 thì sao? | Fallback về generation baseline của `VHALAidlAgent` |
-| C4 retry AIDL bằng gì? | `_validate_aidl` (AIDL grammar parser); fail ⇒ nối lỗi vào prompt, tối đa 3 lần |
-| Vì sao C3/C4 đều dùng chung 1 agent? | `RAGDSPyAIDLAgent` **kế thừa** `VHALAidlAgent`; C4 = C3 + vòng retry |
+**Ví dụ thật:** `0x21204010` = `VENDOR(0x20000000) | GLOBAL(0x01000000) | BOOLEAN(0x00200000) | index(0x4010)`.
 
 ---
 
 ## 1. Pipeline tổng thể
 
-### 1.1. Block diagram end-to-end
-
 ```
-┌──────────────┐    ┌─────────────┐    ┌────────────────┐    ┌─────────────────────────┐
-│  VSS Spec    │───▶│  Labelling  │───▶│ Module Planner │───▶│  Per-module generation  │
-│  (~500–1571) │    │ domain+type │    │ 500 → ~7 mods  │    │  AIDL / C++ / SELinux / │
-└──────────────┘    └─────────────┘    └────────────────┘    │  Build (+ support)      │
-                                                             └───────────┬─────────────┘
-                                                                         │
-                              ┌──────────────────────────────────────────┼────────────────┐
-                              │  Prompt layer (chỉ khác nhau giữa C1–C4)  │                │
-                              │  C1 static │ C2 bandit │ C3 RAG+DSPy │ C4 + retry       │
-                              └──────────────────────────────────────────┼────────────────┘
-                                                                         ▼
-                                                             ┌─────────────────────────┐
-                                                             │ VssGlueAgent (Aggregator)│
-                                                             │ VssVehicleHardware.cpp  │
-                                                             │ + Android.bp + SELinux  │
-                                                             └───────────┬─────────────┘
-                                                                         ▼
-                                                             ┌─────────────────────────┐
-                                                             │ Tier-1 Colab validators │
-                                                             │ Tier-2 AOSP + Cuttlefish│
-                                                             │ (+ C5: VTS + HMI)       │
-                                                             └─────────────────────────┘
+VSS Spec (500 signal) → Labelling (gán domain+type) → Module Planner (500→7 module)
+    → RAG+DSPy Agents (AIDL / CPP / SELinux / Build, song song mỗi module)
+    → Validate + Retry (chỉ C4)
+    → VssGlueAgent gộp 7 domain thành 1 Aggregator
 ```
 
-### 1.2. Script ↔ điều kiện thực nghiệm
+4 điều kiện thực nghiệm chỉ khác nhau ở tầng "RAG+DSPy Agents":
 
-| Condition | Entry script | RAG | DSPy/MIPROv2 | Adaptive prompts | Validate→retry |
-|-----------|--------------|-----|--------------|------------------|----------------|
-| **C1** Baseline | `multi_main.py` | ✗ | ✗ | ✗ | ✗ |
-| **C2** Adaptive | `multi_main_adaptive.py` | ✗ | ✗ | ✓ | ✗ |
-| **C3** RAG+DSPy | `multi_main_rag_dspy.py` | ✓ | ✓ | ✗ | ✗ |
-| **C4** Feedback | `multi_main_c4_feedback.py` | ✓ | ✓ | ✗ | ✓ |
-| **C4-Minimal** | `gen_hal_minimal_c4.py` | ✓ | ✓ | ✗ | ✓ (AIDL+CPP+SELinux only) |
-| **C5** VTS+HMI | `multi_main_c5.py` | reads C4 output | | | generates VTS + HMI |
-
-**Điểm then chốt khi trả lời hội đồng:** bốn điều kiện C1–C4 **cùng một base model** (Qwen2.5-Coder-32B); chỉ tầng prompt/retrieval/feedback thay đổi → khác biệt score gán được cho prompt engineering, không phải model.
-
-### 1.3. Cây thư mục quan trọng trong repo
-
-```
-code-codegen-aosp-llm-based/
-├── multi_main*.py              # entry points C1–C5
-├── agents/
-│   ├── rag_dspy_*.py           # C3/C4 agents
-│   ├── rag_dspy_mixin.py       # shared RAG+DSPy logic
-│   ├── vss_glue_agent.py       # Aggregator + unified VehicleProperty.h
-│   └── *_adaptive.py           # C2 variants
-├── rag/                        # ChromaDB indexing + retrieval
-├── dspy_opt/                   # compiled programs (program.json)
-├── validator/ / validator.py   # Tier-1 scoring
-├── adaptive_components/        # C2 bandit state
-└── dataset/                    # VSS inputs
-```
+| | C1 Baseline | C2 Adaptive | C3 RAG+DSPy | C4 Feedback |
+|---|---|---|---|---|
+| RAG retrieval | ✗ | ✗ | ✓ | ✓ |
+| DSPy/MIPROv2 | ✗ | ✗ | ✓ | ✓ |
+| Prompt-variant bandit | ✗ | ✓ | ✗ | ✗ |
+| Validate→retry loop | ✗ | ✗ | ✗ | ✓ |
 
 ---
 
-## 2. RAG Retrieval — hybrid 3 kênh + 3-layer HIDL filter
+## 1b. VHALAidlAgent — có gì? (baseline C1, lõi dùng chung)
 
-### 2.1. Block diagram RAG
+**File:** `agents/vhal_aidl_agent.py` — class `VHALAidlAgent`. Đây là agent baseline (C1) sinh file `.aidl` enum property; C3/C4 bọc thêm RAG+DSPy nhưng vẫn **fallback** về lõi này khi DSPy fail.
 
-```
-                    ┌─────────────────────────────────────┐
-                    │  Offline indexing (một lần)         │
-                    │  AOSP android-14.0.0_r75            │
-                    │  interfaces / sepolicy / Car        │
-                    │  CHUNK=400 words, OVERLAP=50        │
-                    │  Layer-1 HIDL path drop             │
-                    │  → ChromaDB (7 collections, ~24k)   │
-                    │    HNSW, cosine space               │
-                    └─────────────────┬───────────────────┘
-                                      │
-     query (agent + domain + props)   │
-                    ┌─────────────────▼───────────────────┐
-                    │  Online retrieval                   │
-                    │  ┌─────────┐ ┌─────────┐            │
-                    │  │ Dense   │ │ BM25    │            │
-                    │  │ embed   │ │ sparse  │            │
-                    │  └────┬────┘ └────┬────┘            │
-                    │       └─────┬─────┘                 │
-                    │             ▼                       │
-                    │       merge candidates              │
-                    │             ▼                       │
-                    │  Cross-encoder rerank (bge-reranker)│
-                    │             ▼                       │
-                    │  HIDL path filter (residual drop)   │
-                    │             ▼                       │
-                    │  top-k (DEFAULT_TOP_K=6)            │
-                    │  format // Example i | file | score │
-                    └─────────────────┬───────────────────┘
-                                      ▼
-                               aosp_context → LLM prompt
-```
+### Trách nhiệm chính
+1. **Parse** danh sách property từ YAML/JSON module spec.
+2. **Chunk** nếu > `CHUNK_SIZE=15` property (tránh timeout 32B model).
+3. **Build prompt tĩnh** + system prompt cố định → gọi `call_llm(..., temperature=0.0, response_format="json")`.
+4. **Parse JSON** `{"files":[{"path","content"}]}` → ghi file qua `SafeWriter`.
+5. **Merge enum** từ các chunk + re-assign sequential ID (hoặc fallback deterministic nếu LLM trả 0 entry).
+6. **Repair pass** 1 lần nếu JSON invalid; sau đó deterministic fallback.
 
-### 2.2. Tham số thật (đã tinh chỉnh)
-
+### System prompt tĩnh (minh họa)
 ```python
-CHUNK_SIZE_WORDS    = 400
-CHUNK_OVERLAP_WORDS = 50
-DEFAULT_TOP_K       = 6      # was 3 — C++ signatures need more context
-MIN_SCORE_THRESHOLD = 0.25
-max_chars_per_chunk = 1500   # was 800 — signatures truncated
-RERANKER_MODEL      = "BAAI/bge-reranker-base"
+self.system_prompt = (
+    "You are an expert Android Automotive OS (AAOS) Vehicle HAL engineer.\n"
+    "Generate correct, production-grade AIDL files from the provided VSS spec.\n"
+    "You MUST output ONLY valid JSON. No explanations, no markdown, no code blocks.\n"
+    'If you cannot produce perfect JSON, output exactly: {"files": []}\n\n'
+    "CRITICAL RULES FOR ANDROID 14+ AIDL:\n"
+    f"- Generate ONLY a {self.enum_name}.aidl enum file — do NOT generate IVehicle.aidl,\n"
+    "  IVehicleCallback.aidl, or VehiclePropValue.aidl (these already exist in AOSP).\n"
+    "- Use package: android.hardware.automotive.vehicle\n"
+    "- Add @VintfStability annotation\n"
+    "- Use @Backing(type=\"int\") for enum\n"
+    "- Do NOT use HIDL patterns (no V2_0 suffix, ...)\n"
+    "- The generated file must be ADDITIVE to the existing AOSP tree, not a replacement."
+)
 ```
+→ **Prompt tĩnh** = instruction cố định, không thay đổi theo score/feedback (khác C2 bandit / C3 DSPy-optimised / C4 error-feedback).
 
-> Nguồn (đã đối chiếu): `rag/aosp_retriever.py:43-46` (`DEFAULT_TOP_K`, `MIN_SCORE_THRESHOLD`, embedding, reranker), `:192` (`max_chars_per_chunk`); `rag/aosp_indexer.py:32-33` (`CHUNK_SIZE_WORDS=400`, `OVERLAP=50`), `:92` (`hnsw:space=cosine`); 7 collections trong `COLLECTION_DEFS`.
-
-### 2.3. Ba kênh retrieval — khi nào cái nào thắng
-
-| Kênh | Cơ chế | Bắt được gì | Hạn chế |
-|------|--------|-------------|---------|
-| **Dense** | `all-MiniLM-L6-v2` + Chroma HNSW cosine | Ngữ nghĩa gần (API tương tự) | Có thể miss exact name |
-| **BM25** | TF-IDF-style keyword | Tên hàm/type **chính xác** | Yếu với paraphrase |
-| **Cross-encoder** | Encode cặp (query, doc) cùng lúc | Ranking chính xác hơn bi-encoder | Chậm → chỉ rerank top-N |
-
-### 2.4. HIDL filter — path-only, 2 tầng hard-drop
-
-Code hiện tại lọc HIDL **hoàn toàn bằng path** (content-keyword đã tắt "by design"), qua hai tầng — đều là **hard DROP**, không có soft penalty:
-
-```
-Index-time   (rag/aosp_indexer.py:47-56)   ── DROP theo path pattern:
-               /1.0/ /2.0/ /3.0/ /4.0/  /hidl/ /hidl-generated/
-               /vehicle/2.0/  /v2_0/ /v1_0/ /v3_0/ …
-               HIDL_CONTENT_KEYWORDS = []   # tắt keyword-filter CHỦ ĐÍCH
-Retrieve-time (rag/aosp_retriever.py:237-248, 271-276)
-               ── DROP các chunk residual còn path HIDL sót lại
-```
-
-**Vì sao lọc path, không keyword?** Keyword dễ false-positive (comment "migrated from HIDL"). Trong tree AOSP, HIDL nằm trọn trong thư mục versioned (`.../2.0/`, `/hidl/`) nên lọc path là *exact & complete* — đúng như comment trong `aosp_indexer.py:38-42`.
-
-**Hậu quả nếu bỏ filter:** LLM học pattern HIDL deprecated → AIDL Android 14 **compile fail**.
-
-> ⚠️ **Lưu ý paper ↔ code (dễ bị hỏi):** Hình 3 trong paper vẽ "3-layer HIDL filter" (gồm 1 lớp reranker penalty ×0.5). Bản **code đã hợp nhất về path-only hard-drop** (index + retrieve) làm cổng chặn *"single, authoritative"* — **không còn nhánh score ×0.5** trong code hiện tại. Nếu hội đồng hỏi: trả lời "thiết kế 3 lớp; code chốt lại path-only vì exact hơn và đủ để chặn 100% HIDL".
-
----
-
-## 3. DSPy + MIPROv2
-
-### 3.1. Ba khái niệm cốt lõi
-
-```
-┌──────────────┐     ┌─────────────────────┐     ┌──────────────────┐
-│  Signature   │────▶│  Module             │────▶│  Predictor       │
-│  (contract)  │     │  ChainOfThought(Sig)│     │  (compiled state)│
-│  in → out    │     │  + call strategy    │     │  instruction +   │
-│  + docstring │     │                     │     │  demos from MIPRO│
-└──────────────┘     └─────────────────────┘     └──────────────────┘
-```
-
-**`dspy.ChainOfThought` vs `dspy.Predict`:** CoT **tự chèn** field ẩn `reasoning` *trước* output fields → ép model viết suy luận trước khi điền field chính (không cần tự viết “think step by step” trong prompt).
-
-### 3.2. Vòng đời 1 lần gọi predictor
-
-```
-predictor(domain=X, properties=Y, aosp_context=Z)
-   │
-   ├─ build prompt = instruction (program.json nếu có, else Signature docstring)
-   │               + few-shot demos (nếu MIPROv2 đã chọn)
-   │               + input fields hiện tại
-   ├─ Ollama / Qwen2.5-Coder
-   ├─ JSONAdapter → object đúng shape Signature
-   └─ getattr(result, "read_cases", "") or ""   # tránh AttributeError khi thiếu field
-```
-
-### 3.3. MIPROv2 — search, không gradient
-
-```
-                    ┌────────────────────────────┐
-                    │  metric_fn = composite score│
-                    │  (struct/syntax/coverage)   │
-                    └─────────────┬──────────────┘
-                                  │
-         ┌────────────────────────▼────────────────────────┐
-         │  MIPROv2.compile(module, trainset, auto=medium) │
-         │  1) Bootstrap high-scoring demos                │
-         │  2) Propose instruction candidates (LLM)        │
-         │  3) Bayesian trial search (TPE / Optuna-style)  │
-         │  4) Save best (instruction, demo-set)           │
-         └────────────────────────┬────────────────────────┘
-                                  ▼
-                     dspy_opt/saved/*.program.json
-```
-
-**Không có gold label code.** Metric là structural score từ validators — black-box search trên không gian prompt.
-
-**Ceiling agents (bỏ full MIPRO):**
-
+### User prompt tĩnh (minh họa `build_prompt`)
 ```python
-MIPRO_SKIP_AGENTS = {"aidl", "design_doc", "selinux", "build"}
-# → LabeledFewShot(k=2) thay vì ~36 trial/agent
-```
-
-Lý do: zero trial variance — đổi instruction/demo **không đổi điểm** → full search chỉ tốn ngân sách.
-
-**Config thật khi chạy full (vd. cpp):**
-
-```python
-optimizer = dspy.MIPROv2(
-    metric=metric_fn,
-    auto="medium",
-    num_threads=1,              # Ollama serialize thật sự
-    verbose=False,
+return (
+    "Generate complete Vehicle HAL AIDL files including vendor-specific property enum.\n"
+    "MANDATORY OUTPUT FORMAT:\n"
+    "Return ONLY valid JSON:\n"
+    '{\n  "files": [ {"path": "...", "content": "..." } ]\n}\n\n'
+    "CRITICAL RULES:\n"
+    "- Output ONLY the JSON object. No extra text, no fences, no comments.\n"
+    f"REQUIRED FILES:\n- .../{self.enum_name}.aidl\n\n"
+    f"VSS PROPERTIES TO INCLUDE IN {self.enum_name}.aidl:\n"
+    f"- PROP_A (BOOLEAN, READ_WRITE)\n- PROP_B (INT32, READ)\n...\n\n"
+    f"{self.enum_name}.aidl example structure:\n"
+    "@VintfStability\n"
+    '@Backing(type="int")\n'
+    f"enum {self.enum_name} {{\n"
+    "    PROP_A = 0xF0000000,\n"
+    "    PROP_B = 0xF0000001,\n"
+    "    // ... continue sequentially\n"
+    "}\n\n"
+    f"FULL VSS SPEC:\n{plan_text}\n\n"
+    "OUTPUT ONLY THE JSON NOW:"
 )
 ```
 
----
+### ID canonical + fallback (minh họa)
+LLM **không** được tin tưởng gán ID. Pipeline luôn **đóng dấu** lại 32-bit AAOS ID:
 
-## 4. C2 — Adaptive prompt selection
+```python
+# agents/rag_dspy_aidl_agent.py — _aaos_encode (C3/C4)
+_VSS_GROUP = 0x20000000   # VENDOR
+_VSS_AREA  = 0x01000000   # GLOBAL
+_TYPE_BITS = {
+    "BOOLEAN": 0x00200000, "INT": 0x00400000, "FLOAT": 0x00600000,
+    "STRING": 0x00100000, "INT64": 0x00500000, ...
+}
+def _aaos_encode(local_id: int, vtype: str = "INT") -> int:
+    type_bits = _TYPE_BITS.get((vtype or "INT").upper(), 0x00e00000)
+    return _VSS_GROUP | _VSS_AREA | type_bits | (local_id & 0xFFFF)
 
-**Công thức thực tế trong code (UCB1-style + ε-greedy):**
-
-```
-uncertainty(v) = sqrt(2 · ln(N_total) / n_v)
-score(v)       = success_rate(v) + 0.1 · uncertainty(v)
-
-ε-greedy: 10% random explore, 90% argmax score
-```
-
-> Nguồn: `adaptive_components/prompt_selector.py:173-185` (`uncertainty = np.sqrt(...)`; `score = success_rate + 0.1*uncertainty`; epsilon-greedy). Beta Thompson Sampling **riêng** dùng cho chọn **chunk-size** ở `adaptive_components/chunk_size_optimizer.py` (đúng ghi chú "TS áp cho chunk-size, không phải prompt-variant").
-
-- `success_rate` theo **bucket** số property (tiny/small/medium/large/xlarge)
-- Success threshold composite ≥ 0.8
-
-**Kết quả:** C1 vs C2 không có ý nghĩa thống kê (Mann-Whitney p≈0.90, r≈0.01) → chọn giữa vài prompt tĩnh **không** vượt 1 prompt tốt cố định trong domain này.
-
-**Lưu ý khi trả lời:** paper/thesis có thể gọi “Thompson Sampling”; implementation adaptive thực tế nghiêng UCB1+ε-greedy. Nên nói rõ “Bayesian multi-armed bandit / adaptive selection; code dùng UCB-style score + ε-greedy”.
-
----
-
-## 5. Chunking domain lớn
-
-```
-Domain với N properties
-        │
-        ▼
-┌───────────────────┐
-│ split disjoint    │  CHUNK_SIZE: AIDL≈60, CPP≈30
-│ batches (no overlap)
-└─────────┬─────────┘
-          │
-    ┌─────▼─────┐   ┌─────▼─────┐   ┌─────▼─────┐
-    │ chunk 0   │   │ chunk 1   │   │ chunk k   │   ← mỗi cái = 1 LLM call ĐỘC LẬP
-    │ predictor │   │ predictor │   │ predictor │
-    └─────┬─────┘   └─────┬─────┘   └─────┬─────┘
-          └───────────┬───┴───────────────┘
-                      ▼
-                 merge + name override về AIDL thật
-                      ▼
-              cross-chunk dedup (sau merge)
+# Sau LLM sinh enum → _reencode_enum_output:
+# "Force every enum constant to the correct full 32-bit AAOS ID,
+#  regardless of what the LLM wrote."
+correct_id = hex(_aaos_encode(base + j, prop_type))
+line = f"    {name} = {correct_id},"
 ```
 
-**Đúng cross-chunk nhờ cấu trúc, không nhờ “LLM nhớ”:**
+**Fallback deterministic** (C1, khi LLM trả 0 entry hoặc JSON fail):
+```python
+def _write_fallback_vss(self, props: list) -> None:
+    lines = []
+    for i, p in enumerate(props):
+        name = p.get("name", f"PROP_{i}")
+        lines.append(f"    {name} = 0xF{i:07X},")  # sequential, không phụ thuộc LLM
+    # viết enum hoàn chỉnh từ list property thô
+```
+→ Dù LLM hallucinate ID hoặc fail hoàn toàn, file `.aidl` cuối cùng **luôn** có ID 32-bit hợp lệ (VENDOR|GLOBAL|TYPE|index). DOMAIN_BASE giữ offset local theo domain (adas=0x1000, body=0x2000, …) rồi encode full 32-bit.
 
-- Property slice **không chồng lấp**
-- Tên property được **override** về giá trị AIDL đã parse trước generate
-- Dedup toàn cục **sau** merge (2 chunk có thể độc lập sinh cùng 1 case)
-
-**Narrow entries-retry:** chỉ retry các property name mismatch, không regenerate cả chunk.
+### Domain-aware (bug đã sửa)
+Trước đây hardcoded `VehiclePropertyAdas` → mọi domain ghi đè cùng 1 file. Hiện:
+```python
+self.domain_cap = self.domain.capitalize()
+self.enum_name = f"VehicleProperty{self.domain_cap}"  # Adas → VehiclePropertyAdas.aidl
+```
 
 ---
 
-## 6. C4 — Generate → Validate → Retry (+ surgical regen)
+## 2. RAG Retrieval — kiến trúc hybrid 3 kênh (không chỉ embedding đơn thuần)
 
-### 6.1. Vòng lặp tổng
+### 2.1. Indexing — cách corpus được chia nhỏ
 
+```python
+CHUNK_SIZE_WORDS    = 400   # mỗi chunk ~400 từ
+CHUNK_OVERLAP_WORDS = 50    # chồng lấp 50 từ giữa 2 chunk liên tiếp
 ```
-        ┌────────────┐
-        │  Generate  │
-        └─────┬──────┘
-              ▼
-        ┌────────────┐
-        │  Validate  │  clang + AIDL consistency + 5 hard-fail checks
-        └─────┬──────┘
-              │
-         pass?├── yes ──▶ write file
-              │
-              no
-              ▼
-        ┌────────────────────┐
-        │ error → extra_ctx  │  merge vào aosp_context
-        │ MAX_RETRIES limit  │  hết ngân sách → giữ bản điểm cao nhất, pipeline tiếp tục
-        └─────────┬──────────┘
-                  │
-                  └──▶ Generate lại
+Overlap tồn tại để tránh cắt đứt 1 method signature/block logic đúng ngay ranh giới chunk.
+
+**HIDL filter Layer 1 (lúc index):** loại trừ file theo path TRƯỚC KHI đưa vào ChromaDB.
+
+**ChromaDB config:** `metadata={"hnsw:space": "cosine"}` — dùng **HNSW** (Hierarchical Navigable Small World — approximate nearest-neighbor search, dạng graph-based) để index vector, cosine distance làm metric khoảng cách.
+
+### 2.2. Retrieval — 3 kênh độc lập
+
+**Kênh 1 — Dense retrieval (embedding + ChromaDB):**
+```python
+embedding = self._embed(query)   # SentenceTransformer.encode(..., normalize_embeddings=True)
+raw = col.query(query_embeddings=[embedding], n_results=..., include=["documents","metadatas","distances"])
+score = round(1.0 - dist, 4)     # cosine distance → cosine similarity
 ```
 
-### 6.2. Năm hard-fail check *trước* clang (`_validate_cpp` · `dspy_opt/validators.py:192`)
-
-| # | Check | Bắt gì | Vì sao clang không đủ |
-|---|--------|--------|------------------------|
-| 1 | Cân bằng `{`/`}` | Output cắt cụt (hết token) | Đoạn cụt vẫn “trông” hợp lệ tới điểm cắt |
-| 2 | Regex stub `(*callback)({})` | Stub rỗng thay vì I/O thật | Cú pháp hợp lệ, **sai nghĩa** |
-| 3 | Field `booleanValues`/`boolValues` | Field không tồn tại trên AOSP thật | Có thể tồn tại trong stub validator |
-| 4 | Khai báo `readRegister`/`writeRegister` không định nghĩa | Lỗi link-time | `-fsyntax-only` không link |
-| 5 | Số `case` vs số property configs | Property “chui” compile nhưng thiếu case | `default: return false` vẫn compile |
-
-### 6.3. Surgical retry — chỉ regen chunk lỗi
-
-```
-clang error lines
-      │
-      ▼
-_enclosing_property_name(line)  ── dò ngược tìm case VehicleProperty::X
-      │
-      ▼
-reported property names
-      │
-      ▼
-map name → chunk_idx
-      │
-      ├── chunk lỗi     → gọi LLM lại
-      └── chunk sạch    → reuse case cũ từ previous_full_code (regex+brace, không đưa full code vào prompt)
+**Kênh 2 — BM25 sparse retrieval (keyword-based, TF-IDF-style):**
+```python
+# rag/aosp_retriever.py
+self._bm25_index[col_name] = BM25Okapi([c["text"].split() for c in corpus])
+scores = self._bm25_index[col_name].get_scores(query.split())
 ```
 
-**Tại sao không đưa `previous_full_code` vào prompt?** Tránh phình token; prompt retry vẫn nhỏ bằng lần generate đầu.
+**TF-IDF-style nghĩa là gì (giải thích + minh họa):**
+- **TF (Term Frequency):** từ xuất hiện càng nhiều trong 1 chunk → điểm càng cao (nhưng BM25 *bão hòa* — lần thứ 10 không quan trọng gấp 10 lần lần thứ 1).
+- **IDF (Inverse Document Frequency):** từ hiếm trong toàn corpus (vd. `getAllPropertyConfigs`, `VehiclePropValue`) được **boost** mạnh; từ phổ biến (`the`, `return`, `int`) gần như bị bỏ qua.
+- BM25 = biến thể hiện đại của TF-IDF: thêm chuẩn hóa theo độ dài document + tham số \(k_1, b\).
 
-> Nguồn: `dspy_opt/validators.py:697` (`_enclosing_property_name` — dò ngược error-line → property); `agents/rag_dspy_cpp_agent.py:711-758` (`chunks_needing_regen`, `_reuse_chunk_cases` — chỉ regen chunk lỗi, copy nguyên chunk sạch); `MAX_RETRIES = 3` ở `multi_main_c4_feedback.py:68`.
+**Ví dụ trực quan:**
+| Query token | Dense (embedding) | BM25 |
+|-------------|-------------------|------|
+| `getAllPropertyConfigs` | Có thể match chunk nói về "lấy config property" (ngữ nghĩa) | Chỉ match chunk **chứa đúng chuỗi** `getAllPropertyConfigs` |
+| `IVehicleHardware` | Có thể match interface tương tự | Bắt đúng tên class AOSP |
+
+→ Hybrid = dense bắt ngữ nghĩa + BM25 bắt identifier chính xác (tên hàm/type AOSP) mà embedding dễ bỏ lỡ.
+
+**Kênh 3 — Cross-encoder reranker (sau khi gộp kênh 1+2):**
+```python
+RERANKER_MODEL = "BAAI/bge-reranker-base"
+pairs = [[combined_query, r["text"]] for r in merged]
+scores = self._reranker.predict(pairs)
+```
+Cross-encoder khác bi-encoder (dùng cho embedding): bi-encoder encode query và document RIÊNG BIỆT rồi so cosine (nhanh, pre-compute được); cross-encoder encode CẢ CẶP CÙNG LÚC qua model (chính xác hơn nhưng chậm, không pre-compute được) — nên chỉ dùng để RERANK top-N đã lọc thô, không search toàn corpus.
+
+### 2.3. Tham số thật — đã tinh chỉnh qua thực nghiệm
+
+```python
+DEFAULT_TOP_K       = 6      # comment gốc: "was 3 — cpp method signatures need more chunks"
+MIN_SCORE_THRESHOLD = 0.25
+max_chars_per_chunk = 1500   # comment gốc: "was 800 — sigs were truncated"
+```
+Cả 2 giá trị đều TĂNG so với bản đầu (3→6, 800→1500) — dấu hiệu tinh chỉnh dựa trên quan sát thực tế (signature C++ dài, dễ bị cắt cụt ở ngưỡng thấp).
+
+### 2.4. HIDL filter Layer 2 — vị trí chính xác
+
+```python
+def _parse_results(self, raw, top_k):
+    HIDL_PATH = ("/2.0/", "/1.0/", "/3.0/", "/hidl/", ...)
+    if any(m in meta.get("file","").lower() for m in HIDL_PATH):
+        continue   # loại tại bước parse kết quả, trước khi vào prompt
+```
+
+### 2.5. Layer 3 — "phạt điểm", không "drop"
+
+Khác Layer 1/2 (loại tuyệt đối), Layer 3 chỉ giảm điểm (`score × 0.5`) cho chunk còn dính legacy reference nhẹ — vẫn giữ làm dự phòng nếu thiếu chunk sạch, nhưng luôn xếp sau chunk hoàn toàn sạch.
+
+### 2.6. Format cuối cùng đưa vào prompt
+
+```python
+lines = [f"### {label}", f"# {len(retrieved)} example(s) from real AOSP source.", "# Match signatures exactly.", ""]
+for i, r in enumerate(retrieved, 1):
+    lines += [f"// --- Example {i} | {r['filename']} | score: {r['score']:.2f} ---", text, ""]
+```
+LLM thấy rõ từng example kèm điểm số + tên file gốc, không phải context vô danh. Store: ChromaDB, 7 collection theo domain, 24,245 chunk.
 
 ---
 
-## 7. Validation 2 tầng
+## 3. DSPy + MIPROv2 — prompt optimization
 
+### 3.0. Kiến trúc lớp bên trong DSPy — Signature / Module / Predictor
+
+Ba khái niệm cốt lõi, hay bị hỏi phân biệt:
+
+| Khái niệm | Vai trò | Trong project |
+|---|---|---|
+| **Signature** | Khai báo CONTRACT — input field nào, output field nào, docstring làm instruction gốc | `hal_signatures.py` — VD `CppVehicleHardwareSignature(domain, properties, aosp_context -> reasoning, read_cases, write_cases)` |
+| **Module** | Đóng gói 1 Signature + chiến lược gọi LLM (bao nhiêu lần, có "suy nghĩ" hay không) | `dspy.ChainOfThought(SIGNATURE_CLASS)` |
+| **Predictor** | Instance THẬT thực thi — giữ trạng thái đã compile (instruction cuối + demo đã chọn) | `self.entries_predictor`, `self.register_body_predictor` |
+
+**`dspy.ChainOfThought` làm gì khác `dspy.Predict` (bản thường):** tự động chèn THÊM 1 output field ẩn tên `reasoning` VÀO TRƯỚC các field thật trong Signature, buộc LLM phải viết ra chuỗi suy luận trước khi điền các field chính thức — cơ chế "chain of thought" chính là ép model qua bước trung gian này trước khi trả lời, không cần người dùng tự viết prompt "hãy suy nghĩ từng bước".
+
+**Vòng đời 1 lệnh gọi predictor:**
 ```
-┌──────────────────────────────────────────────────────────┐
-│ Tier-1  Colab (mọi generate/retry — rẻ, hàng nghìn lần)  │
-│  · Python structure/coverage heuristics                  │
-│  · clang++ -fsyntax-only (+ stub headers)                │
-│  · checkpolicy / AIDL parse / BP parse                   │
-│  Bắt: syntax, duplicate case, undeclared id              │
-│  Không bắt: Soong, linker, runtime behaviour             │
-└───────────────────────────┬──────────────────────────────┘
-                            │
-┌───────────────────────────▼──────────────────────────────┐
-│ Tier-2  GCP + Cuttlefish (ít lần — đắt)                  │
-│  · AOSP 14 tree, aosp_cf_x86_64_auto                     │
-│  · aidl --structured, mmm/Soong, full image, VTS         │
-│  Ground truth production orientation                     │
-└──────────────────────────────────────────────────────────┘
+predictor(domain=X, properties=Y, aosp_context=Z)
+    → build prompt = instruction (từ program.json nếu có, else Signature docstring)
+                      + demo examples (few-shot, nếu MIPROv2 đã chọn)
+                      + input fields hiện tại (domain, properties, aosp_context)
+    → gửi tới Ollama (Qwen2.5-Coder)
+    → JSONAdapter parse response thành đúng shape Signature khai báo
+    → trả về object có .reasoning, .read_cases, .write_cases (attribute access)
 ```
 
-**Composite score (Tier-1):**
+**Vì sao `getattr(result, "read_cases", "") or ""` xuất hiện khắp nơi trong code:** nếu JSONAdapter parse THIẾU 1 field (model không sinh đủ, ví dụ dừng giữa chừng) — object trả về vẫn tồn tại nhưng field đó KHÔNG có attribute, `getattr` với default tránh `AttributeError` sập chương trình.
 
+### 3.1. Không cần gold-standard label
+
+Không có "đáp án đúng" cho VHAL C++ làm nhãn huấn luyện. MIPROv2 optimize dựa trên **metric function** (structural score từ `validators.py`), không so khớp với file mẫu.
+
+### 3.2. Quy trình
+
+1. **Bootstrap demonstrations** — chạy prompt hiện tại, giữ output điểm cao làm few-shot example
+2. **Propose instruction candidates** — LLM tự đề xuất cách diễn đạt khác
+3. **Bayesian trial search** — `auto="medium"`, ~36 lệnh gọi/agent, tìm (instruction × demo) tốt nhất
+4. Lưu program tốt nhất — cặp (instruction, demo-set) điểm cao nhất
+
+### 3.3. Kiến trúc lưu trữ — Signature vs Compiled Program
+
+```python
+class _BaseHALModule(dspy.Module):
+    def __init__(self):
+        self.generate = dspy.ChainOfThought(self.SIGNATURE_CLASS)   # đọc signature docstring
+    def load(self, path):
+        # nếu có file đã lưu, GHI ĐÈ instruction bằng bản đã optimize
+        ...
 ```
-Score(a) = w_s·S(a) + w_x·X(a) + w_c·C(a)
+
+Instruction thật LLM nhận có thể KHÁC docstring gốc trong source — MIPROv2 không chỉ chọn demo, còn có thể **tự viết lại câu chữ instruction** rồi lưu cố định. Đây là lý do program đã compile được gọi là "optimised program", tách biệt khỏi source code signature.
+
+### 3.4. Ceiling agents — bypass MIPROv2
+
+```python
+MIPRO_SKIP_AGENTS = {"aidl", "design_doc", "selinux", "build"}
+MAX_LABELED_DEMOS = 2
 ```
 
-| Agent | struct | syntax | coverage |
-|-------|--------|--------|----------|
-| aidl | 0.30 | 0.50 | 0.20 |
-| cpp | 0.35 | 0.45 | 0.20 |
-| selinux | 0.25 | **0.65** | 0.10 |
-| build | 0.35 | 0.55 | 0.10 |
-| design_doc | 0.50 | 0.30 | 0.20 |
+**Chỉ số ít agent (cpp và các agent KHÔNG nằm trong set trên) thực sự chạy full MIPROv2 search** — 4 agent kể trên dùng `LabeledFewShot(k=2)` (2 demo, ~2 lệnh gọi), không phải MIPROv2 đầy đủ (~36 lệnh gọi). Lý do: các agent này cho thấy zero trial variance (điểm không đổi dù thử instruction/demo khác nhau) — đã chạm trần khả năng cải thiện qua prompt, chạy full search chỉ tốn thêm ngân sách vô ích.
 
-Syntax trọng số cao vì fail cú pháp = không vào được build. SELinux syntax=0.65 vì policy sai có thể phá toàn bộ image.
+**Config thật của MIPROv2 khi CÓ chạy (agent cpp):**
+```python
+optimizer = dspy.MIPROv2(
+    metric=metric_fn,
+    auto="medium",          # MIPRO_AUTO_SETTING — cân bằng ngân sách search vs thời gian
+    num_threads=1,           # Ollama serialize request thật sự — nhiều thread chỉ thêm overhead, không tăng tốc
+    verbose=False,
+)
+optimised_module = optimizer.compile(
+    module, trainset=trainset,
+    requires_permission_to_run=False,   # tự động chạy, không cần xác nhận tương tác
+    program_aware_proposer=False,       # bộ đề xuất instruction KHÔNG đọc cấu trúc code chương trình khi propose
+)
+```
+
+**`auto="medium"` quyết định gì:** khi dùng `auto=`, MIPROv2 tự tính `num_candidates`/`num_trials` nội bộ — không được truyền `max_bootstrapped_demos`/`max_labeled_demos` cùng lúc (raise `ValueError` nếu truyền cả 2). `"medium"` là mức cân bằng giữa `"light"` (nhanh, ít trial) và `"heavy"` (chậm, nhiều trial, tìm kỹ hơn).
 
 ---
 
-## 8. Runtime call chain (đã validate trên Cuttlefish)
+## 4. C2 — Adaptive Prompt Selection
+
+**Công thức thật (UCB1 + ε-greedy, không phải Beta-posterior sampling):**
 
 ```
-VTS Client
-  getValueSync / setValueSync
-        │
-        ▼
-IVehicle  (binder — DefaultVehicleHal, AOSP-owned)
-        │
-        ▼
-VssVehicleHardware : IVehicleHardware     ← generated Aggregator (vendor seam)
-  mPropDomainIdx[propId] → domainIdx
-        │
-        ▼
-VehicleHalService{Domain}   (Adas/Body/Cabin/… — object local mỗi dispatch)
-  readRegister / writeRegister
-        │
-        ▼
-HW register file  (vendor partition, ifstream/ofstream)
+uncertainty = sqrt(2 · ln(N_total) / n_variant)
+score(v) = success_rate(v) + 0.1 × uncertainty(v)
+→ ε-greedy: 10% random explore, 90% chọn argmax score
 ```
 
-**Vì sao cần Aggregator?** `IVehicle` chỉ cho **một** `IVehicleHardware` implementation; 500 property thuộc 7 class → pattern “1 façade, nhiều domain phía sau”.
+- `success_rate` = successes/attempts của variant trong bucket property-count hiện tại (tiny/small/medium/large/xlarge)
+- `uncertainty` tăng khi variant thử ÍT LẦN — bù điểm tạm thời cho variant chưa đủ dữ liệu
 
-**Chi phí:** mỗi dispatch tạo domain service **local** (không singleton) → không giữ state in-memory; state nằm trên file.
-
-**VssPropertyRoundTrip:** SET→GET qua đúng domain + file I/O — test duy nhất exercise full chain (các VTS khác chủ yếu metadata/config).
+**Kết quả thực nghiệm:** C1 vs C2 không có ý nghĩa thống kê (Mann-Whitney p=0.903, r=0.012) — chọn lọc GIỮA prompt tĩnh không tạo khác biệt đáng kể so với 1 prompt tốt nhất cố định.
 
 ---
 
-## 9. Thống kê
+## 5. Chunking cho domain lớn
 
-**Kruskal-Wallis** (4 nhóm, non-parametric):
+**CHUNK_SIZE giới hạn** — domain > ngưỡng bị chia thành batch không chồng lấp (disjoint), gọi `entries_predictor`/`register_body_predictor` riêng từng batch, merge kết quả cuối.
 
-\[
-H = \frac{12}{N(N+1)}\sum_i\frac{R_i^2}{n_i} - 3(N+1)
-\]
+**Đặc điểm quan trọng:** mỗi chunk là 1 lệnh gọi LLM **độc lập, stateless** — chunk sau KHÔNG có bộ nhớ về chunk trước (DSPy ChainOfThought không maintain conversation history). Tính đúng đắn cross-chunk dựa vào **cấu trúc** (property slice không chồng lấp + mỗi tên được override về đúng giá trị AIDL thật trước khi generate), không dựa vào "LLM nhớ".
 
-Ví dụ reported: \(H=20.495\), \(p=0.000134\) → bác bỏ “4 điều kiện cùng phân phối”.
+**Narrow entries-retry:** sau khi 1 chunk sinh entries, cross-check từng tên với AIDL thật đã parse — nếu có tên không khớp, chỉ retry LẠI những tên đó (không phải cả chunk) — LLM tự sửa qua 1 lệnh gọi tiếp theo.
 
-**Mann-Whitney U + effect size** (rank-biserial):
+---
 
-\[
-r = 1 - \frac{2U}{n_1 n_2}
-\quad\text{(hoặc } r = Z/\sqrt{N}\text{ tùy công thức paper)}
-\]
+## 6. C4 — Generate → Validate → Retry
 
-| Cặp | Ý nghĩa thực nghiệm |
-|-----|---------------------|
-| C1 vs C2 | negligible — adaptive prompts không đủ |
-| C1 vs C3 | retrieval đã có tín hiệu |
-| C1 vs C4 | medium, significant — full pipeline |
-| C3 vs C4 | small, thường chưa vượt ngưỡng mạnh |
+```
+Generate → Validate (clang + AIDL consistency check) → Pass?
+                                                          → yes: ghi file
+                                                          → no: error feedback → prompt mới → Generate lại
+```
 
-**Vì sao non-parametric?** Score bị chặn [0,1], phân phối lệch → không giả định chuẩn như ANOVA/t-test.
+Error feedback được đưa vào `extra_context`, merge vào `aosp_context` — chảy vào MỌI lệnh gọi `entries_predictor`/`register_body_predictor` của lần retry, cho LLM biết chính xác cần sửa gì thay vì generate lại ngẫu nhiên.
+
+**Giới hạn có chủ đích:** retry có `MAX_RETRIES` cố định — hết ngân sách mà vẫn lỗi, giữ bản điểm cao nhất, đánh dấu chưa đạt, pipeline **tiếp tục** (không dừng cứng toàn bộ run). Trade-off giữa throughput và đảm bảo tuyệt đối.
+
+---
+
+## 7. Kiến trúc Validation — 2 tầng độc lập
+
+| Tầng | Công cụ | Bắt được | Không bắt được |
+|---|---|---|---|
+| 1 — Colab | `clang++ -fsyntax-only` + stub AOSP header | Cú pháp, duplicate case, undefined identifier | Lỗi Soong build system, linker, hành vi runtime |
+| 2 — GCP Cuttlefish | AOSP 14 build thật + VTS | Mọi thứ tầng 1 bỏ sót | — (ground truth) |
+
+Tầng 1 chạy trên MỌI lần generate/retry (rẻ, nhanh — hàng nghìn lần trong suốt thực nghiệm C1-C4). Tầng 2 chạy 1 lần trên artifact C4 cuối cùng (đắt — cần build thật + boot emulator).
+
+### 7.1. Bên trong tầng 1 — 5 lớp check TRƯỚC KHI gọi clang
+
+`validate_cpp()` không gọi clang ngay — chạy qua 5 "hard-fail check" bằng Python thuần trước, mỗi cái bắt 1 lớp lỗi mà compiler không thấy được (vì compile được không có nghĩa là ĐÚNG):
+
+| # | Check | Bắt lỗi gì | Vì sao clang không tự bắt được |
+|---|---|---|---|
+| 1 | Đếm `{`/`}` cân bằng | Output bị cắt cụt giữa chừng (hết token) | Code cụt vẫn có thể "trông giống" hợp lệ tới điểm bị cắt |
+| 2 | Regex `(*callback)({})` | Stub giả — trả rỗng thay vì đọc/ghi file thật | Đây là hợp lệ về cú pháp, chỉ sai về NGỮ NGHĨA (không làm đúng việc) |
+| 3 | Field `booleanValues`/`boolValues` | Dùng field không tồn tại trong `RawPropValues` thật | Field này CÓ TỒN TẠI trong stub tự viết của validator (nếu không chặn riêng) — compile qua nhưng AOSP thật không có |
+| 4 | `readRegister`/`writeRegister` khai báo mà không định nghĩa | Link-time error, không phải compile-time | `-fsyntax-only` không chạy tới bước link, nên không tự phát hiện |
+| 5 | Đếm `case` trong `readRegister()` so với số property trong `getAllPropertyConfigs()` | Property "chui lọt" qua compile nhưng thiếu hẳn 1 case | Thiếu 1 case = rơi vào `default: return false` — vẫn hợp lệ cú pháp |
+
+Chỉ SAU KHI qua đủ 5 lớp này, code mới thật sự được đưa cho `clang++ -fsyntax-only` compile.
+
+### 7.2. Cơ chế inject property name vào MỌI lỗi clang
+
+Sau khi clang trả lỗi, mỗi dòng lỗi được xử lý thêm 1 bước: dò NGƯỢC từ số dòng lỗi lên trên, tìm block `case static_cast<int32_t>(VehicleProperty::X)` GẦN NHẤT bao quanh dòng đó — gắn tên `X` vào cuối thông báo lỗi.
+
+```python
+def _enclosing_property_name(line_no: int) -> str:
+    for i in range(line_no - 1, -1, -1):        # dò ngược từ dòng lỗi
+        m = name_re.search(code_lines[i])
+        if m:
+            return m.group(1)
+    return ""
+```
+
+Đây là cầu nối giữa "validator phát hiện lỗi ở dòng nào" và "cơ chế retry biết chunk nào cần sửa" (mục 7.3).
+
+### 7.3. Surgical retry — regenerate đúng 1 chunk, không phải toàn bộ domain
+
+**Vấn đề kiến trúc:** domain lớn được chia nhiều chunk, mỗi chunk là 1 lệnh gọi LLM độc lập. Regenerate lại TOÀN BỘ khi validate fail có xác suất cao không hội tụ — sửa đúng chunk lỗi cũ không đảm bảo chunk khác (generate lại từ đầu) không tự tạo lỗi MỚI.
+
+```python
+# Bước 1: trích tên property từ error feedback (mọi lỗi đều có tên, nhờ mục 7.2)
+reported_names = set(re.findall(r"'([A-Z][A-Z0-9_]*)'", extra_context))
+
+# Bước 2: map tên → chunk index
+for i in range(0, len(prop_list), chunk_size):
+    chunk_idx = i // chunk_size
+    chunk_prop_names = {p.name for p in prop_list[i:i+chunk_size]}
+    if chunk_prop_names & reported_names:
+        chunks_needing_regen.add(chunk_idx)
+
+# Bước 3: chunk KHÔNG lỗi → lấy nguyên case cũ, KHÔNG gọi LLM lại
+if chunk_idx not in chunks_needing_regen:
+    reused_read, reused_write = _reuse_chunk_cases(chunk)
+    continue
+```
+
+**Điểm mấu chốt:** `previous_full_code` không bao giờ vào prompt LLM — chỉ dùng để trích xuất (regex + đếm ngoặc, thuần Python) case của chunk KHÔNG lỗi. Prompt mỗi lần retry vẫn nhỏ y hệt trước, không có rủi ro phình token dù `previous_full_code` dài hàng nghìn dòng.
+
+**Trích xuất theo TÊN, không theo VỊ TRÍ:** code cuối cùng là các chunk đã NỐI LẠI (ranh giới chunk không còn tồn tại trong text), nên phải quét toàn bộ tìm case theo TÊN property, không thể cắt theo vị trí ký tự.
+
+### 7.4. Cross-chunk deduplication
+
+Dedup "trong 1 lần gọi" không đủ vì mỗi chunk độc lập — 2 chunk khác nhau có thể ĐỘC LẬP cùng sinh case cho 1 property. Lớp dedup thứ 2 chạy SAU KHI merge toàn bộ chunk — điểm DUY NHẤT có đủ thông tin toàn cục để phát hiện trùng lặp xuyên-chunk.
+
+---
+
+## 8. Runtime Call Chain đã validate
+
+```
+VTS Client (IVhalClient::getValueSync/setValueSync)
+    → IVehicle (binder service)
+    → VssVehicleHardware (Aggregator — route theo propId → domain, dùng mPropDomainIdx)
+    → Domain Service (VehicleHalService{Domain} — readRegister/writeRegister)
+    → HW Register File (file thật trên vendor partition)
+```
+
+7 VTS test, quan trọng nhất là `VssPropertyRoundTrip` — SET→GET qua ĐÚNG domain service + file I/O thật, test DUY NHẤT chạm toàn bộ chain (6 test còn lại chỉ kiểm tra metadata/config, không exercise đường ghi/đọc thật).
+
+### 8.1. Aggregator dispatch — vì sao cần 1 tầng trung gian, không gọi thẳng domain
+
+`VssVehicleHardware` (Aggregator) là **object DUY NHẤT** được đăng ký với `DefaultVehicleHal` (AOSP reference code) — không phải 7 domain service riêng lẻ. Lý do kiến trúc: AIDL `IVehicle` interface chỉ cho phép **1 implementation `IVehicleHardware` duy nhất** trên toàn hệ thống, nhưng 500 property lại thuộc 7 class khác nhau — Aggregator giải quyết mâu thuẫn này bằng pattern "1 mặt tiền, nhiều impl phía sau":
+
+```cpp
+// mPropDomainIdx: map propId -> domain index, build 1 lần lúc khởi tạo
+StatusCode VssVehicleHardware::dispatchGetValues(int domainIdx, ...) const {
+    if (domainIdx == 0) { VehicleHalServiceAdas svc; return svc.getValues(...); }
+    else if (domainIdx == 1) { VehicleHalServiceBody svc; return svc.getValues(...); }
+    // ... đủ 7 domain
+}
+```
+
+**Chi phí thật của pattern này:** mỗi lần dispatch, 1 object domain service MỚI được khởi tạo TẠI CHỖ (`VehicleHalServiceAdas svc;` — biến cục bộ, không static/singleton) — nghĩa là domain service KHÔNG giữ trạng thái giữa các lần gọi, mọi state (nếu có) phải nằm trong file thật trên đĩa (`registerPath()` đọc/ghi qua `std::ifstream`/`std::ofstream`), không phải trong memory của object.
+
+### 8.2. `dump()` cũng dùng đúng pattern dispatch này (không phải logic riêng)
+
+`dumpsys --get/--set` đi qua ĐÚNG con đường dispatch trên, chỉ khác ở bước đầu: Aggregator tự resolve tên property (hoặc ID số) thành `propId` bằng `mPropNames` (map tên→ID, build cùng lúc với `mPropIds` từ dữ liệu AIDL thật) — rồi mới tra `mPropDomainIdx` để biết gọi `dispatchDump()` với domainIdx nào.
+
+---
+
+## 9. Phương pháp thống kê (giải thích lại)
+
+### Vì sao không dùng t-test / ANOVA?
+Composite score bị **chặn [0, 1]**, phân phối thực nghiệm **lệch** (nhiều điểm gần 1.0, đuôi dài về 0) → vi phạm giả định phân phối chuẩn. Dùng **rank-based non-parametric**:
+
+1. **Kruskal-Wallis H** — so **4 nhóm** cùng lúc (omnibus test).
+2. **Mann-Whitney U** — post-hoc từng cặp (sau khi H bác bỏ H₀).
+3. **Effect size r (rank-biserial)** — đo *độ lớn* khác biệt, không chỉ “có/không”.
+
+### Công thức & số liệu thật
+**Kruskal-Wallis H:**
+```
+H = 12 / (N(N+1)) · Σ(Rᵢ² / nᵢ) − 3(N+1)
+```
+- N = 266 quan sát (module-level scores gộp 4 điều kiện)
+- k = 4 nhóm
+- H = 20.4950, **p = 0.000134** → bác bỏ H₀ “4 điều kiện cùng phân phối”. Có ít nhất 1 cặp khác biệt.
+
+**Mann-Whitney U + rank-biserial r:**
+```
+r = 1 − 2U / (n₁ · n₂)
+```
+| Cặp | U | p | r | Ý nghĩa thực tế |
+|-----|---|---|---|-----------------|
+| C1 vs C2 | 2780.0 | 0.903 | 0.012 | **negligible** — adaptive prompt selection không tạo khác biệt |
+| C1 vs C4 | 1360.0 | 0.000189 | 0.375 | **medium + có ý nghĩa** — RAG+DSPy+feedback vượt baseline rõ |
+| C3 vs C4 | 1491.0 | 0.273 | 0.114 | **small, chưa đạt ngưỡng** — retry loop cải thiện nhưng chưa đủ mạnh thống kê |
+
+### Cách đọc khi bị hỏi
+- **p-value:** khác biệt có phải do ngẫu nhiên không? (p < 0.05 → đáng tin cậy).
+- **r:** khác biệt *lớn tới đâu*? (|r| ≈ 0.1 small, 0.3 medium, 0.5 large).
+- C1 vs C4 đạt **cả hai** (đáng tin + đủ lớn) → kết luận chính của thesis.
+- C3 vs C4 **không** tô hồng: báo cáo trung thực “không có ý nghĩa thống kê mạnh”.
+- C1 vs C2 gần như trùng phân phối → bandit chọn prompt tĩnh không đủ để cải thiện score.
+
+### Lưu ý phòng vấn
+- Score 0.85 **không** tự mang ý nghĩa thống kê — chỉ là rubric. Phải có Kruskal/Mann-Whitney mới kết luận được.
+- Structural score **không phải accuracy** (không có gold label classification).
 
 ---
 
 # PHẦN B — KIẾN THỨC NỀN AI/LLM
 
-## 1. LLM sinh code
+## 1. LLM sinh code như thế nào
 
-Autoregressive Transformer: dự đoán token tiếp theo.  
-Project defaults (`llm_client.py`):
+LLM (kiến trúc Transformer) dự đoán **token tiếp theo** dựa trên chuỗi token trước đó (autoregressive). Code là text — sinh từng token 1, mỗi bước tính phân phối xác suất trên toàn vocabulary, chọn/sample 1 token, lặp lại tới khi gặp EOS hoặc chạm max_tokens.
+
+**Temperature/top_p** — hệ số điều chỉnh độ "nhọn" của phân phối xác suất trước khi sample: thấp → gần deterministic; cao → đa dạng hơn, rủi ro sai nhiều hơn.
+
+**Giá trị thật dùng trong project** (`llm_client.py`):
+```python
+def call_llm(
+    prompt: str,
+    system: str = "",
+    *,
+    temperature: float = 0.25,   # ← mặc định generate code
+    top_p: float = 1.0,
+    ...
+):
+    payload = {
+        "model": "qwen2.5-coder:32b",
+        "options": {
+            "temperature": temperature,
+            "top_p": top_p,
+            "num_ctx": 32768,   # 32K ổn định hơn 128K RoPE scaling
+            "num_predict": -1,
+        },
+    }
+```
+Riêng lệnh gọi liên quan parse JSON / AIDL agent dùng `temperature=0.0` (deterministic tuyệt đối — JSON cần đúng cú pháp, không cần đa dạng):
+```python
+# VHALAidlAgent / call_llm_json
+raw = call_llm(..., temperature=0.0, response_format="json")
+```
+
+**Vì sao 0.25, không phải 0.0 hay 0.7:**
+- `0.0` hoàn toàn + cùng prompt → output **y hệt** lần trước → retry C4 vô nghĩa.
+- `0.7+` → code dễ lệch cấu trúc, hallucinate identifier.
+- `0.25` = đủ thấp để cấu trúc ổn định, đủ cao để retry có cơ hội sinh bản khác khi nhận error feedback.
+
+---
+
+## 2. Metric function vs Loss function
+
+| | Loss function | Metric function |
+|---|---|---|
+| Dùng khi nào | Training/fine-tune (gradient descent) | Đánh giá output, không đổi trọng số model |
+| Đặc điểm | Phải khả vi (differentiable) | Không cần khả vi |
+| Ví dụ | Cross-entropy, MSE | Accuracy, structural score |
+
+**Thesis này KHÔNG có loss function** — không fine-tune model, không backpropagation, không gradient. Model (Qwen2.5-Coder) dùng nguyên trọng số (frozen), chỉ thay đổi **PROMPT** — đây là prompt engineering, không phải model training.
+
+MIPROv2 dùng **metric function** (structural score) để tìm kiếm (search) instruction+demo tốt nhất — về bản chất thuật toán gần **Bayesian optimization/black-box search**, không phải gradient-based optimization.
+
+**Trọng số scoring thật** (`dspy_opt/metrics.py` + `rescore_all_conditions.py`):
+
+```
+score = w_struct · structural + w_syntax · syntax_valid + w_cov · coverage
+```
+
+| Agent | struct | syntax | coverage | Ghi chú |
+|---|---|---|---|---|
+| aidl | 0.30 | 0.50 | 0.20 | coverage = fraction tên signal VSS xuất hiện trong enum |
+| cpp | 0.35 | 0.45 | 0.20 | coverage = fraction property name trong case/read/write |
+| selinux | 0.25 | 0.65 | 0.10 | coverage proxy theo domain keyword (tên signal không xuất hiện trong .te) |
+| build | 0.35 | 0.55 | 0.10 | tương tự — domain keyword |
+| design_doc | 0.50 | 0.30 | 0.20 | |
+| android_app | 0.30 | 0.40 | 0.30 | coverage quan trọng hơn vì UI phải map đúng property |
+
+`syntax` luôn có trọng số cao nhất (hoặc gần nhất) — lỗi cú pháp = không compile được = hỏng hoàn toàn. SELinux có `syntax=0.65` (cao nhất bảng) — policy sai cú pháp có thể gây lỗi bảo mật nghiêm trọng.
+
+### Coverage là gì (giải thích lại rõ)
+**Coverage ≠ accuracy.** Không so với ground-truth nhãn có sẵn.
 
 ```python
-temperature = 0.25   # code: ổn định nhưng retry vẫn có cơ hội khác
-top_p = 1.0
-num_ctx = 32768      # 32K context
-# JSON parse paths: temperature = 0.0
+# dspy_opt/metrics.py — _signal_coverage
+def _signal_coverage(example, code: str) -> float:
+    """Fraction of expected VSS property short-names found in generated code.
+    e.g. 'VEHICLE_ADAS_ABS_ISENABLED' → looks for 'ISENABLED' in code.
+    Returns 1.0 if no ground-truth properties are available.
+    """
+    props_text = getattr(example, "properties", "") or ""
+    names = re.findall(r"Name:\s*\S+_(\w+)", props_text)
+    if not names:
+        return 1.0
+    code_lower = code.lower()
+    covered = sum(1 for n in names if n.lower() in code_lower)
+    return round(covered / len(names), 4)
 ```
 
-**0.25 không 0.0:** temperature 0 → retry cùng prompt ra **y hệt** → feedback loop vô nghĩa.
-
-## 2. Metric vs Loss
-
-| | Loss | Metric (thesis) |
-|--|------|-----------------|
-| Gradient? | Cần differentiable | Không |
-| Đổi trọng số model? | Có | **Không** — model frozen |
-| Ví dụ | Cross-entropy | struct/syntax/coverage score |
-
-Thesis = **prompt engineering + search**, không fine-tune, không backprop.
-
-## 3. RAG — bản chất một câu
-
-Kiến thức model đóng băng → dễ hallucinate API AOSP.  
-RAG đưa **đoạn source thật** vào prompt → model đọc và bắt chước, không cần “nhớ”.
-
-Coverage C2→C3 tăng mạnh (~0.59→0.79) là bằng chứng thực nghiệm cho đúng lý do tồn tại RAG.
-
-## 4. Prompt techniques trong thesis
-
-| Kỹ thuật | Vai trò |
-|----------|---------|
-| Zero/few-shot | C1 / DSPy demos |
-| Chain-of-Thought | `dspy.ChainOfThought` xuyên pipeline |
-| Adaptive selection | C2 bandit |
-| RAG context | C3/C4 |
-| Validator feedback | C4 retry |
-
-## 5. Câu hỏi hội đồng thường gặp
-
-**Model có “học” trong thesis không?**  
-Không đổi trọng số. Cải thiện chỉ ở prompt (MIPROv2) và retry trong phiên.
-
-**Vì sao cần RAG nếu model đã biết Android?**  
-Mỗi API call **stateless**. Không có bộ nhớ giữa các lần gọi; chi tiết AIDL/SELinux version-pinned không đáng tin nếu chỉ dựa pretrain.
-
-**Score 0.89 có phải accuracy không?**  
-Không — không có gold code label. Đây là **rubric** tự thiết kế + build pass/fail.
-
-**Vì sao Qwen2.5-Coder-32B?**  
-Gợi ý trả lời: chạy local Ollama (không rate-limit/API cost), chuyên code, 32B đủ mạnh trên Colab A100, context 32K đủ RAG+contract+properties, kiểm soát reproducibility.
-
-**Vì sao SELinux không cải thiện?**  
-Macro/dependency nằm ngoài file sinh ra; validator local không resolve đủ sepolicy tree → feedback kém actionable hơn AIDL/clang.
-
-**Surgical retry khác regenerate full domain thế nào?**  
-Chỉ LLM lại chunk chứa property lỗi; chunk sạch reuse case đã parse — giảm tạo lỗi mới ở chunk vốn đúng.
+- **AIDL/CPP:** đếm bao nhiêu % tên property (short-name) từ VSS spec xuất hiện trong output.
+- **SELinux/Build:** proxy theo domain keyword (`adas`, `hal_adas`, `vendor.vss.adas`) vì tên signal không xuất hiện trong `.te`/`.bp`.
+- Kết quả thực nghiệm: C2→C3 (thêm RAG) coverage **0.590 → 0.792 (+34.3%)** — bằng chứng RAG giảm hallucinate tên property.
 
 ---
 
-## 6. Checklist tự kiểm trước defense
+## 3. RAG — bản chất
 
-- [ ] Vẽ pipeline C1–C4 và chỉ đúng chỗ khác nhau  
-- [ ] Giải thích 32-bit property ID + ví dụ encode  
-- [ ] 3 kênh RAG + 3 lớp HIDL filter  
-- [ ] Signature / Module / Predictor + CoT field `reasoning`  
-- [ ] MIPROv2 = search trên metric, không gradient; ceiling agents  
-- [ ] Chunk độc lập vẫn đúng nhờ disjoint slice + post-merge dedup  
-- [ ] 5 hard-fail trước clang + surgical retry  
-- [ ] Aggregator vs domain services + VssPropertyRoundTrip  
-- [ ] Kruskal-Wallis / Mann-Whitney / effect size đọc kết hợp  
-- [ ] Thesis không có loss function — vì sao  
+LLM có kiến thức "đóng băng" tại thời điểm huấn luyện, dễ hallucinate chi tiết. RAG: tìm đoạn text THẬT liên quan trước khi hỏi, đưa vào prompt — LLM không cần "nhớ", chỉ cần đọc và dùng.
+
+**Cosine similarity** (đo hướng vector, không đo độ dài):
+```
+sim(A,B) = (A·B) / (‖A‖ × ‖B‖)
+```
+
+**Kết quả thực nghiệm nối lại:** C2→C3 (thêm RAG), coverage tăng 0.590→0.792 (+34.3%) — bằng chứng cho đúng lý do RAG tồn tại: context AOSP thật giúp giảm hallucinate tên property.
 
 ---
 
-## 7. Sơ đồ một trang “elevator”
+## 4. Prompt Engineering — khái niệm cơ bản
 
-```
-VSS ──▶ Label ──▶ Modules ──▶ [Prompt layer: C1|C2|C3|C4] ──▶ Artifacts
-                                      │                │
-                                   RAG│DSPy          Retry│Validate
-                                      │                │
-                                      └──── encode 32-bit IDs ────┘
-                                                    │
-                                         VssVehicleHardware (1× IVehicleHardware)
-                                                    │
-                                         DefaultVehicleHal (AOSP)
-                                                    │
-                                         Cuttlefish + VTS round-trip
-```
+| Kỹ thuật | Ý nghĩa | Trong thesis |
+|---|---|---|
+| Zero-shot | Chỉ instruction, không ví dụ | C1 baseline gần dạng này |
+| Few-shot | Instruction + ví dụ mẫu | DSPy bootstrap demonstrations |
+| Chain-of-Thought (CoT) | Yêu cầu "suy nghĩ từng bước" trước khi ra đáp án | `dspy.ChainOfThought` — dùng xuyên suốt toàn pipeline |
 
-**Message 30 giây:** Từ tín hiệu VSS, pipeline LLM sinh multi-artifact VHAL; RAG+feedback cho score cao hơn baseline có ý nghĩa thống kê; AIDL C4 compile và đăng ký trong Android 14 AOSP thật.
+**Prompt Engineering vs Fine-tuning:**
+
+| | Prompt Engineering (thesis dùng) | Fine-tuning |
+|---|---|---|
+| Đụng trọng số model | Không | Có |
+| Cần GPU huấn luyện | Không (chỉ inference) | Có |
+| Cần gold label | Không bắt buộc | Thường cần |
+| Là "học máy" theo nghĩa cổ điển | Không — không có gradient descent | Có |
+
+---
+
+## 5. Câu hỏi cơ bản hay gặp
+
+**"Model có học được gì không, hay chỉ generate?"**
+→ Không — trọng số đứng yên suốt thesis. "Cải thiện" duy nhất ở tầng PROMPT (MIPROv2 search) và retry (feedback trong 1 phiên, không lưu lại).
+
+**"LLM có nhớ prompt cũ không, sao cần RAG?"**
+→ Mỗi lệnh gọi API là request độc lập hoàn toàn (stateless) — không có bộ nhớ giữa các lần gọi.
+
+**"Score 0.85 có ý nghĩa thống kê không?"**
+→ Score là kết quả metric function (rubric), không tự thân mang ý nghĩa thống kê — cần Kruskal-Wallis/Mann-Whitney để biết khác biệt giữa các score có ý nghĩa hay ngẫu nhiên.
+
+**"Structural score có phải accuracy không?"**
+→ Không — accuracy so với ground-truth nhãn có sẵn (classification). Structural score là rubric tự thiết kế (weighted struct/syntax/coverage), không có ground-truth cho bài toán sinh code phức tạp này.
+
+**"Vì sao chọn Qwen2.5-Coder, không phải GPT-4/Claude?"**
+→ ⚠️ Không có lý do ghi lại trong code (`llm_client.py` chỉ có comment `# Perfect choice!`, không giải thích) — **câu này cần tự chuẩn bị câu trả lời thật.** Gợi ý hướng: chạy local qua Ollama (không phụ thuộc rate-limit/chi phí API thương mại), 32B đủ mạnh + chuyên biệt cho code, chạy được trên Colab A100, context 32K đủ cho prompt dài (RAG + contract + properties).
+
+---
+
+## 6. Checklist tự kiểm tra
+
+- [ ] Vẽ lại được pipeline tổng thể, biết chính xác C1-C4 khác nhau ở đâu
+- [ ] Giải thích được 3-layer HIDL filter, vì sao lọc theo path không theo keyword
+- [ ] Giải thích được MIPROv2 tối ưu bằng SEARCH (không phải gradient), vì sao gọi vậy
+- [ ] Đọc được công thức UCB1 của C2, biết đây không phải Thompson Sampling thật
+- [ ] Giải thích được vì sao chunk độc lập vẫn đúng (cấu trúc, không phải LLM nhớ)
+- [ ] Vẽ lại được runtime call chain 5 bước, biết VssPropertyRoundTrip test gì mà 6 test kia không test
+- [ ] Tính tay được effect size r từ U, n1, n2
+- [ ] Trả lời được: thesis có loss function không, và vì sao không
+- [ ] Có câu trả lời thật cho "vì sao chọn Qwen2.5-Coder"
