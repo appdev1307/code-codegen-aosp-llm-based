@@ -277,12 +277,68 @@ predictor(domain=X, properties=Y, aosp_context=Z)
 
 Không có "đáp án đúng" cho VHAL C++ làm nhãn huấn luyện. MIPROv2 optimize dựa trên **metric function** (structural score từ `validators.py`), không so khớp với file mẫu.
 
-### 3.2. Quy trình
+### 3.2. Quy trình (minh họa cụ thể từ `dspy_opt/optimizer.py`)
 
-1. **Bootstrap demonstrations** — chạy prompt hiện tại, giữ output điểm cao làm few-shot example
-2. **Propose instruction candidates** — LLM tự đề xuất cách diễn đạt khác
-3. **Bayesian trial search** — `auto="medium"`, ~36 lệnh gọi/agent, tìm (instruction × demo) tốt nhất
-4. Lưu program tốt nhất — cặp (instruction, demo-set) điểm cao nhất
+**Thứ tự chạy thật trong thesis:**
+```
+1. multi_main_adaptive.py     → sinh VSS_LABELLED_500.json (train data)
+2. dspy_opt/optimizer.py      → MIPROv2 / LabeledFewShot → dspy_opt/saved/<agent>_program/
+3. multi_main_rag_dspy.py     → load program đã optimise lúc generate
+```
+
+**Bên trong `optimise_one(agent_type)` — 6 bước:**
+
+```python
+# 1. Lấy module + metric
+module_class, _ = MODULE_REGISTRY[agent_type]
+module    = module_class()          # dspy.ChainOfThought(SIGNATURE)
+metric_fn = METRIC_REGISTRY[agent_type]  # structural+syntax+coverage
+
+# 2. Build trainset từ labelled VSS (không cần gold output)
+trainset = TrainingSetBuilder(...).build(agent_type, n=train_size)
+# mỗi Example = {domain, properties, aosp_context}  — metric chấm, không so file mẫu
+
+# 3. Score baseline (chưa optimise) trên 2 example
+baseline_scores = _evaluate_sample(module, metric_fn, trainset[:2], ...)
+
+# 4. Chọn chiến lược
+if agent_type in MIPRO_SKIP_AGENTS:   # {"aidl","design_doc","selinux","build"}
+    # Ceiling agents: LabeledFewShot k=2 (~2 LLM calls)
+    optimised = dspy.LabeledFewShot(k=2).compile(module, trainset=trainset)
+else:
+    # Full MIPROv2 (~20–36 LLM calls với auto="medium")
+    optimizer = dspy.MIPROv2(
+        metric=metric_fn,
+        auto="medium",       # tự tính num_candidates / num_trials
+        num_threads=1,       # Ollama serialize — >1 chỉ thêm overhead
+        verbose=False,
+    )
+    optimised = optimizer.compile(
+        module, trainset=trainset,
+        requires_permission_to_run=False,
+        program_aware_proposer=False,  # proposer không đọc source code module
+    )
+
+# 5. Score bản optimise; chỉ lưu nếu ≥ baseline
+# 6. module.save("dspy_opt/saved/<agent>_program/")  → program.json
+```
+
+**MIPROv2 bên trong làm gì (3 pha search):**
+1. **Bootstrap demos** — chạy prompt hiện tại trên trainset, giữ output điểm cao làm few-shot.
+2. **Propose instruction candidates** — LLM tự viết lại câu instruction (có thể khác docstring gốc trong Signature).
+3. **Bayesian trial search** — thử tổ hợp (instruction × demo-set), chọn cặp metric cao nhất.
+
+**Config thật:**
+```python
+MIPRO_AUTO_SETTING   = "medium"
+MAX_BOOTSTRAPPED_DEMOS = 1
+MAX_LABELED_DEMOS      = 2
+DEFAULT_TRAIN_SIZE     = 2
+MIPRO_SKIP_AGENTS      = {"aidl", "design_doc", "selinux", "build"}
+# cpp KHÔNG skip — chạy full MIPROv2
+```
+
+**Điểm hay bị hỏi:** MIPROv2 là **black-box search** trên prompt (không gradient, không đụng trọng số model). Metric function = structural score từ `validators.py`, không cần gold-standard label.
 
 ### 3.3. Kiến trúc lưu trữ — Signature vs Compiled Program
 
@@ -325,20 +381,99 @@ optimised_module = optimizer.compile(
 
 ---
 
-## 4. C2 — Adaptive Prompt Selection
+## 4. C2 — Adaptive Prompt Selection (minh họa cụ thể)
 
-**Công thức thật (UCB1 + ε-greedy, không phải Beta-posterior sampling):**
+C2 **không** dùng RAG/DSPy. Thêm 2 lớp adaptive trên baseline:
+1. **Prompt variant** — UCB1 + ε-greedy (`adaptive_components/prompt_selector.py`)
+2. **Chunk size** — Thompson Sampling / Beta posterior (`adaptive_components/chunk_size_optimizer.py`)
 
+### 4.1. Prompt variant — UCB1 + ε-greedy (KHÔNG phải Thompson Sampling)
+
+**4 variant tĩnh:**
+| Key | Ý nghĩa |
+|-----|---------|
+| `minimal` | Concise, essential error handling only |
+| `detailed` | Full comments, defensive programming |
+| `conservative` | Safe proven AOSP patterns only |
+| `aggressive` | Modern C++17/20, RAII, performance |
+
+**Bucket theo số property:**
+```python
+def _get_property_range(self, count: int) -> str:
+    if count <= 10:  return "tiny"
+    elif count <= 30: return "small"
+    elif count <= 50: return "medium"
+    elif count <= 100: return "large"
+    else: return "xlarge"
 ```
-uncertainty = sqrt(2 · ln(N_total) / n_variant)
-score(v) = success_rate(v) + 0.1 × uncertainty(v)
-→ ε-greedy: 10% random explore, 90% chọn argmax score
+
+**Công thức chọn variant (code thật):**
+```python
+# adaptive_components/prompt_selector.py — select_variant()
+for variant in self.prompt_variants:
+    perf = self.context_performance[prop_range][variant]
+    if perf['attempts'] == 0:
+        score = 0.5 + random.uniform(0, 0.2)   # chưa thử → điểm trung tính + noise
+    else:
+        success_rate = perf['successes'] / perf['attempts']
+        uncertainty  = sqrt(2 * log(N_total) / perf['attempts'])  # UCB1
+        score = success_rate + 0.1 * uncertainty
+
+# ε-greedy: exploration_rate = 0.1
+if random() < 0.1:
+    selected = random.choice(variants)   # 10% explore
+else:
+    selected = argmax(score)             # 90% exploit
 ```
 
-- `success_rate` = successes/attempts của variant trong bucket property-count hiện tại (tiny/small/medium/large/xlarge)
-- `uncertainty` tăng khi variant thử ÍT LẦN — bù điểm tạm thời cho variant chưa đủ dữ liệu
+**Update sau mỗi lần generate:**
+```python
+def update_performance(self, variant, property_count, success, quality_score, generation_time):
+    prop_range = self._get_property_range(property_count)
+    self.context_performance[prop_range][variant]['attempts'] += 1
+    if success:
+        self.context_performance[prop_range][variant]['successes'] += 1
+```
 
-**Kết quả thực nghiệm:** C1 vs C2 không có ý nghĩa thống kê (Mann-Whitney p=0.903, r=0.012) — chọn lọc GIỮA prompt tĩnh không tạo khác biệt đáng kể so với 1 prompt tốt nhất cố định.
+**Minh họa số:** giả sử bucket `medium`, sau vài lần:
+| Variant | attempts | successes | success_rate | uncertainty | score |
+|---------|----------|-----------|--------------|-------------|-------|
+| detailed | 8 | 7 | 0.875 | 0.74 | 0.875 + 0.074 = **0.949** |
+| minimal | 2 | 1 | 0.500 | 1.48 | 0.500 + 0.148 = 0.648 |
+| conservative | 0 | — | — | — | ~0.55–0.70 (random) |
+
+→ `detailed` được chọn 90% thời gian; 10% vẫn explore `conservative`/`aggressive`.
+
+### 4.2. Chunk size — Thompson Sampling (Beta posterior) — ĐÚNG là TS
+
+```python
+# adaptive_components/chunk_size_optimizer.py
+chunk_sizes = [10, 15, 20, 25, 30]
+# mỗi size = 1 arm, Beta(α, β) model P(success)
+
+def select_chunk_size(self, property_count):
+    valid = [s for s in chunk_sizes if s <= property_count]
+    samples = {}
+    for size in valid:
+        theta = np.random.beta(self.alpha[size], self.beta[size])  # sample từ posterior
+        if self.attempts[size] < 5:
+            theta += exploration_bonus   # warm-up
+        samples[size] = theta
+    return max(samples, key=samples.get)  # arm có sample cao nhất
+
+def update_reward(self, chunk_size, success, quality_score, generation_time):
+    R = (100 if success else 0) + quality*50 - time*0.01
+    normalized = clip(R / 150, 0, 1)
+    if normalized > 0.5:
+        self.alpha[chunk_size] += normalized   # success → α↑
+    else:
+        self.beta[chunk_size]  += 1 - normalized  # fail → β↑
+```
+
+→ **Prompt selector = UCB1+ε-greedy**; **chunk size = Thompson Sampling thật**. Study guide cũ từng nói “không phải Beta-posterior” chỉ đúng với **prompt variant**, không đúng với chunk-size optimizer.
+
+### 4.3. Kết quả thực nghiệm
+C1 vs C2: Mann-Whitney p=0.903, r=0.012 (**negligible**) — chọn lọc giữa các prompt tĩnh + chunk size adaptive **không** tạo khác biệt đáng kể so với 1 prompt tốt nhất cố định. Lý do hợp lý: 4 variant vẫn cùng “family” instruction, thiếu grounding AOSP (RAG) và thiếu feedback lỗi (C4).
 
 ---
 
