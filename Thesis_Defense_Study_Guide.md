@@ -1,5 +1,4 @@
 # Tài liệu kỹ thuật — LLM-Based Code Generation for AAOS VHAL
-
 *Phần A: Kiến trúc & thuật toán (advanced). Phần B: Kiến thức nền AI/LLM (basic).*
 
 ---
@@ -17,10 +16,10 @@ Property ID (32-bit) = group (0xF0000000) | area (0x0F000000) | type (0x00FF0000
 **Giá trị thật project dùng** (`multi_main_c5.py::encode_prop_id`):
 
 ```python
-VSS_GROUP = 0x20000000   # VehiclePropertyGroup::VENDOR — bắt buộc cho property tự định nghĩa,
-                          #   không phải property chuẩn AOSP (những cái đó dùng group SYSTEM=0x10000000)
-VSS_AREA  = 0x01000000   # VehicleArea::GLOBAL — property không gắn với 1 vùng vật lý cụ thể
-                          #   (khác property như cửa sổ/ghế — những cái đó cần area riêng cho từng cửa/ghế)
+VSS_GROUP = 0x20000000  # VehiclePropertyGroup::VENDOR — bắt buộc cho property tự định nghĩa,
+                        # không phải property chuẩn AOSP (những cái đó dùng group SYSTEM=0x10000000)
+VSS_AREA  = 0x01000000  # VehicleArea::GLOBAL — property không gắn với 1 vùng vật lý cụ thể
+                        # (khác property như cửa sổ/ghế — những cái đó cần area riêng cho từng cửa/ghế)
 VSS_TYPE_BITS = {
     "STRING":  0x00100000,
     "BOOLEAN": 0x00200000,
@@ -30,7 +29,7 @@ VSS_TYPE_BITS = {
 }
 
 def encode_prop_id(raw_index, vss_type):
-    if raw_index & 0xF0000000:          # đã là ID đầy đủ — giữ nguyên
+    if raw_index & 0xF0000000:  # đã là ID đầy đủ — giữ nguyên
         return raw_index
     type_bits = VSS_TYPE_BITS.get(vss_type.upper(), 0x00400000)
     return VSS_GROUP | VSS_AREA | type_bits | (raw_index & 0xFFFF)
@@ -77,6 +76,7 @@ VSS Spec (500 signal) → Labelling (gán domain+type) → Module Planner (500�
 6. **Repair pass** 1 lần nếu JSON invalid; sau đó deterministic fallback.
 
 ### System prompt tĩnh (minh họa)
+
 ```python
 self.system_prompt = (
     "You are an expert Android Automotive OS (AAOS) Vehicle HAL engineer.\n"
@@ -93,9 +93,11 @@ self.system_prompt = (
     "- The generated file must be ADDITIVE to the existing AOSP tree, not a replacement."
 )
 ```
+
 → **Prompt tĩnh** = instruction cố định, không thay đổi theo score/feedback (khác C2 bandit / C3 DSPy-optimised / C4 error-feedback).
 
 ### User prompt tĩnh (minh họa `build_prompt`)
+
 ```python
 return (
     "Generate complete Vehicle HAL AIDL files including vendor-specific property enum.\n"
@@ -121,16 +123,18 @@ return (
 ```
 
 ### ID canonical + fallback (minh họa)
+
 LLM **không** được tin tưởng gán ID. Pipeline luôn **đóng dấu** lại 32-bit AAOS ID:
 
 ```python
 # agents/rag_dspy_aidl_agent.py — _aaos_encode (C3/C4)
-_VSS_GROUP = 0x20000000   # VENDOR
-_VSS_AREA  = 0x01000000   # GLOBAL
+_VSS_GROUP = 0x20000000  # VENDOR
+_VSS_AREA  = 0x01000000  # GLOBAL
 _TYPE_BITS = {
     "BOOLEAN": 0x00200000, "INT": 0x00400000, "FLOAT": 0x00600000,
     "STRING": 0x00100000, "INT64": 0x00500000, ...
 }
+
 def _aaos_encode(local_id: int, vtype: str = "INT") -> int:
     type_bits = _TYPE_BITS.get((vtype or "INT").upper(), 0x00e00000)
     return _VSS_GROUP | _VSS_AREA | type_bits | (local_id & 0xFFFF)
@@ -143,6 +147,7 @@ line = f"    {name} = {correct_id},"
 ```
 
 **Fallback deterministic** (C1, khi LLM trả 0 entry hoặc JSON fail):
+
 ```python
 def _write_fallback_vss(self, props: list) -> None:
     lines = []
@@ -151,10 +156,13 @@ def _write_fallback_vss(self, props: list) -> None:
         lines.append(f"    {name} = 0xF{i:07X},")  # sequential, không phụ thuộc LLM
     # viết enum hoàn chỉnh từ list property thô
 ```
+
 → Dù LLM hallucinate ID hoặc fail hoàn toàn, file `.aidl` cuối cùng **luôn** có ID 32-bit hợp lệ (VENDOR|GLOBAL|TYPE|index). DOMAIN_BASE giữ offset local theo domain (adas=0x1000, body=0x2000, …) rồi encode full 32-bit.
 
 ### Domain-aware (bug đã sửa)
+
 Trước đây hardcoded `VehiclePropertyAdas` → mọi domain ghi đè cùng 1 file. Hiện:
+
 ```python
 self.domain_cap = self.domain.capitalize()
 self.enum_name = f"VehicleProperty{self.domain_cap}"  # Adas → VehiclePropertyAdas.aidl
@@ -170,6 +178,7 @@ self.enum_name = f"VehicleProperty{self.domain_cap}"  # Adas → VehicleProperty
 CHUNK_SIZE_WORDS    = 400   # mỗi chunk ~400 từ
 CHUNK_OVERLAP_WORDS = 50    # chồng lấp 50 từ giữa 2 chunk liên tiếp
 ```
+
 Overlap tồn tại để tránh cắt đứt 1 method signature/block logic đúng ngay ranh giới chunk.
 
 **HIDL filter Layer 1 (lúc index):** loại trừ file theo path TRƯỚC KHI đưa vào ChromaDB.
@@ -179,6 +188,7 @@ Overlap tồn tại để tránh cắt đứt 1 method signature/block logic đ�
 ### 2.2. Retrieval — 3 kênh độc lập
 
 **Kênh 1 — Dense retrieval (embedding + ChromaDB):**
+
 ```python
 embedding = self._embed(query)   # SentenceTransformer.encode(..., normalize_embeddings=True)
 raw = col.query(query_embeddings=[embedding], n_results=..., include=["documents","metadatas","distances"])
@@ -186,6 +196,7 @@ score = round(1.0 - dist, 4)     # cosine distance → cosine similarity
 ```
 
 **Kênh 2 — BM25 sparse retrieval (keyword-based, TF-IDF-style):**
+
 ```python
 # rag/aosp_retriever.py
 self._bm25_index[col_name] = BM25Okapi([c["text"].split() for c in corpus])
@@ -198,6 +209,7 @@ scores = self._bm25_index[col_name].get_scores(query.split())
 - BM25 = biến thể hiện đại của TF-IDF: thêm chuẩn hóa theo độ dài document + tham số \(k_1, b\).
 
 **Ví dụ trực quan:**
+
 | Query token | Dense (embedding) | BM25 |
 |-------------|-------------------|------|
 | `getAllPropertyConfigs` | Có thể match chunk nói về "lấy config property" (ngữ nghĩa) | Chỉ match chunk **chứa đúng chuỗi** `getAllPropertyConfigs` |
@@ -206,11 +218,13 @@ scores = self._bm25_index[col_name].get_scores(query.split())
 → Hybrid = dense bắt ngữ nghĩa + BM25 bắt identifier chính xác (tên hàm/type AOSP) mà embedding dễ bỏ lỡ.
 
 **Kênh 3 — Cross-encoder reranker (sau khi gộp kênh 1+2):**
+
 ```python
 RERANKER_MODEL = "BAAI/bge-reranker-base"
 pairs = [[combined_query, r["text"]] for r in merged]
 scores = self._reranker.predict(pairs)
 ```
+
 Cross-encoder khác bi-encoder (dùng cho embedding): bi-encoder encode query và document RIÊNG BIỆT rồi so cosine (nhanh, pre-compute được); cross-encoder encode CẢ CẶP CÙNG LÚC qua model (chính xác hơn nhưng chậm, không pre-compute được) — nên chỉ dùng để RERANK top-N đã lọc thô, không search toàn corpus.
 
 ### 2.3. Tham số thật — đã tinh chỉnh qua thực nghiệm
@@ -220,6 +234,7 @@ DEFAULT_TOP_K       = 6      # comment gốc: "was 3 — cpp method signatures n
 MIN_SCORE_THRESHOLD = 0.25
 max_chars_per_chunk = 1500   # comment gốc: "was 800 — sigs were truncated"
 ```
+
 Cả 2 giá trị đều TĂNG so với bản đầu (3→6, 800→1500) — dấu hiệu tinh chỉnh dựa trên quan sát thực tế (signature C++ dài, dễ bị cắt cụt ở ngưỡng thấp).
 
 ### 2.4. HIDL filter Layer 2 — vị trí chính xác
@@ -232,7 +247,10 @@ def _parse_results(self, raw, top_k):
 ```
 
 ### 2.5. Layer 3 — HIDL filter — chỉ hard drop, không có soft penalty
+
 Chunk dính legacy bị loại tuyệt đối, không được giữ lại với điểm thấp hơn.
+
+> **Ghi chú phòng vấn:** Thesis PDF mô tả 3-layer (có soft penalty ×0.5 ở Layer 3). Implementation cuối cùng chỉ còn **2-layer hard drop** (Layer 1 index-time + Layer 2 query-time). Khi bị hỏi có thể nói: "Thiết kế ban đầu có soft penalty, nhưng thực nghiệm cho thấy hard drop sạch hơn và ổn định hơn nên đã bỏ soft penalty."
 
 ### 2.6. Format cuối cùng đưa vào prompt
 
@@ -241,6 +259,7 @@ lines = [f"### {label}", f"# {len(retrieved)} example(s) from real AOSP source."
 for i, r in enumerate(retrieved, 1):
     lines += [f"// --- Example {i} | {r['filename']} | score: {r['score']:.2f} ---", text, ""]
 ```
+
 LLM thấy rõ từng example kèm điểm số + tên file gốc, không phải context vô danh. Store: ChromaDB, 7 collection theo domain, 24,245 chunk.
 
 ---
@@ -260,6 +279,7 @@ Ba khái niệm cốt lõi, hay bị hỏi phân biệt:
 **`dspy.ChainOfThought` làm gì khác `dspy.Predict` (bản thường):** tự động chèn THÊM 1 output field ẩn tên `reasoning` VÀO TRƯỚC các field thật trong Signature, buộc LLM phải viết ra chuỗi suy luận trước khi điền các field chính thức — cơ chế "chain of thought" chính là ép model qua bước trung gian này trước khi trả lời, không cần người dùng tự viết prompt "hãy suy nghĩ từng bước".
 
 **Vòng đời 1 lệnh gọi predictor:**
+
 ```
 predictor(domain=X, properties=Y, aosp_context=Z)
     → build prompt = instruction (từ program.json nếu có, else Signature docstring)
@@ -279,6 +299,7 @@ Không có "đáp án đúng" cho VHAL C++ làm nhãn huấn luyện. MIPROv2 op
 ### 3.2. Quy trình (minh họa cụ thể từ `dspy_opt/optimizer.py`)
 
 **Thứ tự chạy thật trong thesis:**
+
 ```
 1. multi_main_adaptive.py     → sinh VSS_LABELLED_500.json (train data)
 2. dspy_opt/optimizer.py      → MIPROv2 / LabeledFewShot → dspy_opt/saved/<agent>_program/
@@ -354,7 +375,9 @@ Tóm lại: chạy prompt gốc = **generate thử** trên từng example; metri
 **Mục tiêu pha này:** thu thập vài cặp (input → output) mà model *hiện tại* (chưa optimise) đã sinh ra **tốt theo metric** — dùng làm few-shot example cho các lần generate sau. Không cần người gán nhãn đúng/sai.
 
 **Trainset trông như thế nào?**  
+
 Mỗi example chỉ có **input**, không có “đáp án vàng”:
+
 ```python
 # TrainingSetBuilder.build() — dspy.Example
 Ex1 = {
@@ -420,6 +443,7 @@ Nếu LLM sinh thiếu `case`, hoặc dùng HIDL `Return<>`, hoặc clang fail �
 Metric tự chấm cấu trúc/cú pháp/coverage. “Đúng” = compile được + đủ pattern AOSP + cover property — đủ để lọc demo chất lượng cho few-shot, không cần file C++ mẫu viết tay.
 
 #### Pha 2 — Propose instruction candidates
+
 LLM *khác* (prompt_model, cùng Qwen2.5-Coder) được giao nhiệm vụ **viết lại instruction**, không sinh code HAL.
 
 Proposer nhận 4 nguồn grounding:
@@ -437,11 +461,13 @@ Signature docstring gốc (hal_signatures.py):
    switch cases. Match AOSP IVehicleHardware signatures exactly. Never use
    HIDL patterns. Each property must map to a real file I/O path..."
 ```
+
 → Instruction cuối **có thể khác hẳn** docstring trong source — đây là lý do gọi “optimised program”, tách biệt khỏi code Signature.
 
 Project set `program_aware_proposer=False` → proposer **không** đọc source code module khi viết instruction (giảm phụ thuộc cấu trúc code, tập trung vào data + tip).
 
 #### Pha 3 — Bayesian trial search
+
 Không brute-force mọi cặp. Dùng **Bayesian Optimization** (surrogate model, kiểu Tree-structured Parzen Estimator / Optuna):
 
 ```
@@ -452,7 +478,7 @@ candidates:
 for trial in 1..num_trials:          # auto="medium" → DSPy tự chọn ~20–36
     # Surrogate model đề xuất cặp (Iᵢ, Dⱼ) có kỳ vọng score cao
     program.predictor.instruction = Iᵢ
-    program.predictor.demos       = Dⱼ
+    program.predictor.demos = Dⱼ
     score = mean( metric_fn(ex, program(ex)) for ex in minibatch )
     # Cập nhật surrogate: “cặp này tốt/xấu”
 return cặp (I*, D*) điểm cao nhất trên full valset
@@ -463,6 +489,7 @@ return cặp (I*, D*) điểm cao nhất trên full valset
 - `auto="medium"` tự tính `num_candidates` / `num_trials` nội bộ; **không** được truyền `max_bootstrapped_demos` cùng lúc với `auto=` (raise ValueError).
 
 **Minh họa số (agent cpp, giả định):**
+
 | Trial | Instruction | Demo-set | Minibatch score |
 |-------|-------------|----------|-----------------|
 | 1 | I₀ (gốc) | D₀ | 0.78 |
@@ -474,6 +501,7 @@ return cặp (I*, D*) điểm cao nhất trên full valset
 → Lưu `program.json` chứa instruction I₁ + demos D₁.
 
 #### Config thật trong project
+
 ```python
 MIPRO_AUTO_SETTING     = "medium"
 MAX_BOOTSTRAPPED_DEMOS = 1
@@ -495,7 +523,7 @@ MIPRO_SKIP_AGENTS      = {"aidl", "design_doc", "selinux", "build"}
 ```python
 class _BaseHALModule(dspy.Module):
     def __init__(self):
-        self.generate = dspy.ChainOfThought(self.SIGNATURE_CLASS)   # đọc signature docstring
+        self.generate = dspy.ChainOfThought(self.SIGNATURE_CLASS)  # đọc signature docstring
     def load(self, path):
         # nếu có file đã lưu, GHI ĐÈ instruction bằng bản đã optimize
         ...
@@ -513,11 +541,12 @@ MAX_LABELED_DEMOS = 2
 **Chỉ số ít agent (cpp và các agent KHÔNG nằm trong set trên) thực sự chạy full MIPROv2 search** — 4 agent kể trên dùng `LabeledFewShot(k=2)` (2 demo, ~2 lệnh gọi), không phải MIPROv2 đầy đủ (~36 lệnh gọi). Lý do: các agent này cho thấy zero trial variance (điểm không đổi dù thử instruction/demo khác nhau) — đã chạm trần khả năng cải thiện qua prompt, chạy full search chỉ tốn thêm ngân sách vô ích.
 
 **Config thật của MIPROv2 khi CÓ chạy (agent cpp):**
+
 ```python
 optimizer = dspy.MIPROv2(
     metric=metric_fn,
-    auto="medium",          # MIPRO_AUTO_SETTING — cân bằng ngân sách search vs thời gian
-    num_threads=1,           # Ollama serialize request thật sự — nhiều thread chỉ thêm overhead, không tăng tốc
+    auto="medium",                 # MIPRO_AUTO_SETTING — cân bằng ngân sách search vs thời gian
+    num_threads=1,                 # Ollama serialize request thật sự — nhiều thread chỉ thêm overhead, không tăng tốc
     verbose=False,
 )
 optimised_module = optimizer.compile(
@@ -534,12 +563,14 @@ optimised_module = optimizer.compile(
 ## 4. C2 — Adaptive Prompt Selection (minh họa cụ thể)
 
 C2 **không** dùng RAG/DSPy. Thêm 2 lớp adaptive trên baseline:
+
 1. **Prompt variant** — UCB1 + ε-greedy (`adaptive_components/prompt_selector.py`)
 2. **Chunk size** — Thompson Sampling / Beta posterior (`adaptive_components/chunk_size_optimizer.py`)
 
 ### 4.1. Prompt variant — UCB1 + ε-greedy (KHÔNG phải Thompson Sampling)
 
 **4 variant tĩnh:**
+
 | Key | Ý nghĩa |
 |-----|---------|
 | `minimal` | Concise, essential error handling only |
@@ -548,9 +579,10 @@ C2 **không** dùng RAG/DSPy. Thêm 2 lớp adaptive trên baseline:
 | `aggressive` | Modern C++17/20, RAII, performance |
 
 **Bucket theo số property:**
+
 ```python
 def _get_property_range(self, count: int) -> str:
-    if count <= 10:  return "tiny"
+    if count <= 10: return "tiny"
     elif count <= 30: return "small"
     elif count <= 50: return "medium"
     elif count <= 100: return "large"
@@ -558,6 +590,7 @@ def _get_property_range(self, count: int) -> str:
 ```
 
 **Công thức chọn variant (code thật):**
+
 ```python
 # adaptive_components/prompt_selector.py — select_variant()
 for variant in self.prompt_variants:
@@ -577,6 +610,7 @@ else:
 ```
 
 **Update sau mỗi lần generate:**
+
 ```python
 def update_performance(self, variant, property_count, success, quality_score, generation_time):
     prop_range = self._get_property_range(property_count)
@@ -586,6 +620,7 @@ def update_performance(self, variant, property_count, success, quality_score, ge
 ```
 
 **Minh họa số:** giả sử bucket `medium`, sau vài lần:
+
 | Variant | attempts | successes | success_rate | uncertainty | score |
 |---------|----------|-----------|--------------|-------------|-------|
 | detailed | 8 | 7 | 0.875 | 0.74 | 0.875 + 0.074 = **0.949** |
@@ -617,13 +652,16 @@ def update_reward(self, chunk_size, success, quality_score, generation_time):
     if normalized > 0.5:
         self.alpha[chunk_size] += normalized   # success → α↑
     else:
-        self.beta[chunk_size]  += 1 - normalized  # fail → β↑
+        self.beta[chunk_size] += 1 - normalized  # fail → β↑
 ```
 
 → **Prompt selector = UCB1+ε-greedy**; **chunk size = Thompson Sampling thật**. Study guide cũ từng nói “không phải Beta-posterior” chỉ đúng với **prompt variant**, không đúng với chunk-size optimizer.
 
 ### 4.3. Kết quả thực nghiệm
+
 C1 vs C2: Mann-Whitney p=0.903, r=0.012 (**negligible**) — chọn lọc giữa các prompt tĩnh + chunk size adaptive **không** tạo khác biệt đáng kể so với 1 prompt tốt nhất cố định. Lý do hợp lý: 4 variant vẫn cùng “family” instruction, thiếu grounding AOSP (RAG) và thiếu feedback lỗi (C4).
+
+> **Ghi chú phòng vấn:** Thesis PDF gọi C2 là “Thompson Sampling”. Thực tế chỉ **chunk-size** dùng Thompson Sampling; **prompt variant** dùng UCB1 + ε-greedy. Có thể giải thích: “C2 dùng bandit-style adaptive selection (UCB1 cho prompt, Thompson cho chunk size).”
 
 ---
 
@@ -642,12 +680,14 @@ C1 vs C2: Mann-Whitney p=0.903, r=0.012 (**negligible**) — chọn lọc giữa
 ```
 Generate → Validate (clang + AIDL consistency check) → Pass?
                                                           → yes: ghi file
-                                                          → no: error feedback → prompt mới → Generate lại
+                                                          → no:  error feedback → prompt mới → Generate lại
 ```
 
 Error feedback được đưa vào `extra_context`, merge vào `aosp_context` — chảy vào MỌI lệnh gọi `entries_predictor`/`register_body_predictor` của lần retry, cho LLM biết chính xác cần sửa gì thay vì generate lại ngẫu nhiên.
 
 **Giới hạn có chủ đích:** retry có `MAX_RETRIES` cố định — hết ngân sách mà vẫn lỗi, giữ bản điểm cao nhất, đánh dấu chưa đạt, pipeline **tiếp tục** (không dừng cứng toàn bộ run). Trade-off giữa throughput và đảm bảo tuyệt đối.
+
+> **Ghi chú phòng vấn:** Thesis viết “C4 extends C2 and C3”. Code thực tế C4 = **C3 + retry loop** (không chạy bandit prompt của C2). Có thể nói: “C4 kế thừa RAG+DSPy của C3 và thêm feedback loop; bandit C2 không được kích hoạt trong C4.”
 
 ---
 
@@ -680,7 +720,7 @@ Sau khi clang trả lỗi, mỗi dòng lỗi được xử lý thêm 1 bước: 
 
 ```python
 def _enclosing_property_name(line_no: int) -> str:
-    for i in range(line_no - 1, -1, -1):        # dò ngược từ dòng lỗi
+    for i in range(line_no - 1, -1, -1):  # dò ngược từ dòng lỗi
         m = name_re.search(code_lines[i])
         if m:
             return m.group(1)
@@ -782,10 +822,12 @@ Công thức: `r = 1 − 2U / (n₁·n₂)`. Đơn vị test = **266 điểm mod
 ### 9.4. ⭐ Coverage KHÔNG nằm trong công thức U/p/r
 
 Test chỉ ăn **1 số mỗi module = composite**. Coverage đã bị gộp vào composite qua `w_cov` **trước khi** test chạy:
+
 ```
-composite = w_struct·S + w_syntax·X + w_cov·C   ← coverage nằm ở đây
-Mann-Whitney chỉ thấy  0.8328 vs 0.8917 , KHÔNG thấy  C = 0.58 vs 0.80
+composite = w_struct·S + w_syntax·X + w_cov·C ← coverage nằm ở đây
+Mann-Whitney chỉ thấy 0.8328 vs 0.8917 , KHÔNG thấy C = 0.58 vs 0.80
 ```
+
 → Coverage tác động **gián tiếp**: coverage↑ → composite↑ → hạng cao hơn → U↓ → p↓, r↑.
 
 **"Coverage là nguyên nhân" chứng minh bằng phân rã (Table 8), không bằng U/p/r:**
@@ -817,6 +859,7 @@ LLM (kiến trúc Transformer) dự đoán **token tiếp theo** dựa trên chu
 **Temperature/top_p** — hệ số điều chỉnh độ "nhọn" của phân phối xác suất trước khi sample: thấp → gần deterministic; cao → đa dạng hơn, rủi ro sai nhiều hơn.
 
 **Giá trị thật dùng trong project** (`llm_client.py`):
+
 ```python
 def call_llm(
     prompt: str,
@@ -831,12 +874,14 @@ def call_llm(
         "options": {
             "temperature": temperature,
             "top_p": top_p,
-            "num_ctx": 32768,   # 32K ổn định hơn 128K RoPE scaling
+            "num_ctx": 32768,          # 32K ổn định hơn 128K RoPE scaling
             "num_predict": -1,
         },
     }
 ```
+
 Riêng lệnh gọi liên quan parse JSON / AIDL agent dùng `temperature=0.0` (deterministic tuyệt đối — JSON cần đúng cú pháp, không cần đa dạng):
+
 ```python
 # VHALAidlAgent / call_llm_json
 raw = call_llm(..., temperature=0.0, response_format="json")
@@ -879,6 +924,7 @@ score = w_struct · structural + w_syntax · syntax_valid + w_cov · coverage
 `syntax` luôn có trọng số cao nhất (hoặc gần nhất) — lỗi cú pháp = không compile được = hỏng hoàn toàn. SELinux có `syntax=0.65` (cao nhất bảng) — policy sai cú pháp có thể gây lỗi bảo mật nghiêm trọng.
 
 ### Coverage là gì (giải thích lại rõ)
+
 **Coverage ≠ accuracy.** Không so với ground-truth nhãn có sẵn.
 
 ```python
@@ -908,6 +954,7 @@ def _signal_coverage(example, code: str) -> float:
 LLM có kiến thức "đóng băng" tại thời điểm huấn luyện, dễ hallucinate chi tiết. RAG: tìm đoạn text THẬT liên quan trước khi hỏi, đưa vào prompt — LLM không cần "nhớ", chỉ cần đọc và dùng.
 
 **Cosine similarity** (đo hướng vector, không đo độ dài):
+
 ```
 sim(A,B) = (A·B) / (‖A‖ × ‖B‖)
 ```
@@ -937,19 +984,19 @@ sim(A,B) = (A·B) / (‖A‖ × ‖B‖)
 
 ## 5. Câu hỏi cơ bản hay gặp
 
-**"Model có học được gì không, hay chỉ generate?"**
+**"Model có học được gì không, hay chỉ generate?"**  
 → Không — trọng số đứng yên suốt thesis. "Cải thiện" duy nhất ở tầng PROMPT (MIPROv2 search) và retry (feedback trong 1 phiên, không lưu lại).
 
-**"LLM có nhớ prompt cũ không, sao cần RAG?"**
+**"LLM có nhớ prompt cũ không, sao cần RAG?"**  
 → Mỗi lệnh gọi API là request độc lập hoàn toàn (stateless) — không có bộ nhớ giữa các lần gọi.
 
-**"Score 0.85 có ý nghĩa thống kê không?"**
+**"Score 0.85 có ý nghĩa thống kê không?"**  
 → Score là kết quả metric function (rubric), không tự thân mang ý nghĩa thống kê — cần Kruskal-Wallis/Mann-Whitney để biết khác biệt giữa các score có ý nghĩa hay ngẫu nhiên.
 
-**"Structural score có phải accuracy không?"**
+**"Structural score có phải accuracy không?"**  
 → Không — accuracy so với ground-truth nhãn có sẵn (classification). Structural score là rubric tự thiết kế (weighted struct/syntax/coverage), không có ground-truth cho bài toán sinh code phức tạp này.
 
-**"Vì sao chọn Qwen2.5-Coder, không phải GPT-4/Claude?"**
+**"Vì sao chọn Qwen2.5-Coder, không phải GPT-4/Claude?"**  
 → ⚠️ Không có lý do ghi lại trong code (`llm_client.py` chỉ có comment `# Perfect choice!`, không giải thích) — **câu này cần tự chuẩn bị câu trả lời thật.** Gợi ý hướng: chạy local qua Ollama (không phụ thuộc rate-limit/chi phí API thương mại), 32B đủ mạnh + chuyên biệt cho code, chạy được trên Colab A100, context 32K đủ cho prompt dài (RAG + contract + properties).
 
 ---
@@ -957,11 +1004,15 @@ sim(A,B) = (A·B) / (‖A‖ × ‖B‖)
 ## 6. Checklist tự kiểm tra
 
 - [ ] Vẽ lại được pipeline tổng thể, biết chính xác C1-C4 khác nhau ở đâu
-- [ ] Giải thích được 3-layer HIDL filter, vì sao lọc theo path không theo keyword
+- [ ] Giải thích được HIDL filter (2-layer hard trong code / 3-layer trong thesis), vì sao lọc theo path không theo keyword
 - [ ] Giải thích được MIPROv2 tối ưu bằng SEARCH (không phải gradient), vì sao gọi vậy
-- [ ] Đọc được công thức UCB1 của C2, biết đây không phải Thompson Sampling thật
+- [ ] Đọc được công thức UCB1 của C2, biết đây không phải Thompson Sampling thật (chỉ chunk-size mới là TS)
 - [ ] Giải thích được vì sao chunk độc lập vẫn đúng (cấu trúc, không phải LLM nhớ)
 - [ ] Vẽ lại được runtime call chain 5 bước, biết VssPropertyRoundTrip test gì mà 6 test kia không test
 - [ ] Tính tay được effect size r từ U, n1, n2
 - [ ] Trả lời được: thesis có loss function không, và vì sao không
 - [ ] Có câu trả lời thật cho "vì sao chọn Qwen2.5-Coder"
+- [ ] Biết C4 = C3 + retry (không chạy bandit C2)
+```
+
+Đã xong.
