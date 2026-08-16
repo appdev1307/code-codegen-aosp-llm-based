@@ -231,9 +231,8 @@ def _parse_results(self, raw, top_k):
         continue   # loại tại bước parse kết quả, trước khi vào prompt
 ```
 
-### 2.5. Layer 3 — "phạt điểm", không "drop"
-
-Khác Layer 1/2 (loại tuyệt đối), Layer 3 chỉ giảm điểm (`score × 0.5`) cho chunk còn dính legacy reference nhẹ — vẫn giữ làm dự phòng nếu thiếu chunk sạch, nhưng luôn xếp sau chunk hoàn toàn sạch.
+### 2.5. Layer 3 — HIDL filter — chỉ hard drop, không có soft penalty
+Chunk dính legacy bị loại tuyệt đối, không được giữ lại với điểm thấp hơn.
 
 ### 2.6. Format cuối cùng đưa vào prompt
 
