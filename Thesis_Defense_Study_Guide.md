@@ -589,7 +589,50 @@ def _get_property_range(self, count: int) -> str:
     else: return "xlarge"
 ```
 
-**Công thức chọn variant (code thật):**
+#### Giải thích UCB1 (Upper Confidence Bound 1)
+
+UCB1 là thuật toán **multi-armed bandit** cổ điển. Mỗi prompt variant = 1 “arm”. Mục tiêu: cân bằng **exploit** (chọn cái đang tốt nhất) và **explore** (thử cái còn ít dữ liệu).
+
+**Công thức UCB1 gốc:**
+
+\[
+\text{score}(a) = \underbrace{\bar{x}_a}_{\text{success rate}} + \underbrace{c \sqrt{\frac{2\ln N}{n_a}}}_{\text{uncertainty bonus}}
+\]
+
+Trong đó:
+- \(\bar{x}_a\) = success_rate của variant \(a\)
+- \(n_a\) = số lần đã thử variant \(a\)
+- \(N\) = tổng số lần thử tất cả variant trong bucket hiện tại
+- \(c\) = hệ số (trong code project dùng \(c = 0.1\))
+
+**Ý nghĩa từng phần:**
+- **success_rate cao** → ưu tiên exploit (cái đang thắng).
+- **uncertainty cao** khi \(n_a\) nhỏ → ưu tiên explore (cái còn ít dữ liệu).
+- Khi \(n_a\) tăng, uncertainty giảm → dần dần chỉ còn success_rate quyết định.
+
+**Ví dụ tính tay UCB1 (bucket medium, N_total = 15):**
+
+| Variant | attempts \(n_a\) | successes | success_rate \(\bar{x}\) | \(\sqrt{2\ln 15 / n_a}\) | uncertainty (×0.1) | **score** |
+|---------|------------------|-----------|---------------------------|---------------------------|---------------------|-----------|
+| detailed | 8 | 7 | 0.875 | \(\sqrt{2\times2.708/8} \approx 0.823\) | 0.082 | **0.957** |
+| minimal | 3 | 1 | 0.333 | \(\sqrt{2\times2.708/3} \approx 1.343\) | 0.134 | 0.467 |
+| conservative | 2 | 1 | 0.500 | \(\sqrt{2\times2.708/2} \approx 1.645\) | 0.165 | 0.665 |
+| aggressive | 2 | 0 | 0.000 | \(\sqrt{2\times2.708/2} \approx 1.645\) | 0.165 | 0.165 |
+
+→ `detailed` thắng rõ. Nếu không có uncertainty bonus, `detailed` vẫn thắng, nhưng các variant ít thử vẫn được “thưởng” điểm để có cơ hội được chọn sau này.
+
+#### Giải thích ε-greedy
+
+ε-greedy là cơ chế **đơn giản hơn UCB1** để đảm bảo exploration:
+
+- Với xác suất \(\varepsilon = 0.1\) (10%) → **explore**: chọn ngẫu nhiên 1 trong 4 variant.
+- Với xác suất \(1-\varepsilon = 0.9\) (90%) → **exploit**: chọn variant có score UCB1 cao nhất.
+
+**Tại sao dùng cả hai?**
+- UCB1 tự động giảm exploration khi đã có đủ dữ liệu.
+- ε-greedy đảm bảo **luôn còn 10% cơ hội** thử variant mới, dù UCB1 đã “tin” một cái nào đó.
+
+#### Code thật trong project
 
 ```python
 # adaptive_components/prompt_selector.py — select_variant()
@@ -619,16 +662,40 @@ def update_performance(self, variant, property_count, success, quality_score, ge
         self.context_performance[prop_range][variant]['successes'] += 1
 ```
 
-**Minh họa số:** giả sử bucket `medium`, sau vài lần:
+#### Ví dụ chạy tuần tự (bucket medium)
+
+Giả sử bắt đầu từ 0, sau 12 lần generate:
+
+| Lần | random < 0.1? | Hành động | Variant được chọn | Kết quả | Ghi chú |
+|-----|---------------|-----------|-------------------|---------|---------|
+| 1 | Không | Exploit (score random) | detailed | success | Lần đầu mọi score ≈ 0.5–0.7 |
+| 2 | Không | Exploit | detailed | success | detailed dẫn đầu |
+| 3 | **Có** | Explore | aggressive | fail | 10% explore |
+| 4 | Không | Exploit | detailed | success | |
+| 5 | Không | Exploit | detailed | success | |
+| 6 | **Có** | Explore | conservative | success | |
+| 7 | Không | Exploit | detailed | success | |
+| 8 | Không | Exploit | detailed | fail | detailed vẫn cao nhờ uncertainty giảm chậm |
+| 9 | Không | Exploit | detailed | success | |
+| 10 | Không | Exploit | detailed | success | |
+| 11 | **Có** | Explore | minimal | fail | |
+| 12 | Không | Exploit | detailed | success | |
+
+Sau 12 lần, bảng điểm có thể trông như:
 
 | Variant | attempts | successes | success_rate | uncertainty | score |
 |---------|----------|-----------|--------------|-------------|-------|
-| detailed | 8 | 7 | 0.875 | 0.74 | 0.875 + 0.074 = **0.949** |
-| minimal | 2 | 1 | 0.500 | 1.48 | 0.500 + 0.148 = 0.648 |
-| conservative | 0 | — | — | — | ~0.55–0.70 (random) |
+| detailed | 8 | 7 | 0.875 | 0.74 | **0.949** |
+| minimal | 1 | 0 | 0.000 | 2.08 | 0.208 |
+| conservative | 2 | 1 | 0.500 | 1.47 | 0.647 |
+| aggressive | 1 | 0 | 0.000 | 2.08 | 0.208 |
 
-→ `detailed` được chọn 90% thời gian; 10% vẫn explore `conservative`/`aggressive`.
+→ 90% thời gian chọn `detailed`, 10% vẫn thử các variant khác. Đây chính là cơ chế **exploit + explore** của C2.
 
+**Tóm tắt nhanh khi bị hỏi:**
+- UCB1 = success_rate + bonus cho variant ít thử.
+- ε-greedy = 10% random, 90% chọn theo UCB1.
+- Khác Thompson Sampling (dùng ở chunk-size): TS sample từ Beta posterior, UCB1 dùng công thức bound.
 ### 4.2. Chunk size — Thompson Sampling (Beta posterior) — ĐÚNG là TS
 
 ```python
@@ -1014,5 +1081,3 @@ sim(A,B) = (A·B) / (‖A‖ × ‖B‖)
 - [ ] Có câu trả lời thật cho "vì sao chọn Qwen2.5-Coder"
 - [ ] Biết C4 = C3 + retry (không chạy bandit C2)
 ```
-
-Đã xong.
