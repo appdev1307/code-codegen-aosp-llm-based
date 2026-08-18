@@ -292,6 +292,28 @@ predictor(domain=X, properties=Y, aosp_context=Z)
 
 **Vì sao `getattr(result, "read_cases", "") or ""` xuất hiện khắp nơi trong code:** nếu JSONAdapter parse THIẾU 1 field (model không sinh đủ, ví dụ dừng giữa chừng) — object trả về vẫn tồn tại nhưng field đó KHÔNG có attribute, `getattr` với default tránh `AttributeError` sập chương trình.
 
+### 3.0b. "Context" trong prompt là gì? — giải thích đầy đủ ★ MỚI
+
+Một prompt hoàn chỉnh gửi tới LLM có 4 lớp. **"Context"** là lớp thứ 3 — lớp DUY NHẤT thay đổi động theo từng lần gọi:
+
+| Lớp | Nội dung | Thay đổi không? |
+|---|---|---|
+| **① Instruction** | Mô tả nhiệm vụ — LLM phải làm gì, làm thế nào | Tĩnh sau khi MIPROv2 optimize (lưu trong `program.json`) |
+| **② Few-shot demonstrations** | Các cặp (input → output tốt) được bootstrap ở Phase 1 | Tĩnh sau khi MIPROv2 chọn demo-set tối ưu |
+| **③ Context** ← **đây** | Thông tin nền **lấy tại runtime** cho request hiện tại | **Động — thay đổi mỗi lần gọi** |
+| **④ Input fields** | `domain`, `properties`, `aosp_context` của request hiện tại | Động — đầu vào thật của lần generate này |
+
+**Trong project, `aosp_context` (lớp ③) chứa:**
+- RAG chunks từ ChromaDB — đoạn code AOSP thật liên quan đến domain/property đang generate (VD: `IVehicleHardware.h`, `VehiclePropValue.aidl`, `getAllPropertyConfigs` signature thật)
+- Ở C4: **error feedback** từ lần validate trước — thông báo lỗi clang, tên property gây lỗi, gợi ý sửa cụ thể
+
+**Vì sao context quan trọng hơn instruction đối với hallucination:**
+LLM (Qwen2.5-Coder 32B) được train đến cutoff nhất định — không "biết" code AOSP vendor cụ thể của project này. Nếu không có context, model **đoán** identifier, field name, pattern → dễ dùng HIDL cũ, sai field `RawPropValues`, hallucinate tên class. Khi có RAG context (lớp ③), LLM **đọc** đoạn code thật và copy pattern — không cần nhớ, chỉ cần đọc và dùng.
+
+**Bằng chứng thực nghiệm:** C2→C3 (thêm RAG context), coverage tăng 0.590→0.792 (+34.3%). Đây là số liệu trực tiếp cho thấy context giảm hallucinate tên property.
+
+**Lưu ý về terminology:** Trong DSPy Signature, field `aosp_context` là InputField — nó là một trong các input của predictor. Nhưng về mặt prompt engineering, nội dung của `aosp_context` chính là "context" theo nghĩa truyền thống: background information được inject vào prompt để LLM có thể generate đúng mà không cần "nhớ" từ training.
+
 ### 3.1. Không cần gold-standard label
 
 Không có "đáp án đúng" cho VHAL C++ làm nhãn huấn luyện. MIPROv2 optimize dựa trên **metric function** (structural score từ `validators.py`), không so khớp với file mẫu.
@@ -357,7 +379,7 @@ else:
 
 #### Pha 1 — Bootstrap few-shot demos (giải thích chi tiết, không mơ hồ)
 
-**Trả lời thẳng: “Chạy prompt gốc trên trainset ra cái gì?”**
+**Trả lời thẳng: "Chạy prompt gốc trên trainset ra cái gì?"**
 
 → **Ra code do LLM tự sinh** (C++ / AIDL / SELinux / … tùy agent), **không** ra điểm số, **không** ra file mẫu có sẵn.
 
@@ -376,7 +398,7 @@ Tóm lại: chạy prompt gốc = **generate thử** trên từng example; metri
 
 **Trainset trông như thế nào?**  
 
-Mỗi example chỉ có **input**, không có “đáp án vàng”:
+Mỗi example chỉ có **input**, không có "đáp án vàng":
 
 ```python
 # TrainingSetBuilder.build() — dspy.Example
@@ -388,7 +410,7 @@ Ex1 = {
 # KHÔNG có field "aidl_code" / "cpp_impl" đúng sẵn
 ```
 
-**“Chạy prompt gốc” nghĩa là gì — từng bước:**
+**"Chạy prompt gốc" nghĩa là gì — từng bước:**
 
 ```
 Bước A. Lấy module chưa optimise
@@ -430,17 +452,17 @@ Bước D. Quyết định giữ / bỏ
 | **Prompt gốc** | docstring Signature + input ở trên (chưa có few-shot) |
 | **Output LLM sinh** | `case static_cast<int32_t>(VehicleProperty::DOOR_ISOPEN): { ... readRegister(...); }` |
 | **Metric chấm** | struct=0.90 (đủ keyword AOSP), syntax=1.0 (clang pass), coverage=1.0 (có `DOOR_ISOPEN`) → **score = 0.35×0.9 + 0.45×1.0 + 0.20×1.0 = 0.965** |
-| **Quyết định** | 0.965 cao → **GIỮ** thành demo: “khi input Body/DOOR_ISOPEN thì output phải giống đoạn case này” |
+| **Quyết định** | 0.965 cao → **GIỮ** thành demo: "khi input Body/DOOR_ISOPEN thì output phải giống đoạn case này" |
 
 Nếu LLM sinh thiếu `case`, hoặc dùng HIDL `Return<>`, hoặc clang fail → score thấp (vd. 0.4) → **bỏ**, lấy Ex2 thử tiếp.
 
 **Kết quả pha 1:**
 - `MAX_BOOTSTRAPPED_DEMOS=1` → mỗi candidate set chỉ cần **1** demo tốt (ít LLM call).
 - Đồng thời lấy thêm `max_labeled_demos=2` example **chỉ input** (không output) từ trainset để bổ sung context.
-- Demo đã bootstrap = bằng chứng “model *đã từng* làm đúng bài này” — khác gold label do người viết sẵn.
+- Demo đã bootstrap = bằng chứng "model *đã từng* làm đúng bài này" — khác gold label do người viết sẵn.
 
 **Vì sao không cần gold label?**  
-Metric tự chấm cấu trúc/cú pháp/coverage. “Đúng” = compile được + đủ pattern AOSP + cover property — đủ để lọc demo chất lượng cho few-shot, không cần file C++ mẫu viết tay.
+Metric tự chấm cấu trúc/cú pháp/coverage. "Đúng" = compile được + đủ pattern AOSP + cover property — đủ để lọc demo chất lượng cho few-shot, không cần file C++ mẫu viết tay.
 
 #### Pha 2 — Propose instruction candidates
 
@@ -450,7 +472,7 @@ Proposer nhận 4 nguồn grounding:
 1. **Dataset summary** — tóm tắt trainset (domain nào, type property phổ biến…)
 2. **Program summary** — cấu trúc Signature/Module (trừ khi `program_aware_proposer=False` như project đang set)
 3. **Bootstrapped demos** từ Pha 1 — ví dụ input/output thật
-4. **Random tip** — “be creative”, “be concise”, “focus on edge cases”… để đa dạng không gian instruction
+4. **Random tip** — "be creative", "be concise", "focus on edge cases"… để đa dạng không gian instruction
 
 ```
 Signature docstring gốc (hal_signatures.py):
@@ -462,13 +484,26 @@ Signature docstring gốc (hal_signatures.py):
    HIDL patterns. Each property must map to a real file I/O path..."
 ```
 
-→ Instruction cuối **có thể khác hẳn** docstring trong source — đây là lý do gọi “optimised program”, tách biệt khỏi code Signature.
+→ Instruction cuối **có thể khác hẳn** docstring trong source — đây là lý do gọi "optimised program", tách biệt khỏi code Signature.
 
 Project set `program_aware_proposer=False` → proposer **không** đọc source code module khi viết instruction (giảm phụ thuộc cấu trúc code, tập trung vào data + tip).
 
-#### Pha 3 — Bayesian trial search
+#### Pha 3 — Bayesian trial search ★ MỚI — giải thích chi tiết + ví dụ số
 
-Không brute-force mọi cặp. Dùng **Bayesian Optimization** (surrogate model, kiểu Tree-structured Parzen Estimator / Optuna):
+**Mục tiêu:** tìm cặp (instruction Iᵢ, demo-set Dⱼ) cho điểm metric cao nhất, mà **không** brute-force toàn bộ không gian.
+
+**Vì sao không brute-force?**
+Nếu có 8 instruction candidates và 4 demo-sets = 32 cặp × ~5 LLM calls/cặp = 160 lần gọi model 32B. Với Ollama local, mỗi lần gọi mất vài phút → không khả thi. Bayesian search làm tương tự chỉ với ~20–36 trial tổng, vì sau mỗi trial nó **học** vùng nào hứa hẹn thay vì thử đều tất cả.
+
+**Cơ chế Bayesian (surrogate model):**
+
+Sau mỗi trial, một **surrogate model** (mô hình xác suất nhẹ — kiểu TPE/Gaussian Process, không phải neural network) cập nhật ước lượng: cặp (Iᵢ, Dⱼ) nào có kỳ vọng score cao. Trial tiếp theo được đề xuất bằng cách:
+- **Exploit:** thử vùng gần cặp đã cho score cao nhất
+- **Explore:** thỉnh thoảng thử cặp chưa khám phá (tránh local maximum)
+
+Cùng logic với UCB1 trong C2, nhưng áp dụng cho không gian (instruction × demo-set) thay vì prompt variant đơn giản.
+
+**Sơ đồ tổng quát:**
 
 ```
 candidates:
@@ -480,13 +515,36 @@ for trial in 1..num_trials:          # auto="medium" → DSPy tự chọn ~20–
     program.predictor.instruction = Iᵢ
     program.predictor.demos = Dⱼ
     score = mean( metric_fn(ex, program(ex)) for ex in minibatch )
-    # Cập nhật surrogate: “cặp này tốt/xấu”
+    # Cập nhật surrogate: "cặp này tốt/xấu"
 return cặp (I*, D*) điểm cao nhất trên full valset
 ```
 
-- Mỗi trial = 1 lần gắn instruction + demo → chạy metric trên minibatch train/val.
-- Surrogate học dần: instruction nào + demo nào tương tác tốt → trial sau ưu tiên vùng đó (explore/exploit).
-- `auto="medium"` tự tính `num_candidates` / `num_trials` nội bộ; **không** được truyền `max_bootstrapped_demos` cùng lúc với `auto=` (raise ValueError).
+**Ví dụ số cụ thể (agent cpp, giả định):**
+
+| Trial | Surrogate đề xuất | Score trên minibatch | Ghi chú |
+|-------|-------------------|----------------------|---------|
+| 1 | (I₀, D₀) — docstring gốc + demo đầu | 0.78 | baseline — surrogate chưa biết gì |
+| 2 | (I₁, D₀) — AOSP-focused instruction, cùng demo | 0.85 ↑ | surrogate học: I₁ tốt hơn I₀ |
+| 3 | (I₁, D₁) — cùng instruction, demo coverage-heavy | **0.91** ★ best | surrogate học: I₁+D₁ là vùng tốt |
+| 4 | (I₂, D₁) — explore instruction mới với D₁ | 0.88 | tốt nhưng kém I₁ |
+| 5 | (I₁, D₁) — quay lại exploit vùng tốt nhất | 0.90 | xác nhận convergence |
+| 6 | (I₃, D₀) — explore góc khác | 0.76 | xấu → surrogate tránh vùng này |
+| … | surrogate ở gần I₁, D₁ | converging | exploit nhiều hơn explore |
+| ~24 | final eval (I₁, D₁) trên full valset | **0.91** | lưu làm φ* |
+
+**Đọc bảng trên:**
+- Trial 1–2: surrogate chưa có data → explore rộng, phát hiện I₁ > I₀.
+- Trial 3: kết hợp I₁ + D₁ → đột phá 0.91. Surrogate đánh dấu vùng này "hot".
+- Trial 4–5: surrogate vừa exploit (I₁,D₁) vừa explore (I₂,D₁) gần đó.
+- Trial 6+: explore góc xa (I₃,D₀) → xấu → surrogate học tránh, dồn về I₁.
+- Sau ~24 trial: (I₁, D₁) win → lưu `program.json`.
+
+**Kết quả:** `program.json` chứa instruction I₁ + demos D₁. Lúc inference, `module.load()` ghi đè docstring gốc bằng I₁ — LLM nhận được prompt đã tối ưu mà **không thay đổi 1 trọng số nào của model**.
+
+**Key insight để nói tại forum:**
+- Surrogate không phải neural network — là mô hình xác suất nhẹ. Chỉ cần ~20 điểm dữ liệu (trial) để tìm vùng tốt trong không gian 3 chiều (instruction × demo-set × context format).
+- Đây là lý do N=8 training example là **đủ**: bottleneck là số trial (~20–36), không phải số example. Thêm example chỉ làm mỗi trial chậm hơn (minibatch lớn hơn), không cải thiện chất lượng search.
+- MIPROv2 = **black-box optimization** — không gradient, không đụng trọng số. Về bản chất gần với Bayesian Optimization / Optuna TPE hơn là "machine learning" theo nghĩa cổ điển.
 
 **Minh họa số (agent cpp, giả định):**
 
@@ -591,46 +649,44 @@ def _get_property_range(self, count: int) -> str:
 
 #### Giải thích UCB1 (Upper Confidence Bound 1)
 
-UCB1 là thuật toán **multi-armed bandit** cổ điển. Mỗi prompt variant = 1 “arm”. Mục tiêu: cân bằng **exploit** (chọn cái đang tốt nhất) và **explore** (thử cái còn ít dữ liệu).
+UCB1 là thuật toán **multi-armed bandit** cổ điển. Mỗi prompt variant = 1 "arm". Mục tiêu: cân bằng **exploit** (chọn cái đang tốt nhất) và **explore** (thử cái còn ít dữ liệu).
 
 **Công thức UCB1 gốc:**
 
-\[
-\text{score}(a) = \underbrace{\bar{x}_a}_{\text{success rate}} + \underbrace{c \sqrt{\frac{2\ln N}{n_a}}}_{\text{uncertainty bonus}}
-\]
+$$\text{score}(a) = \underbrace{\bar{x}_a}_{\text{success rate}} + \underbrace{c \sqrt{\frac{2\ln N}{n_a}}}_{\text{uncertainty bonus}}$$
 
 Trong đó:
-- \(\bar{x}_a\) = success_rate của variant \(a\)
-- \(n_a\) = số lần đã thử variant \(a\)
-- \(N\) = tổng số lần thử tất cả variant trong bucket hiện tại
-- \(c\) = hệ số (trong code project dùng \(c = 0.1\))
+- $\bar{x}_a$ = success_rate của variant $a$
+- $n_a$ = số lần đã thử variant $a$
+- $N$ = tổng số lần thử tất cả variant trong bucket hiện tại
+- $c$ = hệ số (trong code project dùng $c = 0.1$)
 
 **Ý nghĩa từng phần:**
 - **success_rate cao** → ưu tiên exploit (cái đang thắng).
-- **uncertainty cao** khi \(n_a\) nhỏ → ưu tiên explore (cái còn ít dữ liệu).
-- Khi \(n_a\) tăng, uncertainty giảm → dần dần chỉ còn success_rate quyết định.
+- **uncertainty cao** khi $n_a$ nhỏ → ưu tiên explore (cái còn ít dữ liệu).
+- Khi $n_a$ tăng, uncertainty giảm → dần dần chỉ còn success_rate quyết định.
 
 **Ví dụ tính tay UCB1 (bucket medium, N_total = 15):**
 
-| Variant | attempts \(n_a\) | successes | success_rate \(\bar{x}\) | \(\sqrt{2\ln 15 / n_a}\) | uncertainty (×0.1) | **score** |
+| Variant | attempts $n_a$ | successes | success_rate $\bar{x}$ | $\sqrt{2\ln 15 / n_a}$ | uncertainty (×0.1) | **score** |
 |---------|------------------|-----------|---------------------------|---------------------------|---------------------|-----------|
-| detailed | 8 | 7 | 0.875 | \(\sqrt{2\times2.708/8} \approx 0.823\) | 0.082 | **0.957** |
-| minimal | 3 | 1 | 0.333 | \(\sqrt{2\times2.708/3} \approx 1.343\) | 0.134 | 0.467 |
-| conservative | 2 | 1 | 0.500 | \(\sqrt{2\times2.708/2} \approx 1.645\) | 0.165 | 0.665 |
-| aggressive | 2 | 0 | 0.000 | \(\sqrt{2\times2.708/2} \approx 1.645\) | 0.165 | 0.165 |
+| detailed | 8 | 7 | 0.875 | $\sqrt{2\times2.708/8} \approx 0.823$ | 0.082 | **0.957** |
+| minimal | 3 | 1 | 0.333 | $\sqrt{2\times2.708/3} \approx 1.343$ | 0.134 | 0.467 |
+| conservative | 2 | 1 | 0.500 | $\sqrt{2\times2.708/2} \approx 1.645$ | 0.165 | 0.665 |
+| aggressive | 2 | 0 | 0.000 | $\sqrt{2\times2.708/2} \approx 1.645$ | 0.165 | 0.165 |
 
-→ `detailed` thắng rõ. Nếu không có uncertainty bonus, `detailed` vẫn thắng, nhưng các variant ít thử vẫn được “thưởng” điểm để có cơ hội được chọn sau này.
+→ `detailed` thắng rõ. Nếu không có uncertainty bonus, `detailed` vẫn thắng, nhưng các variant ít thử vẫn được "thưởng" điểm để có cơ hội được chọn sau này.
 
 #### Giải thích ε-greedy
 
 ε-greedy là cơ chế **đơn giản hơn UCB1** để đảm bảo exploration:
 
-- Với xác suất \(\varepsilon = 0.1\) (10%) → **explore**: chọn ngẫu nhiên 1 trong 4 variant.
-- Với xác suất \(1-\varepsilon = 0.9\) (90%) → **exploit**: chọn variant có score UCB1 cao nhất.
+- Với xác suất $\varepsilon = 0.1$ (10%) → **explore**: chọn ngẫu nhiên 1 trong 4 variant.
+- Với xác suất $1-\varepsilon = 0.9$ (90%) → **exploit**: chọn variant có score UCB1 cao nhất.
 
 **Tại sao dùng cả hai?**
 - UCB1 tự động giảm exploration khi đã có đủ dữ liệu.
-- ε-greedy đảm bảo **luôn còn 10% cơ hội** thử variant mới, dù UCB1 đã “tin” một cái nào đó.
+- ε-greedy đảm bảo **luôn còn 10% cơ hội** thử variant mới, dù UCB1 đã "tin" một cái nào đó.
 
 #### Code thật trong project
 
@@ -696,6 +752,7 @@ Sau 12 lần, bảng điểm có thể trông như:
 - UCB1 = success_rate + bonus cho variant ít thử.
 - ε-greedy = 10% random, 90% chọn theo UCB1.
 - Khác Thompson Sampling (dùng ở chunk-size): TS sample từ Beta posterior, UCB1 dùng công thức bound.
+
 ### 4.2. Chunk size — Thompson Sampling (Beta posterior) — ĐÚNG là TS
 
 ```python
@@ -722,13 +779,13 @@ def update_reward(self, chunk_size, success, quality_score, generation_time):
         self.beta[chunk_size] += 1 - normalized  # fail → β↑
 ```
 
-→ **Prompt selector = UCB1+ε-greedy**; **chunk size = Thompson Sampling thật**. Study guide cũ từng nói “không phải Beta-posterior” chỉ đúng với **prompt variant**, không đúng với chunk-size optimizer.
+→ **Prompt selector = UCB1+ε-greedy**; **chunk size = Thompson Sampling thật**. Study guide cũ từng nói "không phải Beta-posterior" chỉ đúng với **prompt variant**, không đúng với chunk-size optimizer.
 
 ### 4.3. Kết quả thực nghiệm
 
-C1 vs C2: Mann-Whitney p=0.903, r=0.012 (**negligible**) — chọn lọc giữa các prompt tĩnh + chunk size adaptive **không** tạo khác biệt đáng kể so với 1 prompt tốt nhất cố định. Lý do hợp lý: 4 variant vẫn cùng “family” instruction, thiếu grounding AOSP (RAG) và thiếu feedback lỗi (C4).
+C1 vs C2: Mann-Whitney p=0.903, r=0.012 (**negligible**) — chọn lọc giữa các prompt tĩnh + chunk size adaptive **không** tạo khác biệt đáng kể so với 1 prompt tốt nhất cố định. Lý do hợp lý: 4 variant vẫn cùng "family" instruction, thiếu grounding AOSP (RAG) và thiếu feedback lỗi (C4).
 
-> **Ghi chú phòng vấn:** Thesis PDF gọi C2 là “Thompson Sampling”. Thực tế chỉ **chunk-size** dùng Thompson Sampling; **prompt variant** dùng UCB1 + ε-greedy. Có thể giải thích: “C2 dùng bandit-style adaptive selection (UCB1 cho prompt, Thompson cho chunk size).”
+> **Ghi chú phòng vấn:** Thesis PDF gọi C2 là "Thompson Sampling". Thực tế chỉ **chunk-size** dùng Thompson Sampling; **prompt variant** dùng UCB1 + ε-greedy. Có thể giải thích: "C2 dùng bandit-style adaptive selection (UCB1 cho prompt, Thompson cho chunk size)."
 
 ---
 
@@ -754,7 +811,7 @@ Error feedback được đưa vào `extra_context`, merge vào `aosp_context` �
 
 **Giới hạn có chủ đích:** retry có `MAX_RETRIES` cố định — hết ngân sách mà vẫn lỗi, giữ bản điểm cao nhất, đánh dấu chưa đạt, pipeline **tiếp tục** (không dừng cứng toàn bộ run). Trade-off giữa throughput và đảm bảo tuyệt đối.
 
-> **Ghi chú phòng vấn:** Thesis viết “C4 extends C2 and C3”. Code thực tế C4 = **C3 + retry loop** (không chạy bandit prompt của C2). Có thể nói: “C4 kế thừa RAG+DSPy của C3 và thêm feedback loop; bandit C2 không được kích hoạt trong C4.”
+> **Ghi chú phòng vấn:** Thesis viết "C4 extends C2 and C3". Code thực tế C4 = **C3 + retry loop** (không chạy bandit prompt của C2). Có thể nói: "C4 kế thừa RAG+DSPy của C3 và thêm feedback loop; bandit C2 không được kích hoạt trong C4."
 
 ---
 
@@ -914,6 +971,7 @@ Chỉ **coverage** dịch chuyển → coverage là driver, **dù `w_cov` nhỏ 
 - **"Cách tính tạo ra khác biệt?"** → Không. Cùng công thức, cùng trọng số, áp **cả 4 điều kiện y hệt**; nếu output giống nhau thì điểm bằng nhau.
 - **"Tăng lên 1000 signal thì p nhỏ hơn?"** → Không. N tính theo **module (domain × agent)**, không theo signal → thêm signal chỉ làm file dày hơn, **không** tăng power. Cái cần lo khi scale là token-budget/truncation, không phải mức ý nghĩa.
 - **C3 vs C4 chưa sig** → báo cáo trung thực, đừng nói C4 vượt C3 "rõ". Phần lớn khác biệt có ý nghĩa đã đến từ RAG ở C3.
+- **N=8 training set** là deliberate constraint, không phải limitation: MIPROv2 dùng trainset làm scoring harness (không phải gradient target); ground truth VHAL tốn công tạo; bottleneck là số trial (~20–36), không phải số example; LLM weights frozen nên overfitting risk inverted — thêm example chỉ làm minibatch chậm hơn, không cải thiện chất lượng search.
 
 ---
 
@@ -1064,15 +1122,19 @@ sim(A,B) = (A·B) / (‖A‖ × ‖B‖)
 → Không — accuracy so với ground-truth nhãn có sẵn (classification). Structural score là rubric tự thiết kế (weighted struct/syntax/coverage), không có ground-truth cho bài toán sinh code phức tạp này.
 
 **"Vì sao chọn Qwen2.5-Coder, không phải GPT-4/Claude?"**  
-→ ⚠️ Không có lý do ghi lại trong code (`llm_client.py` chỉ có comment `# Perfect choice!`, không giải thích) — **câu này cần tự chuẩn bị câu trả lời thật.** Gợi ý hướng: chạy local qua Ollama (không phụ thuộc rate-limit/chi phí API thương mại), 32B đủ mạnh + chuyên biệt cho code, chạy được trên Colab A100, context 32K đủ cho prompt dài (RAG + contract + properties).
+→ Chạy local qua Ollama (không phụ thuộc rate-limit/chi phí API thương mại), 32B đủ mạnh + chuyên biệt cho code, chạy được trên Colab A100, context 32K đủ cho prompt dài (RAG + contract + properties).
 
 ---
 
 ## 6. Checklist tự kiểm tra
 
 - [ ] Vẽ lại được pipeline tổng thể, biết chính xác C1-C4 khác nhau ở đâu
+- [ ] Giải thích được 4 lớp của 1 prompt DSPy: instruction / few-shot / context (aosp_context=RAG+C4 feedback) / input fields
+- [ ] Giải thích được vì sao context (lớp ③) là lớp quan trọng nhất chống hallucination, có số liệu C2→C3 +34.3%
 - [ ] Giải thích được HIDL filter (2-layer hard trong code / 3-layer trong thesis), vì sao lọc theo path không theo keyword
 - [ ] Giải thích được MIPROv2 tối ưu bằng SEARCH (không phải gradient), vì sao gọi vậy
+- [ ] Trình bày được Phase 3 Bayesian trial search với ví dụ số: (I₀,D₀)=0.78 → (I₁,D₀)=0.85 → (I₁,D₁)=0.91 → surrogate converge
+- [ ] Defend được N=8: scoring harness không phải gradient target, ground truth đắt, bottleneck là trial count (~20–36), weights frozen nên overfitting risk inverted
 - [ ] Đọc được công thức UCB1 của C2, biết đây không phải Thompson Sampling thật (chỉ chunk-size mới là TS)
 - [ ] Giải thích được vì sao chunk độc lập vẫn đúng (cấu trúc, không phải LLM nhớ)
 - [ ] Vẽ lại được runtime call chain 5 bước, biết VssPropertyRoundTrip test gì mà 6 test kia không test
@@ -1080,4 +1142,3 @@ sim(A,B) = (A·B) / (‖A‖ × ‖B‖)
 - [ ] Trả lời được: thesis có loss function không, và vì sao không
 - [ ] Có câu trả lời thật cho "vì sao chọn Qwen2.5-Coder"
 - [ ] Biết C4 = C3 + retry (không chạy bandit C2)
-```
