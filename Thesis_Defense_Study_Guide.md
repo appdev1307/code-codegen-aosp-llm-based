@@ -519,44 +519,56 @@ for trial in 1..num_trials:          # auto="medium" → DSPy tự chọn ~20–
 return cặp (I*, D*) điểm cao nhất trên full valset
 ```
 
-**Ví dụ số cụ thể (agent cpp, giả định):**
+**Ví dụ số THẬT — agent cpp, từ optimization log thực tế (auto="light", 10 trials, valset=6):**
 
-| Trial | Surrogate đề xuất | Score trên minibatch | Ghi chú |
-|-------|-------------------|----------------------|---------|
-| 1 | (I₀, D₀) — docstring gốc + demo đầu | 0.78 | baseline — surrogate chưa biết gì |
-| 2 | (I₁, D₀) — AOSP-focused instruction, cùng demo | 0.85 ↑ | surrogate học: I₁ tốt hơn I₀ |
-| 3 | (I₁, D₁) — cùng instruction, demo coverage-heavy | **0.91** ★ best | surrogate học: I₁+D₁ là vùng tốt |
-| 4 | (I₂, D₁) — explore instruction mới với D₁ | 0.88 | tốt nhưng kém I₁ |
-| 5 | (I₁, D₁) — quay lại exploit vùng tốt nhất | 0.90 | xác nhận convergence |
-| 6 | (I₃, D₀) — explore góc khác | 0.76 | xấu → surrogate tránh vùng này |
-| … | surrogate ở gần I₁, D₁ | converging | exploit nhiều hơn explore |
-| ~24 | final eval (I₁, D₁) trên full valset | **0.91** | lưu làm φ* |
+**Phase 1 — Bootstrap (thật):**
+MIPROv2 bootstrap 6 demo-set candidates (D₀→D₅):
+- D₀, D₁: **0 traces** — bootstrap fail, demo-set rỗng
+- D₂, D₃: **2 traces** mỗi set — bootstrap thành công
+- D₄, D₅: **1 trace** mỗi set
 
-**Đọc bảng trên:**
-- Trial 1–2: surrogate chưa có data → explore rộng, phát hiện I₁ > I₀.
-- Trial 3: kết hợp I₁ + D₁ → đột phá 0.91. Surrogate đánh dấu vùng này "hot".
-- Trial 4–5: surrogate vừa exploit (I₁,D₁) vừa explore (I₂,D₁) gần đó.
-- Trial 6+: explore góc xa (I₃,D₀) → xấu → surrogate học tránh, dồn về I₁.
-- Sau ~24 trial: (I₁, D₁) win → lưu `program.json`.
+**Phase 2 — Propose instructions (thật):**
+3 instruction candidates được propose:
+- **I₀** = docstring gốc — generic, dùng `{Domain}` placeholder
+- **I₁** = proposer hardcode domain VEHICLE vào class name/path (`VehicleHalServiceVEHICLE`, `/data/vendor/vss_hw/vehicle/`), thêm full `getAllPropertyConfigs()` với property names thật từ training data
+- **I₂** = giống I₁ nhưng format indentation khác (không có 3-space indent)
 
-**Kết quả:** `program.json` chứa instruction I₁ + demos D₁. Lúc inference, `module.load()` ghi đè docstring gốc bằng I₁ — LLM nhận được prompt đã tối ưu mà **không thay đổi 1 trọng số nào của model**.
+**Phase 3 — 10 trials thật:**
+
+| Trial | Instruction | Demo-set | Score (valset=6) | Ghi chú |
+|-------|-------------|----------|-----------------|---------|
+| 1 (default) | I₀ | D₀ (rỗng) | **94.75%** | baseline — D₀ rỗng = không có demo |
+| 2 | I₁ | D₃ | 67.75% ↓ | I₁ hardcode VEHICLE → sai domain khác |
+| 3 | I₂ | D₀ (rỗng) | **94.75%** | I₂ + D₀ rỗng = tốt như baseline |
+| 4 | I₁ | D₅ | 67.75% ↓ | I₁ vẫn xấu dù đổi demo-set |
+| 5 | I₂ | D₂ | 74.5% | demo có traces → tệ hơn demo rỗng |
+| 6 | I₀ | D₅ | 61.0% ↓ | demo có traces kéo score xuống |
+| 7 | I₂ | D₀ (rỗng) | **94.75%** | xác nhận: D₀ rỗng tốt nhất |
+| 8 | I₂ | D₅ | 61.0% ↓ | |
+| 9 | I₁ | D₄ | 67.75% ↓ | |
+| 10 | I₂ | D₅ | 67.75% ↓ | |
+| 11 (final) | I₀ | D₀ (rỗng) | **94.75%** | best confirmed |
+
+**Đọc bảng thật:**
+- **Demo-set rỗng (D₀) luôn thắng** — bất kỳ demo-set nào có traces đều làm score giảm (61–74%). Lý do: bootstrapped traces chứa property names cụ thể từ training data (domain VEHICLE), khi inference gặp domain ADAS/BODY thì LLM bị anchor nhầm → sinh sai.
+- **I₁ luôn xấu** — proposer thấy training data toàn domain VEHICLE nên hardcode `VehicleHalServiceVEHICLE` vào instruction → overfitting training domain, sai với domain khác lúc inference.
+- **I₀ (docstring gốc) + D₀ (rỗng) = tốt nhất** = 94.75%.
+
+**Kết quả thật:**
+```
+Optimised score: 0.745 (Δ-0.203 vs baseline 0.948)
+⚠ Optimised (0.745) < baseline (0.948) — saving baseline instead
+→ program.json lưu I₀ + demos [] (rỗng)
+Thời gian chạy: 4965 giây (~83 phút)
+```
+
+MIPROv2 **không improve** được CPP agent lần này — optimizer đúng đắn khi fallback về baseline thay vì lưu bản tệ hơn. Instruction chi tiết (I₀) đã đủ mạnh; demo-set làm nhiễu thay vì giúp ích.
 
 **Key insight để nói tại forum:**
-- Surrogate không phải neural network — là mô hình xác suất nhẹ. Chỉ cần ~20 điểm dữ liệu (trial) để tìm vùng tốt trong không gian 3 chiều (instruction × demo-set × context format).
-- Đây là lý do N=8 training example là **đủ**: bottleneck là số trial (~20–36), không phải số example. Thêm example chỉ làm mỗi trial chậm hơn (minibatch lớn hơn), không cải thiện chất lượng search.
-- MIPROv2 = **black-box optimization** — không gradient, không đụng trọng số. Về bản chất gần với Bayesian Optimization / Optuna TPE hơn là "machine learning" theo nghĩa cổ điển.
-
-**Minh họa số (agent cpp, giả định):**
-
-| Trial | Instruction | Demo-set | Minibatch score |
-|-------|-------------|----------|-----------------|
-| 1 | I₀ (gốc) | D₀ | 0.78 |
-| 2 | I₁ (chi tiết AOSP) | D₀ | 0.85 |
-| 3 | I₁ | D₁ (coverage cao) | **0.91** ← best so far |
-| … | … | … | … |
-| 24 | I₂ | D₁ | 0.88 |
-
-→ Lưu `program.json` chứa instruction I₁ + demos D₁.
+- MIPROv2 không đảm bảo improve — nếu baseline đã tốt (0.948) và không gian search không có điểm nào tốt hơn, optimizer trả về baseline. Đây là behavior đúng, không phải bug.
+- Demo-set có thể làm hại nếu training domain không match inference domain — đây là overfitting ở tầng few-shot, không phải tầng model weights.
+- Surrogate học từ 10 trials: D₀ rỗng luôn tốt → từ trial 7 trở đi surrogate chủ yếu explore D₀ với các instruction khác nhau.
+- MIPROv2 = **black-box optimization** — không gradient, không đụng trọng số. Về bản chất là Bayesian Optimization / Optuna TPE.
 
 #### Config thật trong project
 
@@ -596,7 +608,25 @@ MIPRO_SKIP_AGENTS = {"aidl", "design_doc", "selinux", "build"}
 MAX_LABELED_DEMOS = 2
 ```
 
-**Chỉ số ít agent (cpp và các agent KHÔNG nằm trong set trên) thực sự chạy full MIPROv2 search** — 4 agent kể trên dùng `LabeledFewShot(k=2)` (2 demo, ~2 lệnh gọi), không phải MIPROv2 đầy đủ (~36 lệnh gọi). Lý do: các agent này cho thấy zero trial variance (điểm không đổi dù thử instruction/demo khác nhau) — đã chạm trần khả năng cải thiện qua prompt, chạy full search chỉ tốn thêm ngân sách vô ích.
+**Chỉ số ít agent (cpp, vintf) thực sự chạy full MIPROv2 search** — aidl/selinux/build/design_doc dùng `LabeledFewShot(k=2)` (~2 lệnh gọi), không phải MIPROv2 đầy đủ (~110 lệnh gọi). Lý do: zero trial variance — đã chạm trần khả năng cải thiện qua prompt.
+
+**Kết quả thật từ tất cả optimization logs:**
+
+| Agent | Strategy | Baseline | Optimised | Δ | Time | Ghi chú |
+|---|---|---|---|---|---|---|
+| aidl | LabeledFewShot | 0.920 | 0.920 | +0.000 | 60s | Ceiling |
+| selinux | LabeledFewShot | 0.892 | 0.892 | +0.000 | 40s | Ceiling |
+| vintf | MIPROv2 (light) | 0.880 | 0.880 | +0.000 | 516s | **Zero variance — 88.0 cứng mọi trial** |
+| cpp (run 1) | MIPROv2 (light) | 0.948 | 0.745 | **-0.203** | 4965s | Baseline fallback |
+| cpp (run 2) | MIPROv2 (light) | 0.948 | 0.948 | +0.000 | 6524s | Tie với baseline |
+
+**3 pattern quan trọng từ logs thật:**
+
+**Pattern 1 — vintf: zero variance tuyệt đối.** 11 trials, 3 instruction candidates, 6 demo-sets → score **88.0 mọi trial không đổi một điểm**. VINTF manifest là file cực ngắn (~10 dòng XML + 4 dòng RC), cấu trúc cứng — model đã generate đúng từ lần đầu, không có không gian để optimize thêm.
+
+**Pattern 2 — cpp run 1 vs run 2: kết quả khác nhau dù cùng config.** Run 1: optimised=0.745, fallback về baseline. Run 2: optimised=0.948, tie. Cùng `auto="light"`, cùng 8 examples, cùng valset=6 — nhưng kết quả khác vì bootstrap Phase 1 có tính ngẫu nhiên (temperature=0.25), demo-sets khác nhau mỗi run → surrogate đi theo hướng khác. Đây là **variance của MIPROv2 với local LLM** — limitation thật cần acknowledge.
+
+**Pattern 3 — MIPROv2 không đảm bảo improve.** 0/5 agent có improvement trong logs thật. Không phải failure — confirm baseline prompt đã được engineer kỹ. MIPROv2 quan trọng như **verification step**: xác nhận baseline là optimal, không chỉ là "chưa thử optimize".
 
 **Config thật của MIPROv2 khi CÓ chạy (agent cpp):**
 
@@ -624,6 +654,45 @@ C2 **không** dùng RAG/DSPy. Thêm 2 lớp adaptive trên baseline:
 
 1. **Prompt variant** — UCB1 + ε-greedy (`adaptive_components/prompt_selector.py`)
 2. **Chunk size** — Thompson Sampling / Beta posterior (`adaptive_components/chunk_size_optimizer.py`)
+
+**Flow thật của C2 mỗi lần generate (từ `adaptive_integration.py`):**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Đầu vào: properties list (vd. 35 properties, domain CABIN) │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+          ┌────────────────┴────────────────┐
+          ▼                                 ▼
+chunk_optimizer                    prompt_selector
+.select_chunk_size(35)             .select_variant(35)
+→ Thompson Sampling                → UCB1 + ε-greedy
+→ chunk_size = 15                  → variant = "detailed"
+          │                                 │
+          └────────────────┬────────────────┘
+                           ▼
+         original_generation_func(
+             chunk_size=15,
+             prompt_variant="detailed"
+         )
+         → 1 LLM call với chunk 15 properties
+         → 1 result duy nhất
+                           │
+          ┌────────────────┴────────────────┐
+          ▼                                 ▼
+chunk_optimizer                    prompt_selector
+.update_reward(                    .update_performance(
+    chunk_size=15,                     variant="detailed",
+    success=True,                      success=True,
+    quality=0.87,                      quality=0.87,
+    time=65s                           time=65s
+)                                  )
+→ alpha[15] += 0.87                → context_performance
+  (Beta posterior update)            ['medium']['detailed']
+                                     ['successes'] += 1
+```
+
+**Không có merge result.** Cả 2 cơ chế chỉ **quyết định tham số đầu vào** cho 1 lần generate duy nhất — chunk_size bao nhiêu, prompt variant nào. Pipeline gọi `original_generation_func` **1 lần**, lấy **1 kết quả**. Sau đó cả 2 cùng update learning độc lập từ kết quả đó.
 
 ### 4.1. Prompt variant — UCB1 + ε-greedy (KHÔNG phải Thompson Sampling)
 
@@ -748,6 +817,80 @@ Sau 12 lần, bảng điểm có thể trông như:
 
 → 90% thời gian chọn `detailed`, 10% vẫn thử các variant khác. Đây chính là cơ chế **exploit + explore** của C2.
 
+#### Ví dụ thật — prompt thật mà LLM nhận được (từ source code)
+
+Giả sử pipeline đang generate cho module có 35 properties (bucket = **medium**), selector chọn variant `detailed`. LLM nhận prompt sau (từ `_get_detailed_template()` thật trong code):
+
+```
+Generate comprehensive AAOS HAL implementation for these properties:
+- Name: VEHICLE_CHILDREN_CABIN_CHILDREN_SUNROOF_CHILDREN_POSITION
+  Type: sensor
+  Access: READ
+
+- Name: VEHICLE_CHILDREN_CABIN_CHILDREN_SEAT_CHILDREN_ROW1_CHILDREN_MIDDLE_CHILDREN_HEADREST_CHILDREN_ANGLE
+  Type: actuator
+  Access: READ
+
+Requirements:
+- Complete AIDL interface definitions
+- Full C++ implementation with error handling
+- Detailed inline comments explaining logic
+- Follow AAOS 14 conventions strictly
+- Include proper imports and dependencies
+- Add safety checks and validation
+
+Code Quality Standards:
+- Clear variable names
+- Proper error messages
+- Defensive programming
+- Resource cleanup
+
+Format:
+Generate complete, working code.
+
+IMPORTANT: Generate production-quality code with comprehensive error handling.
+```
+
+So sánh với variant `minimal` (cùng properties):
+
+```
+Generate AAOS HAL code for these properties:
+- Name: VEHICLE_CHILDREN_CABIN_CHILDREN_SUNROOF_CHILDREN_POSITION
+  Type: sensor
+  Access: READ
+...
+
+Requirements:
+- Minimal working implementation
+- AAOS 14 compliant
+- Essential error handling only
+
+Format:
+Generate complete, working code.
+```
+
+**Điểm quan trọng:** 4 variant chỉ khác nhau ở **instruction text** (yêu cầu nhiều hay ít detail, có hay không có Code Quality Standards). Properties và format_instructions **giống hệt nhau**. Đây là lý do C1 vs C2 không có khác biệt thống kê (p=0.903) — 4 variant cùng "family", không có grounding AOSP thật (RAG), không có error feedback.
+
+**Sau khi generate xong**, pipeline gọi `update_performance()`:
+
+```python
+# Giả sử variant='detailed', 35 properties, generate thành công, score=0.87, time=65s
+selector.update_performance(
+    variant='detailed',
+    property_count=35,      # → bucket 'medium'
+    success=True,
+    quality_score=0.87,
+    generation_time=65.0
+)
+# → context_performance['medium']['detailed']['attempts'] += 1
+# → context_performance['medium']['detailed']['successes'] += 1
+```
+
+Lần generate tiếp theo với 40 properties (vẫn bucket medium), `select_variant()` tính UCB1:
+- `detailed`: success_rate=1.0, attempts=1, N=1 → uncertainty = √(2×ln1/1) = 0 → score = 1.0 + 0 = **1.0**
+- 3 variant còn lại: attempts=0 → score = 0.5 + random(0, 0.2) ≈ 0.6–0.7
+- 90% → exploit: chọn `detailed` lại.
+
 **Tóm tắt nhanh khi bị hỏi:**
 - UCB1 = success_rate + bonus cho variant ít thử.
 - ε-greedy = 10% random, 90% chọn theo UCB1.
@@ -779,13 +922,61 @@ def update_reward(self, chunk_size, success, quality_score, generation_time):
         self.beta[chunk_size] += 1 - normalized  # fail → β↑
 ```
 
-→ **Prompt selector = UCB1+ε-greedy**; **chunk size = Thompson Sampling thật**. Study guide cũ từng nói "không phải Beta-posterior" chỉ đúng với **prompt variant**, không đúng với chunk-size optimizer.
+→ **Prompt selector = UCB1+ε-greedy**; **chunk size = Thompson Sampling thật**.
+
+### Tại sao 2 cơ chế khác nhau? — Đọc theo thứ tự này
+
+**Bước 1 — Bài toán chung của cả 2: Multi-Armed Bandit**
+
+C2 có 2 thứ cần chọn mỗi lần generate:
+- Chọn **prompt variant** nào trong 4 cái (minimal/detailed/conservative/aggressive)
+- Chọn **chunk size** nào trong 5 cái (10/15/20/25/30 properties/chunk)
+
+Cả 2 đều là bài toán giống nhau: có nhiều lựa chọn, không biết cái nào tốt nhất, phải vừa thử vừa học → gọi là **multi-armed bandit**. Mục tiêu: cân bằng **exploit** (chọn cái đang tốt nhất) và **explore** (thử cái chưa biết).
+
+**Bước 2 — UCB1+ε-greedy cho prompt variant**
+
+UCB1 giải bài toán bandit bằng cách tính **upper confidence bound** — một con số chắc chắn:
+
+```
+score(a) = success_rate_a  +  0.1 × √(2×ln(N) / n_a)
+                ↑ exploit         ↑ explore bonus
+```
+
+Variant nào thử nhiều (n_a lớn) → explore bonus nhỏ → chủ yếu dựa vào success_rate (exploit).
+Variant nào thử ít (n_a nhỏ) → explore bonus lớn → được ưu tiên thử thêm (explore).
+
+Sau khi tính UCB1 score cho 4 variants, thêm ε-greedy: 90% chọn variant có UCB1 cao nhất, 10% chọn ngẫu nhiên để đảm bảo không bao giờ bỏ hẳn variant nào.
+
+**Bước 3 — Thompson Sampling cho chunk size**
+
+TS giải cùng bài toán bandit nhưng bằng cách khác — không tính bound cứng mà **sample từ phân phối xác suất**:
+
+```python
+# Mỗi chunk size duy trì Beta(α, β) — phân phối xác suất "khả năng thành công"
+theta = np.random.beta(alpha[size], beta[size])
+# Chọn size có theta cao nhất
+```
+
+Mỗi lần generate, TS "hỏi" mỗi chunk size: *"mày nghĩ mày tốt bao nhiêu?"* — câu trả lời là một số ngẫu nhiên sample từ Beta posterior. Chunk size ít được thử → Beta(α nhỏ, β nhỏ) → posterior rộng → sample có thể rất cao hoặc rất thấp → **tự nhiên explore**. Chunk size đã thử nhiều và thành công → Beta(α lớn, β nhỏ) → posterior hẹp, tập trung cao → **tự nhiên exploit**.
+
+**Bước 4 — Vì sao không dùng cùng 1 cơ chế cho cả 2?**
+
+| | Prompt variant | Chunk size |
+|---|---|---|
+| Reward | Binary: success/fail | Continuous: quality×50 + (100 if success) - time×0.01 |
+| UCB1 phù hợp? | Có — binary reward đơn giản | Kém hơn — UCB1 gốc thiết kế cho binary |
+| TS phù hợp? | Được, nhưng phức tạp hơn cần thiết | Có — Beta posterior update tự nhiên với continuous reward |
+
+Nói ngắn: UCB1 đơn giản và đủ cho bài toán binary (thành công hay không). TS linh hoạt hơn cho continuous reward (score từ 0→1 kèm time penalty). Đây là implementation choice, không phải lý do lý thuyết sâu xa.
+
+**Câu chốt khi bị hỏi:** *"Cả UCB1 và Thompson Sampling đều là multi-armed bandit — cùng giải bài toán explore/exploit. UCB1 dùng bound toán học deterministic, TS dùng sampling từ Beta posterior probabilistic. Trong C2, UCB1+ε-greedy chọn prompt variant vì reward binary đơn giản, Thompson Sampling chọn chunk size vì reward continuous phức tạp hơn."*
 
 ### 4.3. Kết quả thực nghiệm
 
-C1 vs C2: Mann-Whitney p=0.903, r=0.012 (**negligible**) — chọn lọc giữa các prompt tĩnh + chunk size adaptive **không** tạo khác biệt đáng kể so với 1 prompt tốt nhất cố định. Lý do hợp lý: 4 variant vẫn cùng "family" instruction, thiếu grounding AOSP (RAG) và thiếu feedback lỗi (C4).
+C1 vs C2: Mann-Whitney p=0.903, r=0.012 (**negligible**) — adaptive selection **không** tạo khác biệt đáng kể. Lý do: 4 variant vẫn cùng "family" instruction (tất cả đều là plain text, không có AOSP context thật), thiếu RAG grounding, thiếu feedback lỗi. UCB1 và Thompson Sampling hoạt động đúng về mặt thuật toán — nhưng khi input (prompt variants) không đủ khác nhau thì output cũng không khác nhau.
 
-> **Ghi chú phòng vấn:** Thesis PDF gọi C2 là "Thompson Sampling". Thực tế chỉ **chunk-size** dùng Thompson Sampling; **prompt variant** dùng UCB1 + ε-greedy. Có thể giải thích: "C2 dùng bandit-style adaptive selection (UCB1 cho prompt, Thompson cho chunk size)."
+> **Ghi chú phòng vấn:** Thesis PDF gọi C2 là "Thompson Sampling". Thực tế: **chunk-size** dùng Thompson Sampling; **prompt variant** dùng UCB1 + ε-greedy. Khi bị hỏi: "C2 dùng bandit-style adaptive selection — UCB1+ε-greedy cho prompt variant, Thompson Sampling cho chunk size. Cả hai đều là multi-armed bandit nhưng khác nhau ở cách tính uncertainty."
 
 ---
 
