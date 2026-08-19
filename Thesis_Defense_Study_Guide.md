@@ -170,7 +170,18 @@ self.enum_name = f"VehicleProperty{self.domain_cap}"  # Adas → VehicleProperty
 
 ---
 
-## 2. RAG Retrieval — kiến trúc hybrid 3 kênh (không chỉ embedding đơn thuần)
+## 2. RAG Retrieval — kiến trúc retrieval (khác nhau theo agent)
+
+> **Ghi chú phòng vấn:** Thesis claim **dense retrieval với cosine similarity** — đây là những gì được document và evaluate. Hybrid 3 kênh có trong code nhưng **chỉ áp dụng cho CPP agent**, không được claim trong thesis. Khi bị hỏi, trả lời theo thesis: cosine similarity, all-MiniLM-L6-v2, ChromaDB, 3-layer HIDL filter. Không tự đề cập BM25 hay reranker trừ khi bị hỏi thẳng.
+
+**Thực tế trong code (`rag/aosp_retriever.py` + `agents/rag_dspy_mixin.py`):**
+
+| Agent | Method gọi | Retrieval thật |
+|---|---|---|
+| **CPP** | `retriever.retrieve_multi(_QUERIES)` | **Hybrid: dense + BM25 + cross-encoder reranker** |
+| AIDL, SELinux, Build, tất cả còn lại | `self._retrieve(query)` qua `RAGDSPyMixin` | **Dense only** — ChromaDB + cosine similarity |
+
+Lý do CPP dùng hybrid: CPP là agent phức tạp nhất, cần nhiều context nhất (method signatures dài, nhiều loại pattern). `_AGENT_REAL_CONTEXT` trong `optimizer.py` chỉ có 1 entry là `cpp` — đây là single source of truth cho việc agent nào dùng hybrid.
 
 ### 2.1. Indexing — cách corpus được chia nhỏ
 
@@ -185,7 +196,7 @@ Overlap tồn tại để tránh cắt đứt 1 method signature/block logic đ�
 
 **ChromaDB config:** `metadata={"hnsw:space": "cosine"}` — dùng **HNSW** (Hierarchical Navigable Small World — approximate nearest-neighbor search, dạng graph-based) để index vector, cosine distance làm metric khoảng cách.
 
-### 2.2. Retrieval — 3 kênh độc lập
+### 2.2. Retrieval — 3 kênh độc lập (CPP agent only; các agent khác dùng dense only)
 
 **Kênh 1 — Dense retrieval (embedding + ChromaDB):**
 
