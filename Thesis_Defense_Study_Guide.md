@@ -1179,14 +1179,14 @@ t-test giả định:                 Thực tế score thesis:
 
 **Cách hoạt động — từng bước:**
 
-**Bước 1:** Gộp tất cả 1064 điểm (266 × 4 conditions), xếp hạng từ 1 (thấp nhất) đến 1064 (cao nhất).
+**Bước 1:** Gộp tất cả **266 điểm** (75 + 75 + 58 + 58 từ 4 conditions), xếp hạng từ 1 (thấp nhất) đến 266 (cao nhất).
 
 ```
 Điểm gốc:  0.78(C1)  0.79(C2)  0.82(C1)  0.83(C2)  0.88(C3)  0.90(C4) ...
 Hạng:          1         2         3         4         5         6      ...
 ```
 
-**Bước 2:** Tính tổng hạng Rᵢ của mỗi nhóm. Nếu 4 nhóm giống nhau → mỗi nhóm có tổng hạng ≈ 1064×1065/2/4 = **141,945**. Nếu C4 tốt hơn → R₄ >> 141,945, R₁ << 141,945.
+**Bước 2:** Tính tổng hạng Rᵢ của mỗi nhóm. Nếu 4 nhóm giống nhau → kỳ vọng tổng hạng của mỗi nhóm tỉ lệ với số file: C1/C2 ≈ 75×(266+1)/2 = **10,012.5**, C3/C4 ≈ 58×(266+1)/2 = **7,743.5**. Nếu C4 tốt hơn → R₄ >> 7,743.5, R₁ << 10,012.5.
 
 **Bước 3:** Tính H:
 
@@ -1211,7 +1211,7 @@ Tổng hạng ≈ 141,945 mỗi nhóm  C1 thấp, C4 cao
 │   ││   ││   ││   │           C2: R₂ < 141,945  ↓
 │   ││   ││   ││   │           C3: R₃ > 141,945  ↑
 └───┘└───┘└───┘└───┘           C4: R₄ >> 141,945 ↑↑
-H ≈ 0, p ≈ 1                   H = 20.4950, p = 0.000134
+H ≈ 0, p ≈ 1              H = 20.4950, p = 0.000134
 ```
 
 - **Kruskal-Wallis** → hỏi tổng thể: "có nhóm nào khác không?" → H = 20.4950, p = 0.000134 → **Có**.
