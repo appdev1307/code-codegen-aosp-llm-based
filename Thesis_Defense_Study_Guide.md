@@ -1121,20 +1121,22 @@ StatusCode VssVehicleHardware::dispatchGetValues(int domainIdx, ...) const {
 
 ## 9. Phương pháp thống kê (giải thích lại)
 
-### 9.0. 266 điểm là gì? — hiểu đơn vị trước khi đọc số
+### 9.0. Đơn vị quan sát là gì? — hiểu trước khi đọc số
 
-**266 = số tệp được sinh ra bởi matched agents × matched domains** trong một condition.
+**Đơn vị quan sát = file-level, không phải signal-level.**
 
-`compare_matched.py` chỉ lấy agent types có mặt trong **cả 4 conditions** (9 matched agents), rồi đếm tổng số file output. Không phải 7 domain × 9 agent = 63 vì một số agent sinh nhiều file (cpp sinh .h + .cpp, android_app sinh nhiều layout file…). Kết quả thực tế là 266 file mỗi condition.
+Thesis nêu rõ (§4.4): *"one data point per generated file, averaged (or tested) across all matched output files"*.
+
+`compare_matched.py` chỉ lấy agent types có mặt trong **cả 4 conditions** (9 matched agents). Không phải 7 domain × 9 agent = 63 vì một số agent sinh nhiều file (cpp sinh .h + .cpp, android_app sinh nhiều layout file…). Số file thực tế được `compare_matched.py` tính tự động từ output — con số chính xác phụ thuộc vào run thực tế.
 
 ```python
 # compare_matched.py
 matched_agents = set.intersection(agents_C1, agents_C2, agents_C3, agents_C4)
 files_C1 = [f for f in all_files_C1 if f["agent"] in matched_agents]
-len(files_C1)  # = 266
+# len(files_C1) = N — số file thực tế mỗi condition
 ```
 
-**Mỗi file nhận 1 điểm composite** → Mann-Whitney và Kruskal-Wallis so sánh trên 266 × 4 = 1064 điểm. Đây là đơn vị quan sát, không phải signal.
+**Mỗi file nhận 1 điểm composite** → Mann-Whitney và Kruskal-Wallis so sánh trên N × 4 điểm. Đây là đơn vị quan sát, không phải signal. Thesis dùng **file-weighted mean** vì các agent sinh số file khác nhau.
 
 ---
 
@@ -1223,7 +1225,7 @@ H ≈ 0, p ≈ 1                   H = 20.4950, p = 0.000134
 ```
 r = 1 − 2U / (n₁ × n₂)
 ```
-n₁ = n₂ = 266. Với r = 0.375 → U ≈ 22,124.
+n₁ = n₂ = N (số file matched mỗi condition). Với r = 0.375, n₁ = n₂ có thể tính ngược ra U từ công thức.
 
 **Effect size r = 0.375:** nằm giữa medium (0.3) và large (0.5) theo Cohen (1988). Trong bối cảnh so sánh pipeline prompting trên cùng một model frozen, đây là kết quả thực chất — không phải noise.
 
@@ -1263,7 +1265,7 @@ U/p/r chỉ nói *"có khác biệt ở composite"* — phân rã Table 8 mới 
 - **"Cách tính tạo ra khác biệt?"** → Không. Cùng công thức, cùng trọng số, áp cả 4 điều kiện y hệt.
 - **"Tăng lên 1000 signal thì p nhỏ hơn?"** → Không. N tính theo số file output (matched agents × domains), không theo signal → thêm signal chỉ làm file dày hơn, không tăng N trong test.
 - **"C3 vs C4 chưa sig"** → báo cáo trung thực, không nói C4 vượt C3 "rõ". Phần lớn improvement đã xảy ra ở C3 nhờ RAG.
-- **"266 điểm từ đâu?"** → Số file sinh ra bởi 9 matched agents trên 7 domains trong một condition, đếm bởi `compare_matched.py`. Không phải 500 signal, không phải 63 (7×9).
+- **"N điểm từ đâu?"** → Số file sinh ra bởi 9 matched agents trên 7 domains trong một condition, đếm tự động bởi `compare_matched.py` từ output thực tế. Không phải 500 signal, không phải 63 (7×9). Đơn vị là file-level vì các agent sinh số file khác nhau.
 - **N=8 training set** là deliberate constraint: MIPROv2 dùng trainset làm scoring harness không phải gradient target; ground truth VHAL tốn công tạo; bottleneck là số trial (~10), không phải số example; LLM weights frozen nên overfitting risk inverted.
 
 ---
