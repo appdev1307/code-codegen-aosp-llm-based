@@ -1127,16 +1127,22 @@ StatusCode VssVehicleHardware::dispatchGetValues(int domainIdx, ...) const {
 
 Thesis nêu rõ (§4.4): *"one data point per generated file, averaged (or tested) across all matched output files"*.
 
-`compare_matched.py` chỉ lấy agent types có mặt trong **cả 4 conditions** (9 matched agents). Không phải 7 domain × 9 agent = 63 vì một số agent sinh nhiều file (cpp sinh .h + .cpp, android_app sinh nhiều layout file…). Số file thực tế được `compare_matched.py` tính tự động từ output — con số chính xác phụ thuộc vào run thực tế.
+**Số file thực tế từ rescoring log:**
 
-```python
-# compare_matched.py
-matched_agents = set.intersection(agents_C1, agents_C2, agents_C3, agents_C4)
-files_C1 = [f for f in all_files_C1 if f["agent"] in matched_agents]
-# len(files_C1) = N — số file thực tế mỗi condition
-```
+| Condition | Files | Agent breakdown |
+|---|---|---|
+| C1 Baseline | **75** | android_app=17, android_layout=17, backend=15, aidl/cpp/selinux=7 mỗi, build=3, design_doc/vintf=1 mỗi |
+| C2 Adaptive | **75** | Giống C1 |
+| C3 RAG+DSPy | **58** | android_app=7, android_layout=7 (giảm), backend=16, cpp=8, selinux=8 |
+| C4 Feedback | **58** | Giống C3 |
 
-**Mỗi file nhận 1 điểm composite** → Mann-Whitney và Kruskal-Wallis so sánh trên N × 4 điểm. Đây là đơn vị quan sát, không phải signal. Thesis dùng **file-weighted mean** vì các agent sinh số file khác nhau.
+C1/C2 có 75 files, C3/C4 có 58 files vì RAG+DSPy thay đổi cách sinh android_app và android_layout — 7 file thay vì 17 file mỗi agent. Đây là lý do **Mann-Whitney dùng n₁ ≠ n₂** khi so C1 (75) vs C3 (58) hoặc C1 (75) vs C4 (58).
+
+**9 matched agents** (có mặt cả 4 conditions): aidl, android_app, android_layout, backend, build, cpp, design_doc, selinux, vintf.
+
+**Kruskal-Wallis** gộp tất cả: 75 + 75 + 58 + 58 = **266 điểm** — đây là tổng N để tính H. Không phải n của từng condition riêng lẻ.
+
+**Mỗi file nhận 1 điểm composite** → đơn vị quan sát, không phải signal. Thesis dùng **file-weighted mean** vì các agent sinh số file khác nhau.
 
 ---
 
@@ -1225,7 +1231,17 @@ H ≈ 0, p ≈ 1                   H = 20.4950, p = 0.000134
 ```
 r = 1 − 2U / (n₁ × n₂)
 ```
-n₁ = n₂ = N (số file matched mỗi condition). Với r = 0.375, n₁ = n₂ có thể tính ngược ra U từ công thức.
+
+**n thật của từng cặp (từ log):**
+
+| Cặp | n₁ | n₂ | U thật | r thật |
+|---|---|---|---|---|
+| C1 vs C2 | 75 | 75 | 2780.0 | 0.012 |
+| C1 vs C3 | 75 | 58 | 1633.5 | 0.249 |
+| **C1 vs C4** | **75** | **58** | **1360.0** | **0.375** |
+| C3 vs C4 | 58 | 58 | 1491.0 | 0.114 |
+
+Verify tay C1 vs C4: r = 1 − 2×1360.0 / (75×58) = 1 − 2720/4350 = 1 − 0.625 = **0.375** ✓
 
 **Effect size r = 0.375:** nằm giữa medium (0.3) và large (0.5) theo Cohen (1988). Trong bối cảnh so sánh pipeline prompting trên cùng một model frozen, đây là kết quả thực chất — không phải noise.
 
