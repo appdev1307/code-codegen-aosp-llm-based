@@ -1121,6 +1121,23 @@ StatusCode VssVehicleHardware::dispatchGetValues(int domainIdx, ...) const {
 
 ## 9. Phương pháp thống kê (giải thích lại)
 
+### 9.0. 266 điểm là gì? — hiểu đơn vị trước khi đọc số
+
+**266 = số tệp được sinh ra bởi matched agents × matched domains** trong một condition.
+
+`compare_matched.py` chỉ lấy agent types có mặt trong **cả 4 conditions** (9 matched agents), rồi đếm tổng số file output. Không phải 7 domain × 9 agent = 63 vì một số agent sinh nhiều file (cpp sinh .h + .cpp, android_app sinh nhiều layout file…). Kết quả thực tế là 266 file mỗi condition.
+
+```python
+# compare_matched.py
+matched_agents = set.intersection(agents_C1, agents_C2, agents_C3, agents_C4)
+files_C1 = [f for f in all_files_C1 if f["agent"] in matched_agents]
+len(files_C1)  # = 266
+```
+
+**Mỗi file nhận 1 điểm composite** → Mann-Whitney và Kruskal-Wallis so sánh trên 266 × 4 = 1064 điểm. Đây là đơn vị quan sát, không phải signal.
+
+---
+
 ### 9.1. "Khác biệt rõ" = cần CẢ 2 điều
 
 - **p < 0.05** → khác biệt **không do ngẫu nhiên** (đáng tin).
@@ -1128,52 +1145,126 @@ StatusCode VssVehicleHardware::dispatchGetValues(int domainIdx, ...) const {
 
 → **C1 vs C4** đạt cả hai (p = 0.000189, r = 0.375) → đây là kết luận chính của thesis. Chỉ đạt 1 trong 2 thì **chưa** rõ.
 
-### 9.2. Vì sao dùng Kruskal / Mann-Whitney (không t-test/ANOVA)
+**Minh họa tại sao cần cả 2:**
 
-Score bị chặn **[0, 1]**, phân phối **lệch** (dồn gần 1.0) → vi phạm giả định phân phối chuẩn → dùng test theo **hạng** (rank-based):
+> Tưởng tượng đo chiều cao 100,000 người. Nam 170.1cm, nữ 170.0cm. p < 0.001 vì sample khổng lồ — sự khác biệt 0.1cm hoàn toàn có thật thống kê. Nhưng r ≈ 0.001 — không ai quan tâm đến 1mm. Ngược lại nếu chỉ đo 5 người, r = 0.8 nhưng p = 0.2 — trông lớn nhưng có thể do ngẫu nhiên.
 
-- **Kruskal-Wallis** — so 4 nhóm cùng lúc: "có cặp nào khác không?" → H = 20.4950, p = 0.000134 → **Có**.
-- **Mann-Whitney U** — chạy sau, chỉ ra **cặp nào** khác biệt.
+---
+
+### 9.2. Vì sao dùng Kruskal-Wallis / Mann-Whitney (không t-test/ANOVA)
+
+t-test và ANOVA có giả định cứng: **dữ liệu phải phân phối chuẩn** (hình chuông đối xứng).
+
+Score trong thesis bị chặn trong [0, 1] và dồn về phía 1.0 — phân phối lệch trái, vi phạm giả định này.
+
+```
+t-test giả định:                 Thực tế score thesis:
+    ▲                                ▲
+    │    ████                        │              ████
+    │  ████████                      │          ████████
+    │████████████                    │      ████████████
+    └──────────────                  └──────────────────
+    0.5        1.0                   0.5            1.0
+```
+
+**Kruskal-Wallis và Mann-Whitney** làm việc trên **hạng** (rank), không cần giả định phân phối.
+
+**Cách hoạt động — từng bước:**
+
+**Bước 1:** Gộp tất cả 1064 điểm (266 × 4 conditions), xếp hạng từ 1 (thấp nhất) đến 1064 (cao nhất).
+
+```
+Điểm gốc:  0.78(C1)  0.79(C2)  0.82(C1)  0.83(C2)  0.88(C3)  0.90(C4) ...
+Hạng:          1         2         3         4         5         6      ...
+```
+
+**Bước 2:** Tính tổng hạng Rᵢ của mỗi nhóm. Nếu 4 nhóm giống nhau → mỗi nhóm có tổng hạng ≈ 1064×1065/2/4 = **141,945**. Nếu C4 tốt hơn → R₄ >> 141,945, R₁ << 141,945.
+
+**Bước 3:** Tính H:
+
+$$H = \frac{12}{N(N+1)} \sum_{i=1}^{k} \frac{R_i^2}{n_i} - 3(N+1)$$
+
+H = 0 → 4 nhóm giống nhau. H càng lớn → chênh lệch càng rõ.
+
+**Bước 4:** H xấp xỉ phân phối Chi-squared với df = k−1 = 3. Tra bảng hoặc tính:
+
+```python
+from scipy.stats import chi2
+p = 1 - chi2.cdf(20.4950, df=3)
+# → p = 0.000134
+```
+
+Nghĩa là: nếu 4 nhóm thật sự giống nhau, xác suất để H ≥ 20.4950 xảy ra là **0.013%** → kết luận 4 nhóm khác nhau.
+
+```
+Nếu 4 nhóm giống nhau:        Thực tế thesis:
+Tổng hạng ≈ 141,945 mỗi nhóm  C1 thấp, C4 cao
+┌───┐┌───┐┌───┐┌───┐           C1: R₁ << 141,945 ↓
+│   ││   ││   ││   │           C2: R₂ < 141,945  ↓
+│   ││   ││   ││   │           C3: R₃ > 141,945  ↑
+└───┘└───┘└───┘└───┘           C4: R₄ >> 141,945 ↑↑
+H ≈ 0, p ≈ 1                   H = 20.4950, p = 0.000134
+```
+
+- **Kruskal-Wallis** → hỏi tổng thể: "có nhóm nào khác không?" → H = 20.4950, p = 0.000134 → **Có**.
+- **Mann-Whitney U** → chạy sau từng cặp, chỉ ra cặp nào khác nhau.
+
+---
 
 ### 9.3. Số liệu thật (3 cặp cần nhớ)
 
 | Cặp | p | r | Đọc sao |
 |-----|---|---|---------|
-| C1 vs C2 | 0.903 | 0.012 | negligible — adaptive không tạo khác biệt |
-| **C1 vs C4** | **0.000189** | **0.375** | **medium + có ý nghĩa — kết luận chính** |
-| C3 vs C4 | 0.273 | 0.114 | chưa đạt ngưỡng — feedback chưa đủ mạnh thống kê |
+| C1 vs C2 | 0.903 | 0.012 | p = 0.903 → 90% khả năng do ngẫu nhiên. Adaptive không có tác dụng |
+| **C1 vs C4** | **0.000189** | **0.375** | **p < 0.001 và r = 0.375 (medium). Kết luận chính** |
+| C3 vs C4 | 0.273 | 0.114 | p = 0.273 chưa đạt ngưỡng. Feedback thêm ít nhưng chưa significant |
 
-Công thức: `r = 1 − 2U / (n₁·n₂)`. Đơn vị test = **266 điểm module-level** (không phải 500 signal).
+**Công thức tính r từ U:**
+```
+r = 1 − 2U / (n₁ × n₂)
+```
+n₁ = n₂ = 266. Với r = 0.375 → U ≈ 22,124.
+
+**Effect size r = 0.375:** nằm giữa medium (0.3) và large (0.5) theo Cohen (1988). Trong bối cảnh so sánh pipeline prompting trên cùng một model frozen, đây là kết quả thực chất — không phải noise.
+
+---
 
 ### 9.4. ⭐ Coverage KHÔNG nằm trong công thức U/p/r
 
-Test chỉ ăn **1 số mỗi module = composite**. Coverage đã bị gộp vào composite qua `w_cov` **trước khi** test chạy:
+Test chỉ nhận **1 số mỗi file = composite**. Coverage đã bị gộp vào composite qua `w_cov` **trước khi** test chạy:
 
 ```
 composite = w_struct·S + w_syntax·X + w_cov·C ← coverage nằm ở đây
-Mann-Whitney chỉ thấy 0.8328 vs 0.8917 , KHÔNG thấy C = 0.58 vs 0.80
+Mann-Whitney chỉ thấy 0.8328 vs 0.8917, KHÔNG thấy C = 0.5833 vs 0.7996
 ```
 
 → Coverage tác động **gián tiếp**: coverage↑ → composite↑ → hạng cao hơn → U↓ → p↓, r↑.
 
 **"Coverage là nguyên nhân" chứng minh bằng phân rã (Table 8), không bằng U/p/r:**
 
-| Chiều | C1 → C4 | |
-|-------|---------|---|
-| Structure | 0.9556 → 0.9382 | đứng yên (còn giảm nhẹ) |
-| Syntax | 0.9067 → 0.9241 | nhích nhẹ |
-| **Coverage** | **0.5833 → 0.7996** | **nhảy mạnh** |
+| Chiều | C1 | C4 | Δ contribution |
+|-------|----|----|----------------|
+| Structure | 0.9556 | 0.9382 | 0.30 × (−0.017) = **−0.005** |
+| Syntax | 0.9067 | 0.9241 | 0.50 × (+0.017) = **+0.009** |
+| **Coverage** | **0.5833** | **0.7996** | 0.20 × (+0.216) = **+0.043** |
+| **Δ composite** | | | **≈ +0.047** |
 
-Chỉ **coverage** dịch chuyển → coverage là driver, **dù `w_cov` nhỏ nhất**. Lý do: struct/syntax đã bão hòa ~0.90–0.95 (hết dư địa), coverage là chiều duy nhất còn chỗ để tăng. U/p/r chỉ nói "**có** khác biệt ở composite"; phân rã mới cho biết khác biệt **nằm ở coverage**.
+Coverage có weight nhỏ nhất (0.20) nhưng đóng góp lớn nhất vì **magnitude thay đổi lớn nhất**. Structure và Syntax đã bão hòa ở ~0.93–0.95, hết dư địa. Coverage là chiều duy nhất còn chỗ để tăng.
+
+U/p/r chỉ nói *"có khác biệt ở composite"* — phân rã Table 8 mới cho biết *"khác biệt nằm ở coverage"*.
+
+---
 
 ### 9.5. Câu chốt phòng vấn
 
-- **Score 0.85 không tự mang ý nghĩa thống kê** — chỉ là rubric; phải có test mới kết luận.
-- **Structural score ≠ accuracy** — không có gold label classification.
-- **"Cách tính tạo ra khác biệt?"** → Không. Cùng công thức, cùng trọng số, áp **cả 4 điều kiện y hệt**; nếu output giống nhau thì điểm bằng nhau.
-- **"Tăng lên 1000 signal thì p nhỏ hơn?"** → Không. N tính theo **module (domain × agent)**, không theo signal → thêm signal chỉ làm file dày hơn, **không** tăng power. Cái cần lo khi scale là token-budget/truncation, không phải mức ý nghĩa.
-- **C3 vs C4 chưa sig** → báo cáo trung thực, đừng nói C4 vượt C3 "rõ". Phần lớn khác biệt có ý nghĩa đã đến từ RAG ở C3.
-- **N=8 training set** là deliberate constraint, không phải limitation: MIPROv2 dùng trainset làm scoring harness (không phải gradient target); ground truth VHAL tốn công tạo; bottleneck là số trial (~20–36), không phải số example; LLM weights frozen nên overfitting risk inverted — thêm example chỉ làm minibatch chậm hơn, không cải thiện chất lượng search.
+- **"Score 0.89 có ý nghĩa không?"** → Score là rubric tự thiết kế, không tự mang ý nghĩa thống kê. Phải có Kruskal-Wallis + Mann-Whitney mới kết luận được.
+- **"Sao không dùng t-test?"** → Score bị chặn [0,1] và phân phối lệch về 1.0, vi phạm giả định phân phối chuẩn của t-test.
+- **"Structural score ≠ accuracy"** — không có gold label classification.
+- **"Cách tính tạo ra khác biệt?"** → Không. Cùng công thức, cùng trọng số, áp cả 4 điều kiện y hệt.
+- **"Tăng lên 1000 signal thì p nhỏ hơn?"** → Không. N tính theo số file output (matched agents × domains), không theo signal → thêm signal chỉ làm file dày hơn, không tăng N trong test.
+- **"C3 vs C4 chưa sig"** → báo cáo trung thực, không nói C4 vượt C3 "rõ". Phần lớn improvement đã xảy ra ở C3 nhờ RAG.
+- **"266 điểm từ đâu?"** → Số file sinh ra bởi 9 matched agents trên 7 domains trong một condition, đếm bởi `compare_matched.py`. Không phải 500 signal, không phải 63 (7×9).
+- **N=8 training set** là deliberate constraint: MIPROv2 dùng trainset làm scoring harness không phải gradient target; ground truth VHAL tốn công tạo; bottleneck là số trial (~10), không phải số example; LLM weights frozen nên overfitting risk inverted.
 
 ---
 
