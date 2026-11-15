@@ -11,6 +11,20 @@ design documents, Android app fragments, and backend servers.
 All generated code targets the Android 14 Vehicle HAL API surface. Using a different
 AOSP version will cause AIDL interface mismatches and build failures.
 
+## Using the Tool (Final Pipeline)
+
+The released tool is the final pipeline, **C4 Feedback** (`multi_main_c4_feedback.py`).
+C1–C3 are kept only to reproduce the design evaluation reported in the paper;
+C4 Minimal and C5 are optional add-ons.
+
+A typical run has four steps (commands in *Manual Setup & Run* below):
+
+1. Prepare the VSS signal input (`dataset/vss.json`); the pipeline converts it to YAML specifications.
+2. Build the ChromaDB knowledge base from the pinned AOSP repositories (step 2).
+3. Run the generation pipeline against the locally served model (step 3): `python multi_main_c4_feedback.py`
+4. Optionally integrate the output into an AOSP source tree and build the Cuttlefish
+   automotive target (*AOSP Source Tree Validation*).
+
 ## Architecture
 
 ```
@@ -45,7 +59,10 @@ DefaultVehicleHal  : public BnVehicle          ← AOSP-owned binder layer
 C3/C4 generate a from-scratch `IVehicleHardware` implementation that wraps inside
 `DefaultVehicleHal`. No `FakeVehicleHardware` patching, no JSON config files.
 
-## Experimental Conditions
+## Pipeline Configurations (Design Evaluation)
+
+C1–C4 are the four configurations compared in the paper's internal evaluation.
+Only C4 is the released tool; C1–C3 are retained for reproducing that evaluation.
 
 | Condition | Script | Description | Avg Score |
 |-----------|--------|-------------|-----------|
@@ -176,17 +193,9 @@ for col in cols:
 "
 ```
 
-### 3. Run All Conditions
-
-**Correct execution order:** C1 → C2 → DSPy → C3 → C4 → C5 → Android Build → VTS
+### 3. Run the Tool (Final Pipeline C4)
 
 ```bash
-# ── C1: Baseline ───────────────────────────────────────────────
-python multi_main.py
-
-# ── C2: Adaptive ───────────────────────────────────────────────
-python multi_main_adaptive.py
-
 # ── DSPy Optimiser (after ChromaDB, before C3) ─────────────────
 # IMPORTANT: delete the stale cpp program first — the signature changed
 # (ModernCppVehicleHardwareSignature now uses domain/properties/aosp_context
@@ -197,15 +206,33 @@ rm -rf dspy_opt/saved/cpp_program/
 python dspy_opt/optimizer.py --mipro-auto light --train-size 8 --force
 ls dspy_opt/saved/*/program.json | wc -l   # expect: 12 after full optimizer run
 
+# ── C4: Feedback Loop (released tool) ──────────────────────────
+python multi_main_c4_feedback.py
+```
+
+### 3b. Reproduce the Paper's Evaluation (optional)
+
+To reproduce the design evaluation exactly, follow the original order:
+C1 → C2 → DSPy → C3 → C4 → C5 → Android Build → VTS
+
+```bash
+# ── C1: Baseline ───────────────────────────────────────────────
+python multi_main.py
+
+# ── C2: Adaptive ───────────────────────────────────────────────
+python multi_main_adaptive.py
+
+# ── DSPy Optimiser: as in step 3 (after ChromaDB, before C3) ───
+
 # ── C3: RAG + DSPy ─────────────────────────────────────────────
 python multi_main_rag_dspy.py
+
+# ── C4: Feedback Loop: as in step 3 ────────────────────────────
+
 # ── C4 Minimal (alternative to full C4) ────────────────────────
 # Faster: generates only AIDL + CPP + SELinux (no architect, no full feedback loop)
 # Output: output_c4_minimal/  — valid input for C5 and apply_aosp14_fixes.sh
 python gen_hal_minimal_c4.py
-
-# ── C4: Feedback Loop ──────────────────────────────────────────
-python multi_main_c4_feedback.py
 
 # ── C5: VTS + HMI Generation ───────────────────────────────────
 # Reads C4 or C4-minimal output automatically.
@@ -935,4 +962,4 @@ code-codegen-aosp-llm-based/
 
 ## License
 
-Research use only — MSE thesis project.
+Apache License 2.0 — see [LICENSE](LICENSE).
