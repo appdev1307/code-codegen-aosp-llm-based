@@ -11,9 +11,9 @@ design documents, Android app fragments, and backend servers.
 All generated code targets the Android 14 Vehicle HAL API surface. Using a different
 AOSP version will cause AIDL interface mismatches and build failures.
 
-## Using the Tool (Final Pipeline)
+## Using the Framework (Final Pipeline)
 
-The released tool is the final pipeline, **C4 Feedback** (`multi_main_c4_feedback.py`).
+The released framework is the final pipeline, **C4 Feedback** (`multi_main_c4_feedback.py`).
 C1–C3 are kept only to reproduce the design evaluation reported in the paper;
 C4 Minimal and C5 are optional add-ons.
 
@@ -62,7 +62,7 @@ C3/C4 generate a from-scratch `IVehicleHardware` implementation that wraps insid
 ## Pipeline Configurations (Design Evaluation)
 
 C1–C4 are the four configurations compared in the paper's internal evaluation.
-Only C4 is the released tool; C1–C3 are retained for reproducing that evaluation.
+Only C4 is the released framework; C1–C3 are retained for reproducing that evaluation.
 
 | Condition | Script | Description | Avg Score |
 |-----------|--------|-------------|-----------|
@@ -193,7 +193,7 @@ for col in cols:
 "
 ```
 
-### 3. Run the Tool (Final Pipeline C4)
+### 3. Run the Framework (Final Pipeline C4)
 
 ```bash
 # ── DSPy Optimiser (after ChromaDB, before C3) ─────────────────
@@ -206,7 +206,7 @@ rm -rf dspy_opt/saved/cpp_program/
 python dspy_opt/optimizer.py --mipro-auto light --train-size 8 --force
 ls dspy_opt/saved/*/program.json | wc -l   # expect: 12 after full optimizer run
 
-# ── C4: Feedback Loop (released tool) ──────────────────────────
+# ── C4: Feedback Loop (released framework) ─────────────────────
 python multi_main_c4_feedback.py
 ```
 
